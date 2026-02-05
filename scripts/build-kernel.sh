@@ -1,47 +1,32 @@
 #!/bin/bash
 set -e
 
-# Build a Linux kernel for Firecracker micro-VMs
-# Supports both x86_64 (default) and arm64 architectures
-# Requires Docker to build with appropriate cross-compilers
+# Build Linux kernels for Firecracker/Virtualization.framework
+# Supports building both x86_64 and arm64 in one run
+# Requires Docker for cross-compilation
 
 KERNEL_VERSION="${KERNEL_VERSION:-6.1.137}"
-OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.cache/matchlock}"
-USE_DOCKER="${USE_DOCKER:-true}"
-ARCH="${ARCH:-x86_64}"
+OUTPUT_DIR="${OUTPUT_DIR:-$HOME/.cache/matchlock/kernels/$KERNEL_VERSION}"
+# Expand ~ and $HOME to absolute path for Docker volume mounts
+OUTPUT_DIR=$(eval echo "$OUTPUT_DIR")
+ARCH="${ARCH:-all}"
 
-# Normalize architecture names
-case "$ARCH" in
-    x86_64|amd64)
-        ARCH="x86_64"
-        OUTPUT_NAME="kernel"
-        ;;
-    arm64|aarch64)
-        ARCH="arm64"
-        OUTPUT_NAME="kernel-arm64"
-        ;;
-    *)
-        echo "ERROR: Unsupported architecture: $ARCH"
-        echo "Supported: x86_64, arm64"
-        exit 1
-        ;;
-esac
+print_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  KERNEL_VERSION=6.1.137   Linux kernel version (default: 6.1.137)"
+    echo "  OUTPUT_DIR=path          Output directory (default: ~/.cache/matchlock/kernels/\$VERSION)"
+    echo "  ARCH=x86_64|arm64|all    Architecture to build (default: all)"
+    echo ""
+    echo "Examples:"
+    echo "  $0                       # Build both architectures"
+    echo "  ARCH=arm64 $0            # Build only arm64"
+    echo "  KERNEL_VERSION=6.1.140 $0"
+}
 
-echo "Building Linux kernel $KERNEL_VERSION for $ARCH..."
-echo "Output: $OUTPUT_DIR/$OUTPUT_NAME"
-
-mkdir -p "$OUTPUT_DIR"
-
-if [ "$USE_DOCKER" != "true" ]; then
-    echo "ERROR: Native build requires appropriate cross-compilers."
-    echo "Please use Docker build (default)."
-    exit 1
-fi
-
-echo "Building in Docker container..."
-
-# Build based on architecture
-if [ "$ARCH" = "x86_64" ]; then
+build_x86_64() {
+    echo "Building Linux kernel $KERNEL_VERSION for x86_64..."
     docker run --rm -v "$OUTPUT_DIR:/output" ubuntu:22.04 bash -c '
         set -e
         apt-get update && apt-get install -y build-essential bc flex bison libelf-dev libssl-dev wget
@@ -203,7 +188,11 @@ KCONFIG
         cp vmlinux /output/kernel
         echo "Kernel '"${KERNEL_VERSION}"' (x86_64) built successfully"
     '
-elif [ "$ARCH" = "arm64" ]; then
+    echo "Built: $OUTPUT_DIR/kernel ($(du -h "$OUTPUT_DIR/kernel" | cut -f1))"
+}
+
+build_arm64() {
+    echo "Building Linux kernel $KERNEL_VERSION for arm64..."
     docker run --rm -v "$OUTPUT_DIR:/output" ubuntu:22.04 bash -c '
         set -e
         apt-get update && apt-get install -y build-essential bc flex bison libelf-dev libssl-dev wget gcc-aarch64-linux-gnu
@@ -364,7 +353,43 @@ KCONFIG
         cp arch/arm64/boot/Image /output/kernel-arm64
         echo "Kernel '"${KERNEL_VERSION}"' (arm64) built successfully"
     '
+    echo "Built: $OUTPUT_DIR/kernel-arm64 ($(du -h "$OUTPUT_DIR/kernel-arm64" | cut -f1))"
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    print_usage
+    exit 0
 fi
 
-echo "Kernel built: $OUTPUT_DIR/$OUTPUT_NAME"
-echo "Size: $(du -h "$OUTPUT_DIR/$OUTPUT_NAME" | cut -f1)"
+mkdir -p "$OUTPUT_DIR"
+
+echo "============================================"
+echo "Matchlock Kernel Builder"
+echo "============================================"
+echo "Version:    $KERNEL_VERSION"
+echo "Output:     $OUTPUT_DIR"
+echo "Arch:       $ARCH"
+echo "============================================"
+
+case "$ARCH" in
+    x86_64|amd64)
+        build_x86_64
+        ;;
+    arm64|aarch64)
+        build_arm64
+        ;;
+    all)
+        build_x86_64
+        build_arm64
+        ;;
+    *)
+        echo "ERROR: Unsupported architecture: $ARCH"
+        echo "Supported: x86_64, arm64, all"
+        exit 1
+        ;;
+esac
+
+echo ""
+echo "Build complete!"
+echo "Kernels are in: $OUTPUT_DIR"
+ls -lh "$OUTPUT_DIR"

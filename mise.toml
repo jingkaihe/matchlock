@@ -1,0 +1,206 @@
+# Matchlock Development Dependencies
+# Install with: mise install
+# Run tasks with: mise run <task>
+
+[tools]
+go = "1.25"
+golangci-lint = "1.62"
+"go:github.com/google/go-containerregistry/cmd/crane" = "latest"
+
+[env]
+_.path = ["~/go/bin"]
+KERNEL_VERSION = "6.1.137"
+OUTPUT_DIR = "{{env.HOME}}/.cache/matchlock"
+REGISTRY = "ghcr.io/jingkaihe/matchlock"
+
+# =============================================================================
+# Build tasks
+# =============================================================================
+
+[tasks.build]
+description = "Build the matchlock CLI"
+run = "go build -o bin/matchlock ./cmd/matchlock"
+
+[tasks."build:all"]
+description = "Build CLI and guest binaries"
+depends = ["build", "build:guest"]
+
+[tasks."build:guest"]
+description = "Build guest-agent and guest-fused (static Linux binaries)"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p bin
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/guest-agent ./cmd/guest-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/guest-fused ./cmd/guest-fused
+echo "Built: bin/guest-agent, bin/guest-fused"
+"""
+
+[tasks."build:guest-arm64"]
+description = "Build guest binaries for ARM64 (macOS)"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p bin
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/guest-agent-arm64 ./cmd/guest-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/guest-fused-arm64 ./cmd/guest-fused
+echo "Built: bin/guest-agent-arm64, bin/guest-fused-arm64"
+"""
+
+[tasks.clean]
+description = "Remove built binaries"
+run = "rm -rf bin/"
+
+# =============================================================================
+# Test tasks
+# =============================================================================
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."
+
+[tasks."test:verbose"]
+description = "Run tests with verbose output"
+run = "go test -v ./..."
+
+[tasks."test:coverage"]
+description = "Generate coverage report"
+run = """
+#!/usr/bin/env bash
+set -e
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+echo "Coverage report: coverage.html"
+"""
+
+# =============================================================================
+# Development tasks
+# =============================================================================
+
+[tasks.fmt]
+description = "Format code"
+run = "go fmt ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.tidy]
+description = "Run go mod tidy"
+run = "go mod tidy"
+
+[tasks.check]
+description = "Run all checks (fmt, vet, lint, test)"
+depends = ["fmt", "vet", "lint", "test"]
+
+# =============================================================================
+# Kernel tasks
+# =============================================================================
+
+[tasks."kernel:build"]
+alias = "kernel"
+description = "Build kernels for all architectures"
+run = "OUTPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION ARCH=all ./scripts/build-kernel.sh"
+
+[tasks."kernel:x86_64"]
+description = "Build kernel for x86_64 only"
+run = "OUTPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION ARCH=x86_64 ./scripts/build-kernel.sh"
+
+[tasks."kernel:arm64"]
+description = "Build kernel for arm64 only"
+run = "OUTPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION ARCH=arm64 ./scripts/build-kernel.sh"
+
+[tasks."kernel:publish"]
+description = "Publish kernels to GHCR"
+run = "INPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION REGISTRY=$REGISTRY ./scripts/publish-kernel.sh"
+
+[tasks."kernel:publish-latest"]
+description = "Publish kernels and tag as latest"
+run = "KERNEL_VERSION=$KERNEL_VERSION REGISTRY=$REGISTRY TAG_LATEST=true ./scripts/publish-kernel.sh"
+
+[tasks."kernel:clean"]
+description = "Clean kernel cache"
+run = "rm -rf $OUTPUT_DIR/kernels"
+
+# =============================================================================
+# Rootfs tasks
+# =============================================================================
+
+[tasks."rootfs:docker"]
+description = "Build rootfs using Docker (no sudo required)"
+depends = ["build:guest"]
+run = """
+#!/usr/bin/env bash
+set -e
+IMAGE=${IMAGE:-standard}
+mkdir -p $OUTPUT_DIR
+cp bin/guest-agent /tmp/guest-agent
+cp bin/guest-fused /tmp/guest-fused
+docker run --rm --privileged \
+    -v /tmp:/tmp \
+    -v $PWD/scripts:/scripts:ro \
+    -v $OUTPUT_DIR:$OUTPUT_DIR \
+    -e IMAGE=$IMAGE \
+    -e OUTPUT_DIR=$OUTPUT_DIR \
+    alpine:3.19 \
+    sh -c "apk add --no-cache bash e2fsprogs util-linux && /scripts/build-rootfs.sh"
+"""
+
+# =============================================================================
+# Installation tasks
+# =============================================================================
+
+[tasks.install]
+description = "Install matchlock to /usr/local/bin"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -e
+sudo cp bin/matchlock /usr/local/bin/matchlock
+echo "Installed matchlock to /usr/local/bin"
+"""
+
+[tasks."install:firecracker"]
+description = "Install Firecracker binary"
+run = "./scripts/install-firecracker.sh"
+
+# =============================================================================
+# Combined tasks
+# =============================================================================
+
+[tasks.images]
+description = "Build kernel + rootfs"
+depends = ["kernel:build", "rootfs:docker"]
+
+[tasks.setup]
+description = "Full setup (firecracker + images + install)"
+depends = ["install:firecracker", "images", "install"]
+run = """
+#!/usr/bin/env bash
+echo ""
+echo "============================================"
+echo "Matchlock setup complete!"
+echo "============================================"
+echo ""
+echo "Test with:"
+echo "  sudo matchlock run --image alpine:latest echo 'Hello from matchlock'"
+"""
+
+[tasks."quick-test"]
+description = "Quick test with built images"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -e
+if [ -f "$OUTPUT_DIR/kernels/$KERNEL_VERSION/kernel" ]; then
+    echo "Testing matchlock..."
+    sudo matchlock run --image alpine:latest echo "Matchlock works!"
+else
+    echo "Kernel not found. Run 'mise run kernel:build' first."
+    exit 1
+fi
+"""

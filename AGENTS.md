@@ -21,6 +21,7 @@ matchlock/
 ├── pkg/
 │   ├── api/              # Core types (Config, VM, Events, Hooks)
 │   ├── image/            # OCI/Docker image builder
+│   ├── kernel/           # Kernel version management and OCI distribution
 │   ├── sandbox/          # Core sandbox management
 │   ├── vm/               # VM backend interface
 │   │   └── linux/        # Linux/Firecracker implementation
@@ -232,23 +233,58 @@ NODE_EXTRA_CA_CERTS=/etc/ssl/certs/sandbox-ca.crt
 
 ### Kernel
 
-The kernel build uses Docker with Ubuntu 22.04 (GCC 11) for compatibility with older kernel sources.
-Supports both x86_64 (for Linux/Firecracker) and arm64 (for macOS/Apple Silicon).
+Kernels are automatically downloaded from GHCR on first run. No manual setup required.
 
+**Automatic Download (recommended):**
 ```bash
-# Build kernel 6.1.137 for x86_64 (default)
-OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
+# Kernel is auto-downloaded when you run matchlock
+matchlock run --image alpine:latest echo hello
 
-# Build kernel for arm64 (macOS/Apple Silicon)
-ARCH=arm64 OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
-
-# Custom version
-KERNEL_VERSION=6.1.140 OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
+# Kernels are cached at ~/.cache/matchlock/kernels/{version}/
+# x86_64: kernel
+# arm64:  kernel-arm64
 ```
 
-Output files:
-- x86_64: `$OUTPUT_DIR/kernel` (vmlinux ELF)
-- arm64: `$OUTPUT_DIR/kernel-arm64` (Image binary)
+**Manual Override:**
+```bash
+# Use environment variable to specify custom kernel
+MATCHLOCK_KERNEL=/path/to/kernel matchlock run ...
+```
+
+**Building Kernels Locally:**
+
+The kernel build uses Docker with Ubuntu 22.04 (GCC 11) for cross-compilation.
+
+```bash
+# Build both architectures (default)
+./scripts/build-kernel.sh
+
+# Build specific architecture
+ARCH=x86_64 ./scripts/build-kernel.sh
+ARCH=arm64 ./scripts/build-kernel.sh
+
+# Custom version
+KERNEL_VERSION=6.1.140 ./scripts/build-kernel.sh
+```
+
+Output: `~/.cache/matchlock/kernels/{version}/kernel[-arm64]`
+
+**Publishing Kernels to GHCR:**
+
+```bash
+# Build and publish (requires GHCR authentication)
+./scripts/build-kernel.sh
+./scripts/publish-kernel.sh
+
+# With custom version
+KERNEL_VERSION=6.1.140 TAG_LATEST=true ./scripts/publish-kernel.sh
+```
+
+**Kernel Distribution (pkg/kernel):**
+- Version: `6.1.137` (constant in `pkg/kernel/kernel.go`)
+- Registry: `ghcr.io/jingkaihe/matchlock/kernel:{version}`
+- Multi-platform manifest with x86_64 and arm64 variants
+- Pulled using go-containerregistry with platform selection
 
 Required kernel options for Firecracker v1.8+:
 - `CONFIG_ACPI=y` and `CONFIG_PCI=y` - Required for virtio device initialization
@@ -311,13 +347,10 @@ codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
 ### Kernel & Rootfs
 
 The macOS backend requires:
-1. **ARM64 Linux kernel** (`~/.cache/matchlock/kernel-arm64`) - Built with virtio drivers as built-in (not modules)
+1. **ARM64 Linux kernel** - Automatically downloaded from GHCR on first run
 2. **ext4 rootfs** - Either built from container image (`--image` option) or custom rootfs
 
-```bash
-# Build ARM64 kernel (cross-compile on Linux or use pre-built)
-./scripts/build-kernel.sh  # Outputs to ~/.cache/matchlock/kernel-arm64
-```
+Kernels are auto-downloaded to `~/.cache/matchlock/kernels/{version}/kernel-arm64`.
 
 **Option A: Use container images (recommended)**
 

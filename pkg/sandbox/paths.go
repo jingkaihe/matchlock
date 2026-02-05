@@ -1,42 +1,40 @@
 package sandbox
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
+
+	"github.com/jingkaihe/matchlock/pkg/kernel"
 )
 
-// DefaultKernelPath returns the default path to the kernel image.
+// DefaultKernelPath returns the path to the kernel image, downloading if needed.
+// It checks in order: MATCHLOCK_KERNEL env, legacy paths, then downloads from OCI.
 func DefaultKernelPath() string {
-	home, _ := os.UserHomeDir()
-	sudoHome := ""
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
-		sudoHome = filepath.Join("/home", sudoUser)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	// On darwin/arm64, prefer kernel-arm64
-	kernelName := "kernel"
-	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-		kernelName = "kernel-arm64"
+	path, err := kernel.ResolveKernelPath(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to resolve kernel path: %v\n", err)
+		home, _ := os.UserHomeDir()
+		arch := kernel.CurrentArch()
+		return filepath.Join(home, ".cache/matchlock", arch.KernelFilename())
 	}
+	return path
+}
 
-	paths := []string{
-		os.Getenv("MATCHLOCK_KERNEL"),
-		filepath.Join(home, ".cache/matchlock", kernelName),
-		filepath.Join(home, ".cache/matchlock/kernel"), // fallback
-	}
-	if sudoHome != "" {
-		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock", kernelName))
-	}
+// DefaultKernelPathWithVersion returns the path to a specific kernel version.
+func DefaultKernelPathWithVersion(version string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
-	for _, p := range paths {
-		if p != "" {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-	}
-	return filepath.Join(home, ".cache/matchlock", kernelName)
+	mgr := kernel.NewManager()
+	arch := kernel.CurrentArch()
+	return mgr.EnsureKernel(ctx, arch, version)
 }
 
 // DefaultInitramfsPath returns the default path to the initramfs image (optional, mainly for macOS).
@@ -62,7 +60,6 @@ func DefaultInitramfsPath() string {
 			}
 		}
 	}
-	// Return empty if not found - initramfs is optional
 	return ""
 }
 
@@ -114,7 +111,6 @@ func findGuestBinary(name, envVar string) string {
 		sudoHome = filepath.Join("/home", sudoUser)
 	}
 
-	// Get executable directory for relative paths
 	execPath, _ := os.Executable()
 	execDir := filepath.Dir(execPath)
 
@@ -135,4 +131,17 @@ func findGuestBinary(name, envVar string) string {
 		}
 	}
 	return filepath.Join(execDir, name)
+}
+
+// KernelVersion returns the current kernel version.
+func KernelVersion() string {
+	return kernel.Version
+}
+
+// KernelArch returns the current kernel architecture.
+func KernelArch() string {
+	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		return "arm64"
+	}
+	return "x86_64"
 }

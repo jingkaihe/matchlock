@@ -1,0 +1,132 @@
+name: Build and Publish Kernels
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Linux kernel version to build'
+        required: true
+        default: '6.1.137'
+      tag_latest:
+        description: 'Tag as latest'
+        type: boolean
+        default: false
+  push:
+    paths:
+      - 'scripts/build-kernel.sh'
+      - 'pkg/kernel/kernel.go'
+      - '.github/workflows/kernel.yml'
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/kernel
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set kernel version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.kernel_version }}" >> $GITHUB_OUTPUT
+          else
+            # Read default version from kernel.go
+            VERSION=$(grep 'Version = ' pkg/kernel/kernel.go | head -1 | cut -d'"' -f2)
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build kernel
+        run: |
+          KERNEL_VERSION=${{ steps.version.outputs.version }} \
+          ARCH=${{ matrix.arch }} \
+          OUTPUT_DIR=${{ runner.temp }}/kernels/${{ steps.version.outputs.version }} \
+          ./scripts/build-kernel.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/kernels/${{ steps.version.outputs.version }}/kernel*
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set kernel version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.kernel_version }}" >> $GITHUB_OUTPUT
+          else
+            VERSION=$(grep 'Version = ' pkg/kernel/kernel.go | head -1 | cut -d'"' -f2)
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-x86_64-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/kernels/${{ steps.version.outputs.version }}
+
+      - name: Download arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-arm64-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/kernels/${{ steps.version.outputs.version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@latest
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Publish kernels
+        run: |
+          KERNEL_VERSION=${{ steps.version.outputs.version }} \
+          REGISTRY=${{ env.REGISTRY }}/${{ github.repository }} \
+          INPUT_DIR=${{ runner.temp }}/kernels/${{ steps.version.outputs.version }} \
+          TAG_LATEST=${{ github.event.inputs.tag_latest || 'false' }} \
+          ./scripts/publish-kernel.sh
+
+      - name: Summary
+        run: |
+          echo "### Kernel Published! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** ${{ env.REGISTRY }}/${{ github.repository }}/kernel" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Pull with:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "# x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "crane pull ${{ env.REGISTRY }}/${{ github.repository }}/kernel:${{ steps.version.outputs.version }} --platform linux/amd64 kernel.tar" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "# arm64" >> $GITHUB_STEP_SUMMARY
+          echo "crane pull ${{ env.REGISTRY }}/${{ github.repository }}/kernel:${{ steps.version.outputs.version }} --platform linux/arm64 kernel-arm64.tar" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
