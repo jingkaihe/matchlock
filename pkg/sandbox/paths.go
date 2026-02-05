@@ -31,6 +31,33 @@ func DefaultKernelPath() string {
 	return filepath.Join(home, ".cache/matchlock/kernel")
 }
 
+// DefaultInitramfsPath returns the default path to the initramfs image (optional, mainly for macOS).
+func DefaultInitramfsPath() string {
+	home, _ := os.UserHomeDir()
+	sudoHome := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
+		sudoHome = filepath.Join("/home", sudoUser)
+	}
+
+	paths := []string{
+		os.Getenv("MATCHLOCK_INITRAMFS"),
+		filepath.Join(home, ".cache/matchlock/initramfs"),
+	}
+	if sudoHome != "" {
+		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock/initramfs"))
+	}
+
+	for _, p := range paths {
+		if p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	// Return empty if not found - initramfs is optional
+	return ""
+}
+
 // DefaultRootfsPath returns the default path to the rootfs image for the given variant.
 func DefaultRootfsPath(image string) string {
 	if image == "" {

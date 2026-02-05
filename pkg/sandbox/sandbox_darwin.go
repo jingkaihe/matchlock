@@ -36,8 +36,9 @@ type Sandbox struct {
 }
 
 type Options struct {
-	KernelPath string
-	RootfsPath string
+	KernelPath    string
+	InitramfsPath string
+	RootfsPath    string
 }
 
 func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
@@ -66,15 +67,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if kernelPath == "" {
 		kernelPath = DefaultKernelPath()
 	}
+	initramfsPath := opts.InitramfsPath
+	if initramfsPath == "" {
+		initramfsPath = DefaultInitramfsPath()
+	}
 	rootfsPath := opts.RootfsPath
 	if rootfsPath == "" {
 		rootfsPath = DefaultRootfsPath(config.Image)
 	}
 
 	vmConfig := &vm.VMConfig{
-		ID:         id,
-		KernelPath: kernelPath,
-		RootfsPath: rootfsPath,
+		ID:            id,
+		KernelPath:    kernelPath,
+		InitramfsPath: initramfsPath,
+		RootfsPath:    rootfsPath,
 		CPUs:       config.Resources.CPUs,
 		MemoryMB:   config.Resources.MemoryMB,
 		SocketPath: stateMgr.SocketPath(id) + ".sock",
