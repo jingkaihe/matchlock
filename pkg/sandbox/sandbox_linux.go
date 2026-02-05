@@ -6,6 +6,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vm/linux"
+	"golang.org/x/sys/unix"
 )
 
 // FirewallRules is an interface for managing firewall rules.
@@ -70,10 +72,18 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to register VM state: %w", err)
 	}
 
+	// Create a copy of the rootfs for this VM (copy-on-write if supported)
+	vmRootfsPath := stateMgr.Dir(id) + "/rootfs.ext4"
+	if err := copyRootfs(opts.RootfsPath, vmRootfsPath); err != nil {
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+	}
+
 	// Allocate unique subnet for this VM
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)
 	if err != nil {
+		os.Remove(vmRootfsPath)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to allocate subnet: %w", err)
 	}
@@ -84,12 +94,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if kernelPath == "" {
 		kernelPath = DefaultKernelPath()
 	}
-	rootfsPath := opts.RootfsPath
 
 	vmConfig := &vm.VMConfig{
 		ID:         id,
 		KernelPath: kernelPath,
-		RootfsPath: rootfsPath,
+		RootfsPath: vmRootfsPath,
 		CPUs:       config.Resources.CPUs,
 		MemoryMB:   config.Resources.MemoryMB,
 		SocketPath: stateMgr.SocketPath(id) + ".sock",
@@ -393,6 +402,10 @@ func (s *Sandbox) Close() error {
 		errs = append(errs, fmt.Errorf("machine close: %w", err))
 	}
 
+	// Remove rootfs copy to save disk space
+	rootfsCopy := s.stateMgr.Dir(s.id) + "/rootfs.ext4"
+	os.Remove(rootfsCopy)
+
 	if len(errs) > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
 	}
@@ -426,4 +439,34 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 	default:
 		return vfs.NewMemoryProvider()
 	}
+}
+
+func copyRootfs(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("create dest: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Try copy-on-write clone first (FICLONE ioctl)
+	// Works on btrfs, xfs (with reflink), bcachefs, etc.
+	err = unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
+	if err == nil {
+		return nil
+	}
+
+	// Fall back to regular copy
+	fmt.Fprintf(os.Stderr, "Note: copy-on-write not supported (%v), using regular copy\n", err)
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("copy: %w", err)
+	}
+
+	return nil
 }

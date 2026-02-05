@@ -67,7 +67,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		targetHost := fmt.Sprintf("%s:%d", host, dstPort)
 
-		realConn, err := net.DialTimeout("tcp", targetHost, 10*time.Second)
+		realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
 		if err != nil {
 			writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 			return
@@ -86,6 +86,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
+			resp.Body.Close()
 			realConn.Close()
 			return
 		}
@@ -93,11 +94,13 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		duration := time.Since(start)
 		i.emitEvent(modifiedReq, modifiedResp, host, duration)
 
-		if err := modifiedResp.Write(guestConn); err != nil {
+		if err := writeResponse(guestConn, modifiedResp); err != nil {
+			resp.Body.Close()
 			realConn.Close()
 			return
 		}
 
+		resp.Body.Close()
 		realConn.Close()
 
 		if modifiedReq.Close || modifiedResp.Close {
@@ -168,15 +171,19 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
 		if err != nil {
+			resp.Body.Close()
 			return
 		}
 
 		duration := time.Since(start)
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
-		if err := modifiedResp.Write(tlsConn); err != nil {
+		if err := writeResponse(tlsConn, modifiedResp); err != nil {
+			resp.Body.Close()
 			return
 		}
+
+		resp.Body.Close()
 
 		if modifiedReq.Close || modifiedResp.Close {
 			return
@@ -251,4 +258,12 @@ func writeHTTPError(conn net.Conn, status int, message string) {
 	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		status, http.StatusText(status), len(message), message)
 	io.WriteString(conn, resp)
+}
+
+func writeResponse(conn net.Conn, resp *http.Response) error {
+	bw := bufio.NewWriterSize(conn, 64*1024)
+	if err := resp.Write(bw); err != nil {
+		return err
+	}
+	return bw.Flush()
 }
