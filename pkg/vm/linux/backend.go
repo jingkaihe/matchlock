@@ -335,7 +335,16 @@ func (m *LinuxMachine) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	// Check if process already exited
+	if m.cmd.ProcessState != nil && m.cmd.ProcessState.Exited() {
+		return nil
+	}
+
 	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		// Process already finished is not an error
+		if err.Error() == "os: process already finished" {
+			return nil
+		}
 		return m.cmd.Process.Kill()
 	}
 

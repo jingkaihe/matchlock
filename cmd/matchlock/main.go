@@ -674,19 +674,36 @@ func (v *sandboxVM) Exec(ctx context.Context, command string, opts *api.ExecOpti
 }
 
 func (v *sandboxVM) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
-	mp, ok := v.getMemoryProvider(path)
-	if ok {
-		return mp.WriteFile(path, content, os.FileMode(mode))
+	if mode == 0 {
+		mode = 0644
 	}
-	return fmt.Errorf("cannot write to path: %s", path)
+	h, err := v.vfsRoot.Create(path, os.FileMode(mode))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	_, err = h.Write(content)
+	return err
 }
 
 func (v *sandboxVM) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	mp, ok := v.getMemoryProvider(path)
-	if ok {
-		return mp.ReadFile(path)
+	h, err := v.vfsRoot.Open(path, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("cannot read from path: %s", path)
+	defer h.Close()
+	
+	info, err := v.vfsRoot.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	
+	content := make([]byte, info.Size())
+	_, err = h.Read(content)
+	if err != nil {
+		return nil, err
+	}
+	return content, nil
 }
 
 func (v *sandboxVM) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
@@ -745,15 +762,6 @@ func (v *sandboxVM) Close() error {
 		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
 	}
 	return nil
-}
-
-func (v *sandboxVM) getMemoryProvider(path string) (*vfs.MemoryProvider, bool) {
-	for _, m := range []string{"/workspace", "/data", "/output"} {
-		if len(path) >= len(m) && path[:len(m)] == m {
-			return vfs.NewMemoryProvider(), true
-		}
-	}
-	return nil, false
 }
 
 func createProvider(mount api.MountConfig) vfs.Provider {
