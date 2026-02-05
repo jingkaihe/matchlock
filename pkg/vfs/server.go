@@ -83,11 +83,12 @@ func (s *VFSServer) Serve(listener net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go s.handleConnection(conn)
+		go s.HandleConnection(conn)
 	}
 }
 
-func (s *VFSServer) handleConnection(conn net.Conn) {
+// HandleConnection handles a single VFS connection. Exported for use by platform-specific backends.
+func (s *VFSServer) HandleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	for {

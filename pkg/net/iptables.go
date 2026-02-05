@@ -1,3 +1,5 @@
+//go:build linux
+
 package net
 
 import (
@@ -53,7 +55,7 @@ func (r *IPTablesRules) Cleanup() error {
 	for _, rule := range r.rules {
 		deleteRule := make([]string, len(rule))
 		copy(deleteRule, rule)
-		
+
 		// Find and replace -A or -I with -D
 		for i, arg := range deleteRule {
 			if arg == "-A" || arg == "-I" {

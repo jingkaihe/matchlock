@@ -5,7 +5,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 ## Tech Stack
 
 - **Language**: Go 1.25
-- **VM Backend**: Firecracker micro-VMs (Linux)
+- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
 - **Network**: gVisor tcpip userspace TCP/IP stack with HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
@@ -107,11 +107,19 @@ matchlock --rpc
 
 ## Key Components
 
-### VM Backend (`pkg/vm/linux`)
+### VM Backend
+
+**Linux (`pkg/vm/linux`):**
 - Creates TAP devices for network virtualization
 - Generates Firecracker configuration with vsock
 - Manages VM lifecycle (start, stop, exec)
 - Vsock-based command execution and ready signaling
+
+**macOS (`pkg/vm/darwin`):**
+- Uses Apple Virtualization.framework via code-hex/vz
+- Unix socket pairs for network I/O (passed to gVisor stack)
+- Native virtio-vsock for host-guest communication
+- Same guest agent protocol as Linux (full feature parity)
 
 ### Guest Agent (`cmd/guest-agent`)
 - Runs inside VM to handle exec requests

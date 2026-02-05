@@ -93,14 +93,14 @@ type realHandle struct {
 	file *os.File
 }
 
-func (h *realHandle) Read(p []byte) (int, error)           { return h.file.Read(p) }
-func (h *realHandle) ReadAt(p []byte, off int64) (int, error) { return h.file.ReadAt(p, off) }
-func (h *realHandle) Write(p []byte) (int, error)          { return h.file.Write(p) }
-func (h *realHandle) WriteAt(p []byte, off int64) (int, error) { return h.file.WriteAt(p, off) }
+func (h *realHandle) Read(p []byte) (int, error)                { return h.file.Read(p) }
+func (h *realHandle) ReadAt(p []byte, off int64) (int, error)   { return h.file.ReadAt(p, off) }
+func (h *realHandle) Write(p []byte) (int, error)               { return h.file.Write(p) }
+func (h *realHandle) WriteAt(p []byte, off int64) (int, error)  { return h.file.WriteAt(p, off) }
 func (h *realHandle) Seek(off int64, whence int) (int64, error) { return h.file.Seek(off, whence) }
-func (h *realHandle) Close() error                         { return h.file.Close() }
-func (h *realHandle) Sync() error                          { return h.file.Sync() }
-func (h *realHandle) Truncate(size int64) error            { return h.file.Truncate(size) }
+func (h *realHandle) Close() error                              { return h.file.Close() }
+func (h *realHandle) Sync() error                               { return h.file.Sync() }
+func (h *realHandle) Truncate(size int64) error                 { return h.file.Truncate(size) }
 
 func (h *realHandle) Stat() (FileInfo, error) {
 	info, err := h.file.Stat()

@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package sandbox provides the core sandbox VM management functionality.
 package sandbox
 

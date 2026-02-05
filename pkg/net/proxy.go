@@ -1,3 +1,5 @@
+//go:build linux
+
 package net
 
 import (
@@ -27,17 +29,17 @@ type TransparentProxy struct {
 	httpsPort int
 	bindAddr  string
 
-	mu       sync.Mutex
-	closed   bool
-	wg       sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
+	wg     sync.WaitGroup
 }
 
 type ProxyConfig struct {
-	BindAddr   string // Address to bind (e.g., "192.168.100.1")
-	HTTPPort   int    // Port for HTTP interception (e.g., 8080)
-	HTTPSPort  int    // Port for HTTPS interception (e.g., 8443)
-	Policy     *policy.Engine
-	Events     chan api.Event
+	BindAddr  string // Address to bind (e.g., "192.168.100.1")
+	HTTPPort  int    // Port for HTTP interception (e.g., 8080)
+	HTTPSPort int    // Port for HTTPS interception (e.g., 8443)
+	Policy    *policy.Engine
+	Events    chan api.Event
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -148,10 +150,10 @@ func (tp *TransparentProxy) Close() error {
 	return nil
 }
 
-func (tp *TransparentProxy) HTTPPort() int     { return tp.httpPort }
-func (tp *TransparentProxy) HTTPSPort() int    { return tp.httpsPort }
-func (tp *TransparentProxy) BindAddr() string  { return tp.bindAddr }
-func (tp *TransparentProxy) CAPool() *CAPool   { return tp.interceptor.CAPool() }
+func (tp *TransparentProxy) HTTPPort() int    { return tp.httpPort }
+func (tp *TransparentProxy) HTTPSPort() int   { return tp.httpsPort }
+func (tp *TransparentProxy) BindAddr() string { return tp.bindAddr }
+func (tp *TransparentProxy) CAPool() *CAPool  { return tp.interceptor.CAPool() }
 
 type originalDst struct {
 	IP   net.IP

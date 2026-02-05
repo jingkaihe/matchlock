@@ -26,9 +26,9 @@ func (i *CAInjector) GetEnvVars() map[string]string {
 	certPath := "/etc/ssl/certs/sandbox-ca.crt"
 
 	return map[string]string{
-		"SSL_CERT_FILE":      certPath,
-		"REQUESTS_CA_BUNDLE": certPath,
-		"CURL_CA_BUNDLE":     certPath,
+		"SSL_CERT_FILE":       certPath,
+		"REQUESTS_CA_BUNDLE":  certPath,
+		"CURL_CA_BUNDLE":      certPath,
 		"NODE_EXTRA_CA_CERTS": certPath,
 	}
 }

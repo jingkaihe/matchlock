@@ -15,10 +15,10 @@ import (
 )
 
 type CAPool struct {
-	caCert     *x509.Certificate
-	caKey      *rsa.PrivateKey
-	certCache  sync.Map
-	cacheDir   string
+	caCert    *x509.Certificate
+	caKey     *rsa.PrivateKey
+	certCache sync.Map
+	cacheDir  string
 }
 
 func NewCAPool() (*CAPool, error) {

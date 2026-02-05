@@ -23,11 +23,11 @@ type ExecResult struct {
 }
 
 type FileInfo struct {
-	Name    string      `json:"name"`
-	Size    int64       `json:"size"`
-	Mode    uint32      `json:"mode"`
-	ModTime time.Time   `json:"mod_time"`
-	IsDir   bool        `json:"is_dir"`
+	Name    string    `json:"name"`
+	Size    int64     `json:"size"`
+	Mode    uint32    `json:"mode"`
+	ModTime time.Time `json:"mod_time"`
+	IsDir   bool      `json:"is_dir"`
 }
 
 type VM interface {

@@ -1,18 +1,21 @@
+//go:build darwin
+
 package net
 
 import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 
+	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
-	"gvisor.dev/gvisor/pkg/tcpip/link/fdbased"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -26,7 +29,7 @@ type NetworkStack struct {
 	policy      *policy.Engine
 	interceptor *HTTPInterceptor
 	events      chan api.Event
-	linkEP      stack.LinkEndpoint
+	linkEP      *socketPairEndpoint
 	mu          sync.Mutex
 	closed      bool
 }
@@ -40,20 +43,167 @@ type Config struct {
 	Events    chan api.Event
 }
 
+type socketPairEndpoint struct {
+	fd         int
+	file       *os.File
+	mtu        uint32
+	linkAddr   tcpip.LinkAddress
+	dispatcher stack.NetworkDispatcher
+	wg         sync.WaitGroup
+	stopCh     chan struct{}
+	mu         sync.Mutex
+	closed     bool
+}
+
+func newSocketPairEndpoint(fd int, mtu uint32) *socketPairEndpoint {
+	return &socketPairEndpoint{
+		fd:       fd,
+		file:     os.NewFile(uintptr(fd), "socket-pair"),
+		mtu:      mtu,
+		linkAddr: tcpip.LinkAddress([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}),
+		stopCh:   make(chan struct{}),
+	}
+}
+
+func (e *socketPairEndpoint) MTU() uint32 {
+	return e.mtu
+}
+
+func (e *socketPairEndpoint) MaxHeaderLength() uint16 {
+	return header.EthernetMinimumSize
+}
+
+func (e *socketPairEndpoint) LinkAddress() tcpip.LinkAddress {
+	return e.linkAddr
+}
+
+func (e *socketPairEndpoint) Capabilities() stack.LinkEndpointCapabilities {
+	return stack.CapabilityResolutionRequired
+}
+
+func (e *socketPairEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+	e.dispatcher = dispatcher
+	if dispatcher != nil {
+		e.wg.Add(1)
+		go e.readLoop()
+	}
+}
+
+func (e *socketPairEndpoint) IsAttached() bool {
+	return e.dispatcher != nil
+}
+
+func (e *socketPairEndpoint) Wait() {
+	e.wg.Wait()
+}
+
+func (e *socketPairEndpoint) ARPHardwareType() header.ARPHardwareType {
+	return header.ARPHardwareEther
+}
+
+func (e *socketPairEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
+	e.linkAddr = addr
+}
+
+func (e *socketPairEndpoint) SetMTU(mtu uint32) {
+	e.mtu = mtu
+}
+
+func (e *socketPairEndpoint) SetOnCloseAction(f func()) {
+	// No-op: cleanup is handled in Close()
+}
+
+func (e *socketPairEndpoint) AddHeader(pkt *stack.PacketBuffer) {
+	eth := header.Ethernet(pkt.LinkHeader().Push(header.EthernetMinimumSize))
+	eth.Encode(&header.EthernetFields{
+		SrcAddr: e.linkAddr,
+		DstAddr: pkt.EgressRoute.RemoteLinkAddress,
+		Type:    pkt.NetworkProtocolNumber,
+	})
+}
+
+func (e *socketPairEndpoint) ParseHeader(pkt *stack.PacketBuffer) bool {
+	_, ok := pkt.LinkHeader().Consume(header.EthernetMinimumSize)
+	return ok
+}
+
+func (e *socketPairEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
+	n := 0
+	for _, pkt := range pkts.AsSlice() {
+		data := pkt.ToBuffer()
+		bytes := data.Flatten()
+		if _, err := e.file.Write(bytes); err != nil {
+			return n, &tcpip.ErrAborted{}
+		}
+		n++
+	}
+	return n, nil
+}
+
+func (e *socketPairEndpoint) readLoop() {
+	defer e.wg.Done()
+
+	buf := make([]byte, e.mtu+header.EthernetMinimumSize)
+	for {
+		select {
+		case <-e.stopCh:
+			return
+		default:
+		}
+
+		n, err := e.file.Read(buf)
+		if err != nil {
+			e.mu.Lock()
+			closed := e.closed
+			e.mu.Unlock()
+			if closed {
+				return
+			}
+			continue
+		}
+
+		if n < header.EthernetMinimumSize {
+			continue
+		}
+
+		eth := header.Ethernet(buf[:n])
+		proto := eth.Type()
+
+		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+			Payload: buffer.MakeWithData(buf[:n]),
+		})
+
+		if !e.ParseHeader(pkt) {
+			pkt.DecRef()
+			continue
+		}
+
+		e.dispatcher.DeliverNetworkPacket(proto, pkt)
+		pkt.DecRef()
+	}
+}
+
+func (e *socketPairEndpoint) Close() {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.closed = true
+	e.mu.Unlock()
+
+	close(e.stopCh)
+	e.file.Close()
+	e.wg.Wait()
+}
+
 func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 	s := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 
-	linkEP, err := fdbased.New(&fdbased.Options{
-		FDs:            []int{cfg.FD},
-		MTU:            cfg.MTU,
-		EthernetHeader: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create link endpoint: %w", err)
-	}
+	linkEP := newSocketPairEndpoint(cfg.FD, cfg.MTU)
 
 	if tcpipErr := s.CreateNIC(1, linkEP); tcpipErr != nil {
 		return nil, fmt.Errorf("failed to create NIC: %v", tcpipErr)
@@ -246,6 +396,7 @@ func (ns *NetworkStack) Close() error {
 	}
 	ns.closed = true
 
+	ns.linkEP.Close()
 	ns.stack.Close()
 	return nil
 }

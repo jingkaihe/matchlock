@@ -2,27 +2,28 @@ package vm
 
 import (
 	"context"
+	"io"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
 type VMConfig struct {
-	ID           string
-	KernelPath   string
-	RootfsPath   string
-	CPUs         int
-	MemoryMB     int
-	NetworkFD    int
-	VsockCID     uint32
-	VsockPath    string
-	SocketPath   string
-	LogPath      string
-	KernelArgs   string
-	Env          map[string]string
-	GatewayIP    string // Host TAP IP (e.g., 192.168.100.1)
-	GuestIP      string // Guest IP (e.g., 192.168.100.2)
-	SubnetCIDR   string // CIDR notation (e.g., 192.168.100.1/24)
-	Workspace    string // Guest VFS mount point (default: /workspace)
+	ID         string
+	KernelPath string
+	RootfsPath string
+	CPUs       int
+	MemoryMB   int
+	NetworkFD  int
+	VsockCID   uint32
+	VsockPath  string
+	SocketPath string
+	LogPath    string
+	KernelArgs string
+	Env        map[string]string
+	GatewayIP  string // Host TAP IP (e.g., 192.168.100.1)
+	GuestIP    string // Guest IP (e.g., 192.168.100.2)
+	SubnetCIDR string // CIDR notation (e.g., 192.168.100.1/24)
+	Workspace  string // Guest VFS mount point (default: /workspace)
 }
 
 type Backend interface {
@@ -39,4 +40,9 @@ type Machine interface {
 	VsockFD() (int, error)
 	PID() int
 	Close() error
+}
+
+type InteractiveMachine interface {
+	Machine
+	ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
 }

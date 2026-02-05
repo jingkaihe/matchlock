@@ -291,7 +291,7 @@ func handleExecTTY(fd int, data []byte) {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 	sendExitCode(fd, exitCode)
-	
+
 	// Small delay to ensure exit code is transmitted before closing
 	time.Sleep(100 * time.Millisecond)
 	syscall.Close(fd)

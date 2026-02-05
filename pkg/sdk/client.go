@@ -158,7 +158,7 @@ type Secret struct {
 
 // MountConfig defines a VFS mount
 type MountConfig struct {
-	Type     string `json:"type"`               // memory, real_fs, overlay
+	Type     string `json:"type"` // memory, real_fs, overlay
 	HostPath string `json:"host_path,omitempty"`
 	Readonly bool   `json:"readonly,omitempty"`
 }

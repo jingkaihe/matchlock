@@ -19,7 +19,7 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/rpc"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
-	"github.com/jingkaihe/matchlock/pkg/vm/linux"
+	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
 func main() {
@@ -353,9 +353,9 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) in
 	defer signal.Stop(winchCh)
 	defer close(resizeCh)
 
-	linuxMachine, ok := sb.Machine().(*linux.LinuxMachine)
+	interactiveMachine, ok := sb.Machine().(vm.InteractiveMachine)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "Error: interactive mode requires Linux backend")
+		fmt.Fprintln(os.Stderr, "Error: interactive mode not supported on this backend")
 		return 1
 	}
 
@@ -373,7 +373,7 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) in
 		}
 	}
 
-	exitCode, err := linuxMachine.ExecInteractive(ctx, command, opts, uint16(rows), uint16(cols), os.Stdin, os.Stdout, resizeCh)
+	exitCode, err := interactiveMachine.ExecInteractive(ctx, command, opts, uint16(rows), uint16(cols), os.Stdin, os.Stdout, resizeCh)
 	if err != nil {
 		term.Restore(int(os.Stdin.Fd()), oldState)
 		fmt.Fprintf(os.Stderr, "\nError: %v\n", err)
