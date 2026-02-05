@@ -233,14 +233,22 @@ NODE_EXTRA_CA_CERTS=/etc/ssl/certs/sandbox-ca.crt
 ### Kernel
 
 The kernel build uses Docker with Ubuntu 22.04 (GCC 11) for compatibility with older kernel sources.
+Supports both x86_64 (for Linux/Firecracker) and arm64 (for macOS/Apple Silicon).
 
 ```bash
-# Build kernel 6.1.137 (default)
+# Build kernel 6.1.137 for x86_64 (default)
 OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
+
+# Build kernel for arm64 (macOS/Apple Silicon)
+ARCH=arm64 OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
 
 # Custom version
 KERNEL_VERSION=6.1.140 OUTPUT_DIR=~/.cache/matchlock ./scripts/build-kernel.sh
 ```
+
+Output files:
+- x86_64: `$OUTPUT_DIR/kernel` (vmlinux ELF)
+- arm64: `$OUTPUT_DIR/kernel-arm64` (Image binary)
 
 Required kernel options for Firecracker v1.8+:
 - `CONFIG_ACPI=y` and `CONFIG_PCI=y` - Required for virtio device initialization
