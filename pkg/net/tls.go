@@ -87,7 +87,7 @@ func (p *CAPool) generateCA() error {
 			Organization: []string{"Sandbox MITM CA"},
 			CommonName:   "Sandbox MITM CA",
 		},
-		NotBefore:             time.Now(),
+		NotBefore:             time.Now().Add(-5 * time.Minute), // Allow for clock skew
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
@@ -148,7 +148,7 @@ func (p *CAPool) generateCertificate(serverName string) (*tls.Certificate, error
 			CommonName: serverName,
 		},
 		DNSNames:    []string{serverName},
-		NotBefore:   time.Now(),
+		NotBefore:   time.Now().Add(-5 * time.Minute), // Allow for clock skew
 		NotAfter:    time.Now().AddDate(1, 0, 0),
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
