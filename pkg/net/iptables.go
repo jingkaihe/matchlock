@@ -53,14 +53,18 @@ func (r *IPTablesRules) Cleanup() error {
 	for _, rule := range r.rules {
 		deleteRule := make([]string, len(rule))
 		copy(deleteRule, rule)
+		
+		// Find and replace -A or -I with -D
 		for i, arg := range deleteRule {
 			if arg == "-A" || arg == "-I" {
 				deleteRule[i] = "-D"
-				// Remove position argument for -I rules
-				if arg == "-I" && i+1 < len(deleteRule) {
-					// Check if next arg is a number
-					if _, err := fmt.Sscanf(deleteRule[i+1], "%d", new(int)); err == nil {
-						deleteRule = append(deleteRule[:i+1], deleteRule[i+2:]...)
+				// For -I rules with position number, remove the position
+				if arg == "-I" && i+2 < len(deleteRule) {
+					// Check if position 2 (after chain name) is a number
+					nextIdx := i + 2
+					if _, err := fmt.Sscanf(deleteRule[nextIdx], "%d", new(int)); err == nil {
+						// Remove the position number
+						deleteRule = append(deleteRule[:nextIdx], deleteRule[nextIdx+1:]...)
 					}
 				}
 				break
@@ -103,6 +107,13 @@ func SetupNATMasquerade(guestSubnet string) error {
 	defaultIface := getDefaultInterface()
 	if defaultIface == "" {
 		return fmt.Errorf("could not detect default network interface")
+	}
+
+	// Check if rule already exists
+	checkCmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", guestSubnet, "-o", defaultIface, "-j", "MASQUERADE")
+	if checkCmd.Run() == nil {
+		// Rule already exists
+		return nil
 	}
 
 	// Add MASQUERADE rule for guest traffic

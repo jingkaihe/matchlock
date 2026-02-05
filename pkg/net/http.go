@@ -30,6 +30,10 @@ func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event) *HTTPIntercep
 	}
 }
 
+func (i *HTTPInterceptor) CAPool() *CAPool {
+	return i.caPool
+}
+
 func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {
 	defer guestConn.Close()
 

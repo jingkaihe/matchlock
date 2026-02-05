@@ -354,8 +354,9 @@ func NewFUSEServer(mountpoint string, client *VFSClient) (*FUSEServer, error) {
 		nextIno: 2,
 	}
 
-	fs.inodes.Store(uint64(FUSE_ROOT_ID), "/")
-	fs.pathIno.Store("/", uint64(FUSE_ROOT_ID))
+	// Root inode maps to /workspace to match the host VFS mount point
+	fs.inodes.Store(uint64(FUSE_ROOT_ID), "/workspace")
+	fs.pathIno.Store("/workspace", uint64(FUSE_ROOT_ID))
 
 	return fs, nil
 }
@@ -364,7 +365,7 @@ func (fs *FUSEServer) getPath(ino uint64) string {
 	if p, ok := fs.inodes.Load(ino); ok {
 		return p.(string)
 	}
-	return "/"
+	return "/workspace"
 }
 
 func (fs *FUSEServer) getOrCreateInode(path string) uint64 {
@@ -416,8 +417,10 @@ func (fs *FUSEServer) handleRequest(hdr *fuseInHeader, data []byte) {
 		fs.handleGetattr(hdr)
 	case FUSE_LOOKUP:
 		fs.handleLookup(hdr, data)
-	case FUSE_OPEN, FUSE_OPENDIR:
+	case FUSE_OPEN:
 		fs.handleOpen(hdr, data)
+	case FUSE_OPENDIR:
+		fs.handleOpendir(hdr)
 	case FUSE_READ:
 		fs.handleRead(hdr, data)
 	case FUSE_READDIR:
@@ -525,6 +528,11 @@ func (fs *FUSEServer) handleOpen(hdr *fuseInHeader, data []byte) {
 	}
 
 	out := fuseOpenOut{Fh: resp.Handle}
+	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+}
+
+func (fs *FUSEServer) handleOpendir(hdr *fuseInHeader) {
+	out := fuseOpenOut{Fh: hdr.Nodeid}
 	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
 }
 

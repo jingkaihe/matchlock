@@ -131,21 +131,25 @@ func cmdRun(args []string) {
 		fmt.Fprintf(os.Stderr, "Error creating VM: %v\n", err)
 		os.Exit(1)
 	}
-	defer vm.Close()
 
 	if err := vm.Start(ctx); err != nil {
+		vm.Close()
 		fmt.Fprintf(os.Stderr, "Error starting VM: %v\n", err)
 		os.Exit(1)
 	}
 
 	result, err := vm.Exec(ctx, command, nil)
 	if err != nil {
+		vm.Close()
 		fmt.Fprintf(os.Stderr, "Error executing command: %v\n", err)
 		os.Exit(1)
 	}
 
 	os.Stdout.Write(result.Stdout)
 	os.Stderr.Write(result.Stderr)
+	
+	// Close VM before exit (os.Exit doesn't run deferred functions)
+	vm.Close()
 	os.Exit(result.ExitCode)
 }
 
@@ -313,6 +317,8 @@ type sandboxVM struct {
 	vfsStopFunc func()
 	events      chan api.Event
 	stateMgr    *state.Manager
+	tapName     string
+	caInjector  *sandboxnet.CAInjector
 }
 
 func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
@@ -426,6 +432,16 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		return nil, fmt.Errorf("failed to start VFS server: %w", err)
 	}
 
+	// Set up CA injector if proxy is enabled
+	var caInjector *sandboxnet.CAInjector
+	if proxy != nil {
+		caInjector = sandboxnet.NewCAInjector(proxy.CAPool())
+		// Write CA cert to workspace for guest access
+		if mp, ok := vfsProviders["/workspace"].(*vfs.MemoryProvider); ok {
+			mp.WriteFile("/.sandbox-ca.crt", caInjector.CACertPEM(), 0644)
+		}
+	}
+
 	return &sandboxVM{
 		id:          id,
 		config:      config,
@@ -438,6 +454,8 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		vfsStopFunc: vfsStopFunc,
 		events:      events,
 		stateMgr:    stateMgr,
+		tapName:     linuxMachine.TapName(),
+		caInjector:  caInjector,
 	}, nil
 }
 
@@ -453,6 +471,21 @@ func (v *sandboxVM) Stop(ctx context.Context) error {
 }
 
 func (v *sandboxVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	// Inject CA certificate environment variables if proxy is enabled
+	if v.caInjector != nil {
+		if opts == nil {
+			opts = &api.ExecOptions{}
+		}
+		if opts.Env == nil {
+			opts.Env = make(map[string]string)
+		}
+		// Point to the CA cert in workspace
+		certPath := "/workspace/.sandbox-ca.crt"
+		opts.Env["SSL_CERT_FILE"] = certPath
+		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
+		opts.Env["CURL_CA_BUNDLE"] = certPath
+		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
+	}
 	return v.machine.Exec(ctx, command, opts)
 }
 
@@ -496,18 +529,33 @@ func (v *sandboxVM) Events() <-chan api.Event {
 }
 
 func (v *sandboxVM) Close() error {
+	var errs []error
+	
 	if v.vfsStopFunc != nil {
 		v.vfsStopFunc()
 	}
 	if v.iptRules != nil {
-		v.iptRules.Cleanup()
+		if err := v.iptRules.Cleanup(); err != nil {
+			errs = append(errs, fmt.Errorf("iptables cleanup: %w", err))
+		}
 	}
 	if v.proxy != nil {
 		v.proxy.Close()
 	}
+	
+	// Clean up NAT forwarding rules
+	cleanupNAT(v.tapName)
+	
 	close(v.events)
 	v.stateMgr.Unregister(v.id)
-	return v.machine.Close()
+	if err := v.machine.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("machine close: %w", err))
+	}
+	
+	if len(errs) > 0 {
+		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
+	}
+	return nil
 }
 
 func (v *sandboxVM) getMemoryProvider(path string) (*vfs.MemoryProvider, bool) {
@@ -550,9 +598,17 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 
 func getKernelPath() string {
 	home, _ := os.UserHomeDir()
+	// Also check SUDO_USER's home if running as root
+	sudoHome := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
+		sudoHome = filepath.Join("/home", sudoUser)
+	}
 	paths := []string{
 		os.Getenv("MATCHLOCK_KERNEL"),
 		filepath.Join(home, ".cache/matchlock/kernel"),
+	}
+	if sudoHome != "" {
+		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock/kernel"))
 	}
 	for _, p := range paths {
 		if p != "" {
@@ -569,9 +625,17 @@ func getRootfsPath(image string) string {
 		image = "standard"
 	}
 	home, _ := os.UserHomeDir()
+	// Also check SUDO_USER's home if running as root
+	sudoHome := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
+		sudoHome = filepath.Join("/home", sudoUser)
+	}
 	paths := []string{
 		os.Getenv("MATCHLOCK_ROOTFS"),
 		filepath.Join(home, ".cache/matchlock", fmt.Sprintf("rootfs-%s.ext4", image)),
+	}
+	if sudoHome != "" {
+		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock", fmt.Sprintf("rootfs-%s.ext4", image)))
 	}
 	for _, p := range paths {
 		if p != "" {
@@ -584,11 +648,11 @@ func getRootfsPath(image string) string {
 }
 
 // setupNAT configures iptables NAT rules for guest network access
+// If running without root and rules are already set up (via setup-permissions.sh),
+// this will fail silently which is okay.
 func setupNAT(machine *linux.LinuxMachine) error {
-	// Enable IP forwarding
-	if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644); err != nil {
-		return fmt.Errorf("failed to enable IP forwarding: %w", err)
-	}
+	// Enable IP forwarding (may fail without root, but might already be enabled)
+	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 
 	// Get the TAP interface name from the machine
 	tapName := machine.TapName()
@@ -596,14 +660,23 @@ func setupNAT(machine *linux.LinuxMachine) error {
 		return fmt.Errorf("no TAP interface configured")
 	}
 
-	// Add NAT masquerade rule for guest subnet
-	if err := sandboxnet.SetupNATMasquerade("192.168.100.0/24"); err != nil {
-		return fmt.Errorf("failed to setup NAT masquerade: %w", err)
-	}
+	// Try to add NAT masquerade rule - may fail without root privileges
+	// If setup-permissions.sh was run, the rule already exists
+	sandboxnet.SetupNATMasquerade("192.168.100.0/24")
 
-	// Insert forwarding rules at beginning of FORWARD chain (before DROP policies)
+	// Try to insert forwarding rules - these are now optional since
+	// setup-permissions.sh sets up subnet-based rules
 	exec.Command("iptables", "-I", "FORWARD", "1", "-i", tapName, "-j", "ACCEPT").Run()
 	exec.Command("iptables", "-I", "FORWARD", "2", "-o", tapName, "-j", "ACCEPT").Run()
 
 	return nil
+}
+
+// cleanupNAT removes iptables rules for the given TAP interface
+func cleanupNAT(tapName string) {
+	if tapName == "" {
+		return
+	}
+	exec.Command("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT").Run()
+	exec.Command("iptables", "-D", "FORWARD", "-o", tapName, "-j", "ACCEPT").Run()
 }

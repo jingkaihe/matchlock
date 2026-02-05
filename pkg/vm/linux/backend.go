@@ -492,18 +492,22 @@ func (m *LinuxMachine) Close() error {
 
 	if m.cmd != nil && m.cmd.Process != nil {
 		if err := m.Stop(context.Background()); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("stop: %w", err))
 		}
+		// Wait for process to fully exit
+		m.cmd.Wait()
 	}
 
 	if m.tapFD > 0 {
 		if err := syscall.Close(m.tapFD); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("close tap fd: %w", err))
 		}
 	}
 
 	if m.tapName != "" {
-		DeleteInterface(m.tapName)
+		if err := DeleteInterface(m.tapName); err != nil {
+			errs = append(errs, fmt.Errorf("delete interface %s: %w", m.tapName, err))
+		}
 	}
 
 	if len(errs) > 0 {

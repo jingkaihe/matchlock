@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	tunDevice = "/dev/net/tun"
-	ifnameLen = 16
+	tunDevice    = "/dev/net/tun"
+	ifnameLen    = 16
+	TUNSETPERSIST = 0x400454cb
 )
 
 type ifreq struct {
@@ -34,6 +35,14 @@ func CreateTAP(name string) (int, error) {
 	if errno != 0 {
 		syscall.Close(fd)
 		return 0, fmt.Errorf("TUNSETIFF failed: %w", errno)
+	}
+
+	// Make the TAP device persistent so it survives FD close
+	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
+		uintptr(TUNSETPERSIST), 1)
+	if errno != 0 {
+		syscall.Close(fd)
+		return 0, fmt.Errorf("TUNSETPERSIST failed: %w", errno)
 	}
 
 	return fd, nil
@@ -108,19 +117,28 @@ func ConfigureInterface(name, cidr string) error {
 }
 
 func DeleteInterface(name string) error {
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, 0)
+	// For persistent TAP devices, we need to open the device and clear TUNSETPERSIST
+	fd, err := syscall.Open(tunDevice, syscall.O_RDWR, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open %s: %w", tunDevice, err)
 	}
 	defer syscall.Close(fd)
 
 	var ifr ifreq
 	copy(ifr.name[:], name)
+	ifr.flags = syscall.IFF_TAP | syscall.IFF_NO_PI
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
-		uintptr(syscall.SIOCSIFFLAGS), uintptr(unsafe.Pointer(&ifr)))
+		uintptr(syscall.TUNSETIFF), uintptr(unsafe.Pointer(&ifr)))
 	if errno != 0 {
-		return errno
+		return fmt.Errorf("TUNSETIFF failed: %w", errno)
+	}
+
+	// Clear persistent flag to delete the device when FD is closed
+	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
+		uintptr(TUNSETPERSIST), 0)
+	if errno != 0 {
+		return fmt.Errorf("TUNSETPERSIST(0) failed: %w", errno)
 	}
 
 	return nil

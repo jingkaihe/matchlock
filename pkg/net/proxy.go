@@ -148,9 +148,10 @@ func (tp *TransparentProxy) Close() error {
 	return nil
 }
 
-func (tp *TransparentProxy) HTTPPort() int  { return tp.httpPort }
-func (tp *TransparentProxy) HTTPSPort() int { return tp.httpsPort }
-func (tp *TransparentProxy) BindAddr() string { return tp.bindAddr }
+func (tp *TransparentProxy) HTTPPort() int     { return tp.httpPort }
+func (tp *TransparentProxy) HTTPSPort() int    { return tp.httpsPort }
+func (tp *TransparentProxy) BindAddr() string  { return tp.bindAddr }
+func (tp *TransparentProxy) CAPool() *CAPool   { return tp.interceptor.CAPool() }
 
 type originalDst struct {
 	IP   net.IP
