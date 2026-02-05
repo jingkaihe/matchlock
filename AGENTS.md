@@ -86,6 +86,15 @@ matchlock run --allow-host "api.openai.com" python agent.py
 # HTTPS with automatic CA injection
 matchlock run --allow-host "httpbin.org" curl https://httpbin.org/get
 
+# With secrets (MITM proxy replaces placeholder with real value)
+export ANTHROPIC_API_KEY=sk-xxx
+matchlock run --image python:3.12-alpine \
+  --secret ANTHROPIC_API_KEY@api.anthropic.com \
+  python call_api.py
+
+# Inline secret value
+matchlock run --secret "API_KEY=sk-xxx@api.example.com" python script.py
+
 # List sandboxes
 matchlock list
 

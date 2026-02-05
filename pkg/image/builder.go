@@ -111,7 +111,8 @@ func (b *Builder) extractImage(img v1.Image, destDir string) error {
 	reader := mutate.Extract(img)
 	defer reader.Close()
 
-	cmd := exec.Command("tar", "-xf", "-", "-C", destDir)
+	// Use --numeric-owner to preserve UIDs/GIDs from the container image
+	cmd := exec.Command("tar", "-xf", "-", "-C", destDir, "--numeric-owner")
 	cmd.Stdin = reader
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -150,13 +151,17 @@ func (b *Builder) injectMatchlockComponents(rootDir string) error {
 		}
 	}
 
+	// Configure DNS - container images often have broken/empty resolv.conf
+	resolvConf := filepath.Join(rootDir, "etc", "resolv.conf")
+	os.Remove(resolvConf) // Remove if it's a symlink
+	if err := os.WriteFile(resolvConf, []byte("nameserver 8.8.8.8\nnameserver 8.8.4.4\n"), 0644); err != nil {
+		return fmt.Errorf("write resolv.conf: %w", err)
+	}
+
 	initScript := `#!/bin/sh
 # Matchlock minimal init - runs as PID 1
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-echo "matchlock-init: starting"
-
-echo "matchlock-init: mounting filesystems"
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev 2>/dev/null || true
@@ -169,13 +174,10 @@ mount -t tmpfs tmpfs /tmp
 
 hostname matchlock
 
-echo "matchlock-init: configuring network"
+# Ensure network interface is up
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
 
-echo "matchlock-init: starting guest-fused"
 /opt/matchlock/guest-fused &
-
-echo "matchlock-init: starting guest-agent"
 exec /opt/matchlock/guest-agent
 `
 	initPath := filepath.Join(rootDir, "sbin", "matchlock-init")

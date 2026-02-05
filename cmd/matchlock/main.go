@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -71,6 +72,7 @@ Run Options:
   --image <name>         Image variant (minimal, standard, full) or container image (alpine:latest)
   --workspace <path>     Guest VFS mount point (default: /workspace)
   --allow-host <host>    Add host to allowlist (can be repeated, supports wildcards)
+  --secret <spec>        Inject secret via MITM proxy (can be repeated, see below)
   -v <host:guest[:ro]>   Mount host directory into sandbox (can be repeated)
   --cpus <n>             Number of CPUs
   --memory <mb>          Memory in MB
@@ -79,6 +81,20 @@ Run Options:
 Build Options:
   --guest-agent <path>   Path to guest-agent binary
   --guest-fused <path>   Path to guest-fused binary
+
+Secrets (--secret):
+  Secrets are injected via MITM proxy - the real value never enters the VM.
+  The VM sees a placeholder, which is replaced with the real value in HTTP headers.
+  
+  Formats:
+    NAME=VALUE@host1,host2     Inline secret value for specified hosts
+    NAME@host1,host2           Read secret from $NAME environment variable
+  
+  Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
+  
+  Examples:
+    --secret OPENAI_API_KEY@api.openai.com
+    --secret "API_KEY=sk-xxx@api.example.com,api2.example.com"
 
 Volume Mounts (-v):
   Guest paths are relative to workspace (or use full workspace paths):
@@ -93,14 +109,15 @@ Wildcard Patterns for --allow-host:
 
 Examples:
   matchlock build alpine:latest                          # Build from Alpine
-  matchlock build ubuntu:22.04                           # Build from Ubuntu
-  matchlock run --image alpine:latest -it sh             # Run with container image
-  matchlock run python script.py
-  matchlock run -it python3                              # Interactive Python
-  matchlock run -it sh                                   # Interactive shell
-  matchlock run -v ./mycode:code python /workspace/code/script.py
-  matchlock run --workspace /home/user -v ./code:code ls /home/user/code
-  matchlock run --allow-host "*.openai.com" python agent.py
+  matchlock run --image alpine:latest -it sh             # Interactive shell
+  matchlock run --image python:3.12-alpine python3 -c 'print(42)'
+
+  # With secrets (MITM replaces placeholder in HTTP requests)
+  export ANTHROPIC_API_KEY=sk-xxx
+  matchlock run --image python:3.12-alpine \
+    --secret ANTHROPIC_API_KEY@api.anthropic.com \
+    python call_api.py
+
   matchlock list
   matchlock kill vm-abc123`)
 }
@@ -117,6 +134,8 @@ func cmdRun(args []string) {
 	fs.Var(&allowHosts, "allow-host", "Allowed hosts")
 	var volumes stringSlice
 	fs.Var(&volumes, "v", "Volume mount (host:guest or host:guest:ro)")
+	var secrets stringSlice
+	fs.Var(&secrets, "secret", "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2 to read from env)")
 
 	fs.Parse(args)
 
@@ -186,6 +205,20 @@ func cmdRun(args []string) {
 		vfsConfig.Mounts = mounts
 	}
 
+	// Parse secrets
+	var parsedSecrets map[string]api.Secret
+	if len(secrets) > 0 {
+		parsedSecrets = make(map[string]api.Secret)
+		for _, s := range secrets {
+			name, secret, err := parseSecret(s)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid secret %q: %v\n", s, err)
+				os.Exit(1)
+			}
+			parsedSecrets[name] = secret
+		}
+	}
+
 	config := &api.Config{
 		Image: imageName,
 		Resources: &api.Resources{
@@ -196,6 +229,7 @@ func cmdRun(args []string) {
 		Network: &api.NetworkConfig{
 			AllowedHosts:    allowHosts,
 			BlockPrivateIPs: true,
+			Secrets:         parsedSecrets,
 		},
 		VFS: vfsConfig,
 	}
@@ -517,4 +551,49 @@ func isContainerImage(name string) bool {
 		}
 	}
 	return false
+}
+
+// parseSecret parses a secret string in format:
+//   - NAME=VALUE@host1,host2  (inline value)
+//   - NAME@host1,host2        (read value from $NAME environment variable)
+func parseSecret(s string) (string, api.Secret, error) {
+	atIdx := strings.LastIndex(s, "@")
+	if atIdx == -1 {
+		return "", api.Secret{}, fmt.Errorf("missing @hosts (format: NAME=VALUE@host1,host2 or NAME@host1,host2)")
+	}
+
+	hostsStr := s[atIdx+1:]
+	if hostsStr == "" {
+		return "", api.Secret{}, fmt.Errorf("no hosts specified after @")
+	}
+	hosts := strings.Split(hostsStr, ",")
+	for i := range hosts {
+		hosts[i] = strings.TrimSpace(hosts[i])
+	}
+
+	nameValue := s[:atIdx]
+	eqIdx := strings.Index(nameValue, "=")
+
+	var name, value string
+	if eqIdx == -1 {
+		// NAME@hosts format - read from environment
+		name = nameValue
+		value = os.Getenv(name)
+		if value == "" {
+			return "", api.Secret{}, fmt.Errorf("environment variable $%s is not set (hint: use 'sudo -E' to preserve env vars, or pass inline: %s=VALUE@%s)", name, name, hostsStr)
+		}
+	} else {
+		// NAME=VALUE@hosts format
+		name = nameValue[:eqIdx]
+		value = nameValue[eqIdx+1:]
+	}
+
+	if name == "" {
+		return "", api.Secret{}, fmt.Errorf("secret name cannot be empty")
+	}
+
+	return name, api.Secret{
+		Value: value,
+		Hosts: hosts,
+	}, nil
 }
