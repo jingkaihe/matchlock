@@ -119,3 +119,33 @@ func SetupNATMasquerade(guestSubnet string) error {
 	// Add MASQUERADE rule for guest traffic
 	return iptables("-t", "nat", "-A", "POSTROUTING", "-s", guestSubnet, "-o", defaultIface, "-j", "MASQUERADE")
 }
+
+// SetupNAT configures iptables NAT rules for guest network access.
+func SetupNAT(tapName, subnet string) error {
+	// Enable IP forwarding
+	if err := exec.Command("sh", "-c", "echo 1 > /proc/sys/net/ipv4/ip_forward").Run(); err != nil {
+		// May fail without root, but might already be enabled
+	}
+
+	if tapName == "" {
+		return fmt.Errorf("no TAP interface configured")
+	}
+
+	// Set up NAT masquerade for the subnet
+	SetupNATMasquerade(subnet)
+
+	// Add forwarding rules
+	exec.Command("iptables", "-I", "FORWARD", "1", "-i", tapName, "-j", "ACCEPT").Run()
+	exec.Command("iptables", "-I", "FORWARD", "2", "-o", tapName, "-j", "ACCEPT").Run()
+
+	return nil
+}
+
+// CleanupNAT removes iptables rules for the given TAP interface.
+func CleanupNAT(tapName string) {
+	if tapName == "" {
+		return
+	}
+	exec.Command("iptables", "-D", "FORWARD", "-i", tapName, "-j", "ACCEPT").Run()
+	exec.Command("iptables", "-D", "FORWARD", "-o", tapName, "-j", "ACCEPT").Run()
+}
