@@ -130,6 +130,13 @@ matchlock --rpc
 - Host-guest communication without network
 - Message protocol for exec requests/responses
 
+### State Management (`pkg/state`)
+- VM state tracking in `~/.matchlock/vms/`
+- **SubnetAllocator**: Dynamic subnet allocation for multiple VMs
+  - Allocates unique /24 subnets from 192.168.100.0 to 192.168.254.0
+  - Persists allocations to `~/.matchlock/subnets/`
+  - Auto-released on VM close
+
 ## Vsock Ports
 
 | Port | Service | Direction |

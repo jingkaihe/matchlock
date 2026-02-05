@@ -55,7 +55,8 @@ if [ -z "$DEFAULT_IFACE" ]; then
     DEFAULT_IFACE="ens2"
 fi
 
-SUBNET="192.168.100.0/24"
+# Use broader subnet range to support multiple VMs (192.168.100-254.x)
+SUBNET="192.168.0.0/16"
 
 # Add MASQUERADE rule if not exists
 if ! iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$DEFAULT_IFACE" -j MASQUERADE 2>/dev/null; then

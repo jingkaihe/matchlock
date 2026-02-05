@@ -46,8 +46,14 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 		return nil, fmt.Errorf("failed to create TAP device: %w", err)
 	}
 
+	// Use configured subnet or default to 192.168.100.0/24
+	subnetCIDR := config.SubnetCIDR
+	if subnetCIDR == "" {
+		subnetCIDR = "192.168.100.1/24"
+	}
+
 	// Initial TAP configuration (will be refreshed after Firecracker starts)
-	if err := ConfigureInterface(tapName, "192.168.100.1/24"); err != nil {
+	if err := ConfigureInterface(tapName, subnetCIDR); err != nil {
 		syscall.Close(tapFD)
 		DeleteInterface(tapName)
 		return nil, fmt.Errorf("failed to configure TAP interface: %w", err)
@@ -124,7 +130,12 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	time.Sleep(100 * time.Millisecond)
 	
 	// Re-configure the TAP interface (Firecracker resets it when opening)
-	ConfigureInterface(m.tapName, "192.168.100.1/24")
+	// Use configured subnet or default
+	subnetCIDR := m.config.SubnetCIDR
+	if subnetCIDR == "" {
+		subnetCIDR = "192.168.100.1/24"
+	}
+	ConfigureInterface(m.tapName, subnetCIDR)
 	SetMTU(m.tapName, 1500)
 
 	// Wait for VM to be ready
@@ -226,9 +237,18 @@ func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
+		// Use configured IPs or defaults
+		guestIP := m.config.GuestIP
+		if guestIP == "" {
+			guestIP = "192.168.100.2"
+		}
+		gatewayIP := m.config.GatewayIP
+		if gatewayIP == "" {
+			gatewayIP = "192.168.100.1"
+		}
 		// Use acpi=off to avoid memory region conflicts with virtio-mmio devices
 		// Firecracker uses virtio-mmio transport, not virtio-pci
-		kernelArgs = "console=ttyS0 reboot=k panic=1 acpi=off ip=192.168.100.2::192.168.100.1:255.255.255.0::eth0:off"
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off ip=%s::%s:255.255.255.0::eth0:off", guestIP, gatewayIP)
 	}
 
 	config := fmt.Sprintf(`{

@@ -387,19 +387,21 @@ func (s *stringSlice) String() string  { return fmt.Sprintf("%v", *s) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
 type sandboxVM struct {
-	id          string
-	config      *api.Config
-	machine     vm.Machine
-	proxy       *sandboxnet.TransparentProxy
-	iptRules    *sandboxnet.IPTablesRules
-	policy      *policy.Engine
-	vfsRoot     *vfs.MountRouter
-	vfsServer   *vfs.VFSServer
-	vfsStopFunc func()
-	events      chan api.Event
-	stateMgr    *state.Manager
-	tapName     string
-	caInjector  *sandboxnet.CAInjector
+	id             string
+	config         *api.Config
+	machine        vm.Machine
+	proxy          *sandboxnet.TransparentProxy
+	iptRules       *sandboxnet.IPTablesRules
+	policy         *policy.Engine
+	vfsRoot        *vfs.MountRouter
+	vfsServer      *vfs.VFSServer
+	vfsStopFunc    func()
+	events         chan api.Event
+	stateMgr       *state.Manager
+	tapName        string
+	caInjector     *sandboxnet.CAInjector
+	subnetInfo     *state.SubnetInfo
+	subnetAlloc    *state.SubnetAllocator
 }
 
 func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
@@ -408,6 +410,14 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
 		return nil, fmt.Errorf("failed to register VM state: %w", err)
+	}
+
+	// Allocate unique subnet for this VM
+	subnetAlloc := state.NewSubnetAllocator()
+	subnetInfo, err := subnetAlloc.Allocate(id)
+	if err != nil {
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to allocate subnet: %w", err)
 	}
 
 	backend := linux.NewLinuxBackend()
@@ -422,10 +432,14 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		LogPath:    stateMgr.LogPath(id),
 		VsockCID:   3,
 		VsockPath:  stateMgr.Dir(id) + "/vsock.sock",
+		GatewayIP:  subnetInfo.GatewayIP,
+		GuestIP:    subnetInfo.GuestIP,
+		SubnetCIDR: subnetInfo.GatewayIP + "/24",
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
+		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to create VM: %w", err)
 	}
@@ -439,7 +453,7 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 	events := make(chan api.Event, 100)
 
 	// Set up transparent proxy for HTTP/HTTPS interception
-	const gatewayIP = "192.168.100.1"
+	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0" // Bind to all interfaces
 	const httpPort = 18080
 	const httpsPort = 18443
@@ -458,6 +472,7 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		})
 		if err != nil {
 			machine.Close()
+			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to create transparent proxy: %w", err)
 		}
@@ -469,13 +484,14 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		if err := iptRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close()
+			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to setup iptables rules: %w", err)
 		}
 	}
 
 	// Set up basic NAT for guest network access (for non-HTTP traffic)
-	if err := setupNAT(linuxMachine); err != nil {
+	if err := setupNAT(linuxMachine, subnetInfo.Subnet); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
 	}
 
@@ -509,6 +525,7 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 			iptRules.Cleanup()
 		}
 		machine.Close()
+		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to start VFS server: %w", err)
 	}
@@ -537,6 +554,8 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		stateMgr:    stateMgr,
 		tapName:     linuxMachine.TapName(),
 		caInjector:  caInjector,
+		subnetInfo:  subnetInfo,
+		subnetAlloc: subnetAlloc,
 	}, nil
 }
 
@@ -626,6 +645,11 @@ func (v *sandboxVM) Close() error {
 	
 	// Clean up NAT forwarding rules
 	cleanupNAT(v.tapName)
+	
+	// Release subnet allocation
+	if v.subnetAlloc != nil {
+		v.subnetAlloc.Release(v.id)
+	}
 	
 	close(v.events)
 	v.stateMgr.Unregister(v.id)
@@ -731,7 +755,7 @@ func getRootfsPath(image string) string {
 // setupNAT configures iptables NAT rules for guest network access
 // If running without root and rules are already set up (via setup-permissions.sh),
 // this will fail silently which is okay.
-func setupNAT(machine *linux.LinuxMachine) error {
+func setupNAT(machine *linux.LinuxMachine, subnet string) error {
 	// Enable IP forwarding (may fail without root, but might already be enabled)
 	os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0644)
 
@@ -741,9 +765,9 @@ func setupNAT(machine *linux.LinuxMachine) error {
 		return fmt.Errorf("no TAP interface configured")
 	}
 
-	// Try to add NAT masquerade rule - may fail without root privileges
-	// If setup-permissions.sh was run, the rule already exists
-	sandboxnet.SetupNATMasquerade("192.168.100.0/24")
+	// Try to add NAT masquerade rule for the specific subnet
+	// If setup-permissions.sh was run with 192.168.0.0/16, this covers all VMs
+	sandboxnet.SetupNATMasquerade(subnet)
 
 	// Try to insert forwarding rules - these are now optional since
 	// setup-permissions.sh sets up subnet-based rules
