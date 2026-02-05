@@ -136,6 +136,19 @@ type CreateOptions struct {
 	BlockPrivateIPs bool
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
+	// Secrets defines secrets to inject (replaced in HTTP requests to allowed hosts)
+	Secrets []Secret
+}
+
+// Secret defines a secret that will be injected as a placeholder env var
+// and replaced with the real value in HTTP requests to allowed hosts
+type Secret struct {
+	// Name is the environment variable name (e.g., "ANTHROPIC_API_KEY")
+	Name string
+	// Value is the actual secret value
+	Value string
+	// Hosts is a list of hosts where this secret can be used (supports wildcards)
+	Hosts []string
 }
 
 // MountConfig defines a VFS mount
@@ -169,11 +182,22 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		},
 	}
 
-	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs {
-		params["network"] = map[string]interface{}{
+	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 {
+		network := map[string]interface{}{
 			"allowed_hosts":     opts.AllowedHosts,
 			"block_private_ips": opts.BlockPrivateIPs,
 		}
+		if len(opts.Secrets) > 0 {
+			secrets := make(map[string]interface{})
+			for _, s := range opts.Secrets {
+				secrets[s.Name] = map[string]interface{}{
+					"value": s.Value,
+					"hosts": s.Hosts,
+				}
+			}
+			network["secrets"] = secrets
+		}
+		params["network"] = network
 	}
 
 	if len(opts.Mounts) > 0 {

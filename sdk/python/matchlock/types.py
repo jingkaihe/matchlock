@@ -39,6 +39,25 @@ class MountConfig:
 
 
 @dataclass
+class Secret:
+    """Secret to inject into the sandbox.
+    
+    The secret value is replaced with a placeholder env var in the sandbox.
+    When HTTP requests are made to allowed hosts, the placeholder is replaced
+    with the actual value by the MITM proxy.
+    """
+    
+    name: str
+    """Environment variable name (e.g., 'ANTHROPIC_API_KEY')."""
+    
+    value: str
+    """The actual secret value."""
+    
+    hosts: list[str] = field(default_factory=list)
+    """Hosts where this secret can be used (supports wildcards)."""
+
+
+@dataclass
 class CreateOptions:
     """Options for creating a sandbox."""
     
@@ -62,6 +81,9 @@ class CreateOptions:
     
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
+    
+    secrets: list[Secret] = field(default_factory=list)
+    """Secrets to inject (replaced in HTTP requests to allowed hosts)."""
 
 
 @dataclass

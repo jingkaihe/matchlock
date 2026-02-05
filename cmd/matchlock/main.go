@@ -247,16 +247,18 @@ func runInteractive(ctx context.Context, vm *sandboxVM, command string) int {
 		return 1
 	}
 
-	// Build exec options with CA injection if proxy is enabled
-	var opts *api.ExecOptions
+	// Build exec options with CA and secret injection if proxy is enabled
+	opts := &api.ExecOptions{Env: make(map[string]string)}
 	if vm.caInjector != nil {
-		opts = &api.ExecOptions{
-			Env: map[string]string{
-				"SSL_CERT_FILE":       "/workspace/.sandbox-ca.crt",
-				"REQUESTS_CA_BUNDLE":  "/workspace/.sandbox-ca.crt",
-				"CURL_CA_BUNDLE":      "/workspace/.sandbox-ca.crt",
-				"NODE_EXTRA_CA_CERTS": "/workspace/.sandbox-ca.crt",
-			},
+		opts.Env["SSL_CERT_FILE"] = "/workspace/.sandbox-ca.crt"
+		opts.Env["REQUESTS_CA_BUNDLE"] = "/workspace/.sandbox-ca.crt"
+		opts.Env["CURL_CA_BUNDLE"] = "/workspace/.sandbox-ca.crt"
+		opts.Env["NODE_EXTRA_CA_CERTS"] = "/workspace/.sandbox-ca.crt"
+	}
+	// Inject secret placeholders
+	if vm.policy != nil {
+		for name, placeholder := range vm.policy.GetPlaceholders() {
+			opts.Env[name] = placeholder
 		}
 	}
 
@@ -530,6 +532,22 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 
 	linuxMachine := machine.(*linux.LinuxMachine)
 
+	// Auto-add secret hosts to allowed hosts if secrets are defined
+	if config.Network != nil && len(config.Network.Secrets) > 0 {
+		hostSet := make(map[string]bool)
+		for _, h := range config.Network.AllowedHosts {
+			hostSet[h] = true
+		}
+		for _, secret := range config.Network.Secrets {
+			for _, h := range secret.Hosts {
+				if !hostSet[h] {
+					config.Network.AllowedHosts = append(config.Network.AllowedHosts, h)
+					hostSet[h] = true
+				}
+			}
+		}
+	}
+
 	// Create policy engine
 	policyEngine := policy.NewEngine(config.Network)
 
@@ -545,8 +563,9 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 	var proxy *sandboxnet.TransparentProxy
 	var iptRules *sandboxnet.IPTablesRules
 
-	// Only set up proxy if we have network policy (allowlist configured)
-	if config.Network != nil && len(config.Network.AllowedHosts) > 0 {
+	// Set up proxy if we have network policy (allowlist or secrets configured)
+	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	if needsProxy {
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:  proxyBindAddr,
 			HTTPPort:  httpPort,
@@ -655,21 +674,30 @@ func (v *sandboxVM) Stop(ctx context.Context) error {
 }
 
 func (v *sandboxVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	if opts == nil {
+		opts = &api.ExecOptions{}
+	}
+	if opts.Env == nil {
+		opts.Env = make(map[string]string)
+	}
+
 	// Inject CA certificate environment variables if proxy is enabled
 	if v.caInjector != nil {
-		if opts == nil {
-			opts = &api.ExecOptions{}
-		}
-		if opts.Env == nil {
-			opts.Env = make(map[string]string)
-		}
-		// Point to the CA cert in workspace
 		certPath := "/workspace/.sandbox-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
 		opts.Env["CURL_CA_BUNDLE"] = certPath
 		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
 	}
+
+	// Inject secret placeholders as environment variables
+	// The actual secret values will be substituted by the MITM proxy
+	if v.policy != nil {
+		for name, placeholder := range v.policy.GetPlaceholders() {
+			opts.Env[name] = placeholder
+		}
+	}
+
 	return v.machine.Exec(ctx, command, opts)
 }
 

@@ -1,6 +1,10 @@
 // Matchlock Go SDK Example
 //
 // Usage: go run examples/go/main.go
+//
+// With secrets:
+//
+//	ANTHROPIC_API_KEY=sk-xxx go run examples/go/main.go
 package main
 
 import (
@@ -23,7 +27,17 @@ func main() {
 	}
 	defer client.Close()
 
-	vmID, _ := client.Create(sdk.CreateOptions{Image: "standard"})
+	// Example with secrets - the API key is replaced in HTTP requests to api.anthropic.com
+	opts := sdk.CreateOptions{Image: "standard"}
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		opts.Secrets = []sdk.Secret{{
+			Name:  "ANTHROPIC_API_KEY",
+			Value: apiKey,
+			Hosts: []string{"api.anthropic.com"},
+		}}
+	}
+
+	vmID, _ := client.Create(opts)
 	fmt.Printf("Created VM: %s\n", vmID)
 
 	result, _ := client.Exec("echo 'Hello from sandbox!'")

@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""Matchlock Python SDK Example - Usage: python3 examples/python/main.py"""
+"""Matchlock Python SDK Example
 
+Usage: python3 examples/python/main.py
+With secrets: ANTHROPIC_API_KEY=sk-xxx python3 examples/python/main.py
+"""
+
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "sdk" / "python"))
 
-from matchlock import Client, Config, CreateOptions
+from matchlock import Client, Config, CreateOptions, Secret
 
 config = Config(binary_path="./bin/matchlock", use_sudo=True)
 
+# Example with secrets - the API key is replaced in HTTP requests to api.anthropic.com
+opts = CreateOptions(image="standard")
+if api_key := os.environ.get("ANTHROPIC_API_KEY"):
+    opts.secrets = [Secret(name="ANTHROPIC_API_KEY", value=api_key, hosts=["api.anthropic.com"])]
+
 with Client(config) as client:
-    vm_id = client.create(CreateOptions(image="standard"))
+    vm_id = client.create(opts)
     print(f"Created VM: {vm_id}")
 
     result = client.exec("echo 'Hello from sandbox!'")

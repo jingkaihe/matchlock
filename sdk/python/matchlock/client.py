@@ -159,11 +159,17 @@ class Client:
             },
         }
         
-        if opts.allowed_hosts or opts.block_private_ips:
-            params["network"] = {
+        if opts.allowed_hosts or opts.block_private_ips or opts.secrets:
+            network: dict[str, Any] = {
                 "allowed_hosts": opts.allowed_hosts,
                 "block_private_ips": opts.block_private_ips,
             }
+            if opts.secrets:
+                network["secrets"] = {
+                    s.name: {"value": s.value, "hosts": s.hosts}
+                    for s in opts.secrets
+                }
+            params["network"] = network
         
         if opts.mounts:
             params["vfs"] = {
