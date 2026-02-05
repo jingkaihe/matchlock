@@ -1,0 +1,48 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.o
+*.a
+*.test
+go.work
+go.work.sum
+
+# Test coverage
+*.out
+coverage.html
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/opt/sandbox/
+*.img
+*.ext4
+vmlinux
+vmlinux-*
+
+# Firecracker runtime
+*.sock
+firecracker.log
+firecracker-*.log
+
+# Kernel build
+/tmp/kernel-build/
+
+# Rootfs build
+/tmp/rootfs-build/
