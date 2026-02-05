@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -72,22 +73,29 @@ Options:
   -it                    Interactive mode with TTY (like docker -it)
   --image <name>         Image variant (minimal, standard, full)
   --allow-host <host>    Add host to allowlist (can be repeated, supports wildcards)
+  -v <host:guest[:ro]>   Mount host directory into sandbox (can be repeated)
   --cpus <n>             Number of CPUs
   --memory <mb>          Memory in MB
   --timeout <s>          Timeout in seconds
+
+Volume Mounts (-v):
+  All mounts appear under /workspace in the guest:
+  ./mycode:/workspace              Mount to /workspace root
+  ./data:/data                     Mounts to /workspace/data
+  /host/path:/workspace/subdir:ro  Read-only mount
 
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
   *.example.com          Allow all subdomains (api.example.com, a.b.example.com)
   api-*.example.com      Allow pattern match (api-v1.example.com, api-prod.example.com)
-  *-prod.example.com     Allow suffix match (api-prod.example.com)
 
 Examples:
   matchlock run python script.py
   matchlock run -it python3                              # Interactive Python
   matchlock run -it sh                                   # Interactive shell
+  matchlock run -v ./mycode:/workspace python /workspace/script.py
+  matchlock run -v ./data:/data ls /workspace/data       # /data -> /workspace/data
   matchlock run --allow-host "*.openai.com" python agent.py
-  matchlock run --allow-host "api-*.anthropic.com" curl https://api-v1.anthropic.com
   matchlock list
   matchlock kill vm-abc123`)
 }
@@ -101,6 +109,8 @@ func cmdRun(args []string) {
 	interactive := fs.Bool("it", false, "Interactive mode with TTY")
 	var allowHosts stringSlice
 	fs.Var(&allowHosts, "allow-host", "Allowed hosts")
+	var volumes stringSlice
+	fs.Var(&volumes, "v", "Volume mount (host:guest or host:guest:ro)")
 
 	fs.Parse(args)
 
@@ -126,6 +136,25 @@ func cmdRun(args []string) {
 		cancel()
 	}()
 
+	// Parse volume mounts
+	var vfsConfig *api.VFSConfig
+	if len(volumes) > 0 {
+		mounts := make(map[string]api.MountConfig)
+		for _, vol := range volumes {
+			hostPath, guestPath, readonly, err := parseVolumeMount(vol)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: invalid volume mount %q: %v\n", vol, err)
+				os.Exit(1)
+			}
+			mounts[guestPath] = api.MountConfig{
+				Type:     "real_fs",
+				HostPath: hostPath,
+				Readonly: readonly,
+			}
+		}
+		vfsConfig = &api.VFSConfig{Mounts: mounts}
+	}
+
 	config := &api.Config{
 		Image: *image,
 		Resources: &api.Resources{
@@ -137,6 +166,7 @@ func cmdRun(args []string) {
 			AllowedHosts:    allowHosts,
 			BlockPrivateIPs: true,
 		},
+		VFS: vfsConfig,
 	}
 
 	vm, err := createVM(ctx, config)
@@ -392,6 +422,53 @@ type stringSlice []string
 
 func (s *stringSlice) String() string  { return fmt.Sprintf("%v", *s) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+// parseVolumeMount parses a volume mount string in format "host:guest" or "host:guest:ro"
+// Guest paths are automatically prefixed with /workspace if not already
+func parseVolumeMount(vol string) (hostPath, guestPath string, readonly bool, err error) {
+	parts := strings.Split(vol, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return "", "", false, fmt.Errorf("expected format host:guest or host:guest:ro")
+	}
+
+	hostPath = parts[0]
+	guestPath = parts[1]
+
+	// Resolve to absolute path
+	if !filepath.IsAbs(hostPath) {
+		hostPath, err = filepath.Abs(hostPath)
+		if err != nil {
+			return "", "", false, fmt.Errorf("failed to resolve path: %w", err)
+		}
+	}
+
+	// Verify host path exists
+	if _, err := os.Stat(hostPath); err != nil {
+		return "", "", false, fmt.Errorf("host path does not exist: %s", hostPath)
+	}
+
+	// Check for readonly flag
+	if len(parts) == 3 {
+		if parts[2] == "ro" || parts[2] == "readonly" {
+			readonly = true
+		} else {
+			return "", "", false, fmt.Errorf("unknown option %q (use 'ro' for readonly)", parts[2])
+		}
+	}
+
+	// Guest path must be absolute
+	if !filepath.IsAbs(guestPath) {
+		guestPath = "/" + guestPath
+	}
+
+	// All mounts go through /workspace - remap if needed
+	// The guest FUSE daemon mounts at /workspace and prefixes all paths with /workspace
+	if !strings.HasPrefix(guestPath, "/workspace") {
+		guestPath = "/workspace" + guestPath
+	}
+
+	return hostPath, guestPath, readonly, nil
+}
 
 type sandboxVM struct {
 	id             string
