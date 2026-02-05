@@ -165,6 +165,69 @@ docker-rootfs: guest-binaries
 		sh -c "apk add --no-cache bash e2fsprogs util-linux && /scripts/build-rootfs.sh"
 
 # =============================================================================
+# macOS build targets (Apple Silicon)
+# =============================================================================
+
+# Entitlements file for macOS codesigning
+ENTITLEMENTS_FILE = matchlock.entitlements
+
+$(ENTITLEMENTS_FILE):
+	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $@
+	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $@
+	@echo '<plist version="1.0">' >> $@
+	@echo '<dict>' >> $@
+	@echo '    <key>com.apple.security.virtualization</key>' >> $@
+	@echo '    <true/>' >> $@
+	@echo '</dict>' >> $@
+	@echo '</plist>' >> $@
+
+.PHONY: build-darwin
+build-darwin: $(ENTITLEMENTS_FILE)
+	@mkdir -p bin
+	$(GO) build -o $(MATCHLOCK_BIN) ./cmd/matchlock
+	codesign --entitlements $(ENTITLEMENTS_FILE) -f -s - $(MATCHLOCK_BIN)
+	@echo "Built and signed $(MATCHLOCK_BIN) for macOS"
+
+.PHONY: guest-binaries-darwin
+guest-binaries-darwin:
+	@mkdir -p bin $(OUTPUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -o $(OUTPUT_DIR)/guest-agent ./cmd/guest-agent
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -o $(OUTPUT_DIR)/guest-fused ./cmd/guest-fused
+	@echo "Built ARM64 guest binaries in $(OUTPUT_DIR)"
+
+.PHONY: kernel-darwin
+kernel-darwin:
+	@echo "Building ARM64 kernel $(KERNEL_VERSION) for macOS..."
+	@mkdir -p $(OUTPUT_DIR)
+	ARCH=arm64 KERNEL_VERSION=$(KERNEL_VERSION) OUTPUT_DIR=$(OUTPUT_DIR) ./scripts/build-kernel.sh
+	@echo "Built $(OUTPUT_DIR)/kernel-arm64"
+
+.PHONY: setup-darwin
+setup-darwin: build-darwin guest-binaries-darwin
+	@echo ""
+	@echo "============================================"
+	@echo "Matchlock macOS setup complete!"
+	@echo "============================================"
+	@echo ""
+	@echo "Guest binaries installed to $(OUTPUT_DIR)"
+	@echo ""
+	@echo "To build the ARM64 kernel (requires Docker):"
+	@echo "  make kernel-darwin"
+	@echo ""
+	@echo "Test with container images:"
+	@echo "  ./bin/matchlock run --image alpine:latest echo 'Hello from macOS VM!'"
+	@echo ""
+	@echo "Test with HTTPS interception:"
+	@echo "  ./bin/matchlock run --image python:3.12-alpine --allow-host 'httpbin.org' -- \\"
+	@echo "    python3 -c 'import urllib.request; print(urllib.request.urlopen(\"https://httpbin.org/get\").read()[:100])'"
+	@echo ""
+
+.PHONY: quick-test-darwin
+quick-test-darwin: build-darwin guest-binaries-darwin
+	@echo "Running quick macOS test..."
+	./$(MATCHLOCK_BIN) run --image alpine:latest echo "Matchlock works on macOS!"
+
+# =============================================================================
 # Quick start
 # =============================================================================
 
@@ -208,6 +271,13 @@ help:
 	@echo "  make build-all      Build CLI and guest binaries"
 	@echo "  make clean          Remove built binaries"
 	@echo ""
+	@echo "macOS targets (Apple Silicon):"
+	@echo "  make build-darwin         Build and codesign CLI for macOS"
+	@echo "  make guest-binaries-darwin Build ARM64 guest binaries"
+	@echo "  make kernel-darwin        Build ARM64 kernel (requires Docker)"
+	@echo "  make setup-darwin         Full macOS setup (CLI + guest binaries)"
+	@echo "  make quick-test-darwin    Quick test on macOS"
+	@echo ""
 	@echo "Test targets:"
 	@echo "  make test           Run all tests"
 	@echo "  make test-verbose   Run tests with verbose output"
@@ -219,7 +289,7 @@ help:
 	@echo "  make lint           Run golangci-lint"
 	@echo "  make tidy           Run go mod tidy"
 	@echo ""
-	@echo "Image build targets:"
+	@echo "Linux image build targets:"
 	@echo "  make kernel         Build Linux kernel for Firecracker"
 	@echo "  make rootfs         Build rootfs (requires sudo)"
 	@echo "  make rootfs-minimal Build minimal rootfs"
@@ -239,6 +309,7 @@ help:
 	@echo "  IMAGE=$(IMAGE)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make images OUTPUT_DIR=./local-images"
-	@echo "  make rootfs IMAGE=full"
-	@echo "  make kernel KERNEL_VERSION=6.6.122"
+	@echo "  make setup-darwin                      # macOS quick start"
+	@echo "  make images OUTPUT_DIR=./local-images  # Linux with custom output"
+	@echo "  make rootfs IMAGE=full                 # Linux full rootfs"
+	@echo "  make kernel KERNEL_VERSION=6.6.122    # Custom kernel version"
