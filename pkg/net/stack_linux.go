@@ -108,24 +108,25 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 	}
 
 	r.Complete(false)
-
 	guestConn := gonet.NewTCPConn(&wq, ep)
 
 	dstIP := id.LocalAddress.String()
-	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
-
-	if !ns.policy.IsHostAllowed(host) {
-		ns.emitBlockedEvent(host, "host not in allowlist")
-		guestConn.Close()
-		return
-	}
 
 	switch dstPort {
 	case 80:
+		// HTTP: policy check happens in handler based on Host header
 		go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
 	case 443:
+		// HTTPS: policy check happens in handler based on SNI
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
+		// Non-HTTP: check policy by IP address
+		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+		if !ns.policy.IsHostAllowed(host) {
+			ns.emitBlockedEvent(host, "host not in allowlist")
+			guestConn.Close()
+			return
+		}
 		go ns.handlePassthrough(guestConn, dstIP, int(dstPort))
 	}
 }

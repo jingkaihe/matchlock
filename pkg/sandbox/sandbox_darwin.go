@@ -76,19 +76,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		rootfsPath = DefaultRootfsPath(config.Image)
 	}
 
+	// Determine if we need network interception (calculated before VM creation)
+	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+
 	vmConfig := &vm.VMConfig{
-		ID:            id,
-		KernelPath:    kernelPath,
-		InitramfsPath: initramfsPath,
-		RootfsPath:    rootfsPath,
-		CPUs:       config.Resources.CPUs,
-		MemoryMB:   config.Resources.MemoryMB,
-		SocketPath: stateMgr.SocketPath(id) + ".sock",
-		LogPath:    stateMgr.LogPath(id),
-		GatewayIP:  subnetInfo.GatewayIP,
-		GuestIP:    subnetInfo.GuestIP,
-		SubnetCIDR: subnetInfo.GatewayIP + "/24",
-		Workspace:  workspace,
+		ID:              id,
+		KernelPath:      kernelPath,
+		InitramfsPath:   initramfsPath,
+		RootfsPath:      rootfsPath,
+		CPUs:            config.Resources.CPUs,
+		MemoryMB:        config.Resources.MemoryMB,
+		SocketPath:      stateMgr.SocketPath(id) + ".sock",
+		LogPath:         stateMgr.LogPath(id),
+		GatewayIP:       subnetInfo.GatewayIP,
+		GuestIP:         subnetInfo.GuestIP,
+		SubnetCIDR:      subnetInfo.GatewayIP + "/24",
+		Workspace:       workspace,
+		UseInterception: needsInterception,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -121,18 +125,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	var netStack *sandboxnet.NetworkStack
 	var caInjector *sandboxnet.CAInjector
 
-	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	if needsInterception {
-		networkFD, err := darwinMachine.NetworkFD()
-		if err != nil {
+		networkFile := darwinMachine.NetworkFile()
+		if networkFile == nil {
 			machine.Close()
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to get network FD: %w", err)
+			return nil, fmt.Errorf("failed to get network file")
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
-			FD:        networkFD,
+			File:      networkFile,
 			GatewayIP: subnetInfo.GatewayIP,
 			GuestIP:   subnetInfo.GuestIP,
 			MTU:       1500,

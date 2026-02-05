@@ -5,6 +5,7 @@ package darwin
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -37,8 +38,16 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		return nil, fmt.Errorf("rootfs not found: %s: %w", config.RootfsPath, err)
 	}
 
+	// Copy rootfs to temp file so each VM gets a clean image
+	// (VMs write to the rootfs and would corrupt the cached image)
+	tempRootfs, err := copyRootfsToTemp(config.RootfsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+	}
+
 	socketPair, err := createSocketPair()
 	if err != nil {
+		os.Remove(tempRootfs)
 		return nil, fmt.Errorf("failed to create socket pair: %w", err)
 	}
 
@@ -49,6 +58,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	}
 	if config.InitramfsPath != "" {
 		if _, err := os.Stat(config.InitramfsPath); err != nil {
+			os.Remove(tempRootfs)
 			socketPair.Close()
 			return nil, fmt.Errorf("initramfs not found: %s: %w", config.InitramfsPath, err)
 		}
@@ -60,6 +70,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		bootLoaderOpts...,
 	)
 	if err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to create boot loader: %w", err)
 	}
@@ -70,22 +81,26 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		uint64(config.MemoryMB)*1024*1024,
 	)
 	if err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to create VM configuration: %w", err)
 	}
 
-	if err := b.configureStorage(vzConfig, config); err != nil {
+	if err := b.configureStorage(vzConfig, tempRootfs); err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to configure storage: %w", err)
 	}
 
-	if err := b.configureNetwork(vzConfig, socketPair); err != nil {
+	if err := b.configureNetwork(vzConfig, socketPair, config.UseInterception); err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to configure network: %w", err)
 	}
 
 	vsockConfig, err := vz.NewVirtioSocketDeviceConfiguration()
 	if err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to create vsock config: %w", err)
 	}
@@ -94,33 +109,38 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	// Add entropy device for virtio random
 	entropyConfig, err := vz.NewVirtioEntropyDeviceConfiguration()
 	if err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to create entropy config: %w", err)
 	}
 	vzConfig.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropyConfig})
 
 	if err := b.configureConsole(vzConfig, config); err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to configure console: %w", err)
 	}
 
 	validated, err := vzConfig.Validate()
 	if err != nil || !validated {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("VM configuration validation failed: validated=%v, err=%w", validated, err)
 	}
 
 	vzVM, err := vz.NewVirtualMachine(vzConfig)
 	if err != nil {
+		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to create virtual machine: %w", err)
 	}
 
 	return &DarwinMachine{
-		id:         config.ID,
-		config:     config,
-		vm:         vzVM,
-		socketPair: socketPair,
+		id:          config.ID,
+		config:      config,
+		vm:          vzVM,
+		socketPair:  socketPair,
+		tempRootfs:  tempRootfs,
 	}, nil
 }
 
@@ -129,16 +149,28 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 		return config.KernelArgs
 	}
 
-	guestIP := config.GuestIP
-	if guestIP == "" {
-		guestIP = "192.168.100.2"
-	}
 	workspace := config.Workspace
 	if workspace == "" {
 		workspace = "/workspace"
 	}
 
 	// Root device is /dev/vda (first virtio block device)
+	if config.UseInterception {
+		// Static IP for interception mode (gVisor stack, no DHCP)
+		guestIP := config.GuestIP
+		if guestIP == "" {
+			guestIP = "192.168.100.2"
+		}
+		gatewayIP := config.GatewayIP
+		if gatewayIP == "" {
+			gatewayIP = "192.168.100.1"
+		}
+		return fmt.Sprintf(
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s",
+			guestIP, gatewayIP, workspace,
+		)
+	}
+
 	// Use DHCP for NAT mode - Apple's Virtualization.framework provides DHCP server
 	return fmt.Sprintf(
 		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s",
@@ -146,9 +178,9 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	)
 }
 
-func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {
+func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, rootfsPath string) error {
 	diskAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
-		config.RootfsPath,
+		rootfsPath,
 		false,
 		vz.DiskImageCachingModeAutomatic,
 		vz.DiskImageSynchronizationModeFsync,
@@ -166,12 +198,57 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 	return nil
 }
 
-func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguration, socketPair *SocketPair) error {
-	// TODO: For production, we want to use FileHandleNetworkDeviceAttachment for traffic interception
-	// For now, use NAT attachment to verify basic VM functionality
-	netAttachment, err := vz.NewNATNetworkDeviceAttachment()
+// copyRootfsToTemp copies the rootfs image to a temp file so each VM gets a clean copy
+func copyRootfsToTemp(srcPath string) (string, error) {
+	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("failed to create NAT network attachment: %w", err)
+		return "", err
+	}
+	defer src.Close()
+
+	// Create temp file in same directory to ensure same filesystem (for efficient copy)
+	dir := filepath.Dir(srcPath)
+	dst, err := os.CreateTemp(dir, "matchlock-rootfs-*.ext4")
+	if err != nil {
+		// Fall back to system temp if same dir fails
+		dst, err = os.CreateTemp("", "matchlock-rootfs-*.ext4")
+		if err != nil {
+			return "", err
+		}
+	}
+	dstPath := dst.Name()
+
+	_, err = io.Copy(dst, src)
+	if err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return "", err
+	}
+
+	if err := dst.Close(); err != nil {
+		os.Remove(dstPath)
+		return "", err
+	}
+
+	return dstPath, nil
+}
+
+func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguration, socketPair *SocketPair, useInterception bool) error {
+	var netAttachment vz.NetworkDeviceAttachment
+	var err error
+
+	if useInterception {
+		// Use socket pair for traffic interception via gVisor stack
+		netAttachment, err = vz.NewFileHandleNetworkDeviceAttachment(socketPair.GuestFile())
+		if err != nil {
+			return fmt.Errorf("failed to create file handle network attachment: %w", err)
+		}
+	} else {
+		// Use NAT for simple networking without interception
+		netAttachment, err = vz.NewNATNetworkDeviceAttachment()
+		if err != nil {
+			return fmt.Errorf("failed to create NAT network attachment: %w", err)
+		}
 	}
 
 	netConfig, err := vz.NewVirtioNetworkDeviceConfiguration(netAttachment)

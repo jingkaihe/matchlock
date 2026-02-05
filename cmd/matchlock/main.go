@@ -22,6 +22,21 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
+// shellQuoteArgs properly quotes arguments for shell execution
+func shellQuoteArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		// If arg contains special shell characters, quote it
+		if strings.ContainsAny(arg, " \t\n\"'`$\\!*?[]{}();<>&|") {
+			// Use single quotes and escape any single quotes in the arg
+			quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
+		} else {
+			quoted[i] = arg
+		}
+	}
+	return strings.Join(quoted, " ")
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -144,12 +159,7 @@ func cmdRun(args []string) {
 		os.Exit(1)
 	}
 
-	command := fs.Args()[0]
-	if len(fs.Args()) > 1 {
-		for _, arg := range fs.Args()[1:] {
-			command += " " + arg
-		}
-	}
+	command := shellQuoteArgs(fs.Args())
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
 	defer cancel()

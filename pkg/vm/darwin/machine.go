@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ type DarwinMachine struct {
 	config      *vm.VMConfig
 	vm          *vz.VirtualMachine
 	socketPair  *SocketPair
+	tempRootfs  string // Temp copy of rootfs, cleaned up on Stop
 	started     bool
 	mu          sync.Mutex
 	vfsListener *vz.VirtioSocketListener
@@ -87,6 +89,11 @@ func (m *DarwinMachine) Stop(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	if !m.started {
+		// Still clean up temp rootfs even if not started
+		if m.tempRootfs != "" {
+			os.Remove(m.tempRootfs)
+			m.tempRootfs = ""
+		}
 		return nil
 	}
 
@@ -104,6 +111,7 @@ func (m *DarwinMachine) Stop(ctx context.Context) error {
 			select {
 			case <-done:
 				m.started = false
+				m.cleanup()
 				return nil
 			case <-time.After(5 * time.Second):
 			case <-ctx.Done():
@@ -113,12 +121,24 @@ func (m *DarwinMachine) Stop(ctx context.Context) error {
 
 	if m.vm.CanStop() {
 		if err := m.vm.Stop(); err != nil {
+			m.cleanup()
 			return err
 		}
 	}
 
 	m.started = false
+	m.cleanup()
 	return nil
+}
+
+func (m *DarwinMachine) cleanup() {
+	if m.socketPair != nil {
+		m.socketPair.Close()
+	}
+	if m.tempRootfs != "" {
+		os.Remove(m.tempRootfs)
+		m.tempRootfs = ""
+	}
 }
 
 func (m *DarwinMachine) Wait(ctx context.Context) error {
@@ -357,6 +377,10 @@ func sendVsockMessage(conn net.Conn, msgType uint8, data []byte) error {
 
 func (m *DarwinMachine) NetworkFD() (int, error) {
 	return m.socketPair.HostFD(), nil
+}
+
+func (m *DarwinMachine) NetworkFile() *os.File {
+	return m.socketPair.HostFile()
 }
 
 func (m *DarwinMachine) VsockFD() (int, error) {

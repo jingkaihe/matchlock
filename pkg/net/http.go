@@ -37,10 +37,10 @@ func (i *HTTPInterceptor) CAPool() *CAPool {
 func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {
 	defer guestConn.Close()
 
-	reader := bufio.NewReader(guestConn)
+	guestReader := bufio.NewReader(guestConn)
 
 	for {
-		req, err := http.ReadRequest(reader)
+		req, err := http.ReadRequest(guestReader)
 		if err != nil {
 			return
 		}
@@ -72,19 +72,21 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 			return
 		}
-		defer realConn.Close()
 
 		if err := modifiedReq.Write(realConn); err != nil {
+			realConn.Close()
 			return
 		}
 
 		resp, err := http.ReadResponse(bufio.NewReader(realConn), modifiedReq)
 		if err != nil {
+			realConn.Close()
 			return
 		}
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
+			realConn.Close()
 			return
 		}
 
@@ -92,8 +94,11 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		i.emitEvent(modifiedReq, modifiedResp, host, duration)
 
 		if err := modifiedResp.Write(guestConn); err != nil {
+			realConn.Close()
 			return
 		}
+
+		realConn.Close()
 
 		if modifiedReq.Close || modifiedResp.Close {
 			return
@@ -134,9 +139,11 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 	}
 	defer realConn.Close()
 
-	reader := bufio.NewReader(tlsConn)
+	guestReader := bufio.NewReader(tlsConn)
+	serverReader := bufio.NewReader(realConn)
+
 	for {
-		req, err := http.ReadRequest(reader)
+		req, err := http.ReadRequest(guestReader)
 		if err != nil {
 			return
 		}
@@ -154,7 +161,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 			return
 		}
 
-		resp, err := http.ReadResponse(bufio.NewReader(realConn), modifiedReq)
+		resp, err := http.ReadResponse(serverReader, modifiedReq)
 		if err != nil {
 			return
 		}

@@ -16,6 +16,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -36,6 +37,7 @@ type NetworkStack struct {
 
 type Config struct {
 	FD        int
+	File      *os.File // Use this instead of FD when available
 	GatewayIP string
 	GuestIP   string
 	MTU       uint32
@@ -43,30 +45,35 @@ type Config struct {
 	Events    chan api.Event
 }
 
+// socketPairEndpoint implements stack.LinkEndpoint for Unix socket pairs
 type socketPairEndpoint struct {
-	fd         int
-	file       *os.File
-	mtu        uint32
-	linkAddr   tcpip.LinkAddress
-	dispatcher stack.NetworkDispatcher
-	wg         sync.WaitGroup
-	stopCh     chan struct{}
-	mu         sync.Mutex
-	closed     bool
+	file          *os.File
+	mtu           uint32
+	linkAddr      tcpip.LinkAddress
+	dispatcher    stack.NetworkDispatcher
+	mu            sync.Mutex
+	closed        bool
+	closeCh       chan struct{}
+	onCloseAction func()
 }
 
-func newSocketPairEndpoint(fd int, mtu uint32) *socketPairEndpoint {
+func newSocketPairEndpoint(file *os.File, mtu uint32) *socketPairEndpoint {
+	// Use a fixed MAC address for the gateway endpoint
+	mac := tcpip.LinkAddress([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01})
 	return &socketPairEndpoint{
-		fd:       fd,
-		file:     os.NewFile(uintptr(fd), "socket-pair"),
+		file:     file,
 		mtu:      mtu,
-		linkAddr: tcpip.LinkAddress([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01}),
-		stopCh:   make(chan struct{}),
+		linkAddr: mac,
+		closeCh:  make(chan struct{}),
 	}
 }
 
 func (e *socketPairEndpoint) MTU() uint32 {
 	return e.mtu
+}
+
+func (e *socketPairEndpoint) SetMTU(mtu uint32) {
+	e.mtu = mtu
 }
 
 func (e *socketPairEndpoint) MaxHeaderLength() uint16 {
@@ -82,41 +89,37 @@ func (e *socketPairEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 }
 
 func (e *socketPairEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
+	e.mu.Lock()
 	e.dispatcher = dispatcher
+	e.mu.Unlock()
+
 	if dispatcher != nil {
-		e.wg.Add(1)
 		go e.readLoop()
 	}
 }
 
 func (e *socketPairEndpoint) IsAttached() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	return e.dispatcher != nil
 }
 
-func (e *socketPairEndpoint) Wait() {
-	e.wg.Wait()
+func (e *socketPairEndpoint) Wait() {}
+
+func (e *socketPairEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.linkAddr = addr
 }
 
 func (e *socketPairEndpoint) ARPHardwareType() header.ARPHardwareType {
 	return header.ARPHardwareEther
 }
 
-func (e *socketPairEndpoint) SetLinkAddress(addr tcpip.LinkAddress) {
-	e.linkAddr = addr
-}
-
-func (e *socketPairEndpoint) SetMTU(mtu uint32) {
-	e.mtu = mtu
-}
-
-func (e *socketPairEndpoint) SetOnCloseAction(f func()) {
-	// No-op: cleanup is handled in Close()
-}
-
 func (e *socketPairEndpoint) AddHeader(pkt *stack.PacketBuffer) {
 	eth := header.Ethernet(pkt.LinkHeader().Push(header.EthernetMinimumSize))
 	eth.Encode(&header.EthernetFields{
-		SrcAddr: e.linkAddr,
+		SrcAddr: pkt.EgressRoute.LocalLinkAddress,
 		DstAddr: pkt.EgressRoute.RemoteLinkAddress,
 		Type:    pkt.NetworkProtocolNumber,
 	})
@@ -128,25 +131,37 @@ func (e *socketPairEndpoint) ParseHeader(pkt *stack.PacketBuffer) bool {
 }
 
 func (e *socketPairEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
-	n := 0
+	var written int
 	for _, pkt := range pkts.AsSlice() {
-		data := pkt.ToBuffer()
-		bytes := data.Flatten()
-		if _, err := e.file.Write(bytes); err != nil {
-			return n, &tcpip.ErrAborted{}
+		if err := e.writePacket(pkt); err != nil {
+			return written, err
 		}
-		n++
+		written++
 	}
-	return n, nil
+	return written, nil
+}
+
+func (e *socketPairEndpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return &tcpip.ErrClosedForSend{}
+	}
+	e.mu.Unlock()
+
+	data := pkt.ToView().AsSlice()
+	_, err := e.file.Write(data)
+	if err != nil {
+		return &tcpip.ErrAborted{}
+	}
+	return nil
 }
 
 func (e *socketPairEndpoint) readLoop() {
-	defer e.wg.Done()
-
 	buf := make([]byte, e.mtu+header.EthernetMinimumSize)
 	for {
 		select {
-		case <-e.stopCh:
+		case <-e.closeCh:
 			return
 		default:
 		}
@@ -169,8 +184,11 @@ func (e *socketPairEndpoint) readLoop() {
 		eth := header.Ethernet(buf[:n])
 		proto := eth.Type()
 
+		// Copy data since buf is reused
+		data := make([]byte, n)
+		copy(data, buf[:n])
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
-			Payload: buffer.MakeWithData(buf[:n]),
+			Payload: buffer.MakeWithData(data),
 		})
 
 		if !e.ParseHeader(pkt) {
@@ -178,9 +196,21 @@ func (e *socketPairEndpoint) readLoop() {
 			continue
 		}
 
-		e.dispatcher.DeliverNetworkPacket(proto, pkt)
+		e.mu.Lock()
+		dispatcher := e.dispatcher
+		e.mu.Unlock()
+
+		if dispatcher != nil {
+			dispatcher.DeliverNetworkPacket(proto, pkt)
+		}
 		pkt.DecRef()
 	}
+}
+
+func (e *socketPairEndpoint) SetOnCloseAction(action func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onCloseAction = action
 }
 
 func (e *socketPairEndpoint) Close() {
@@ -190,20 +220,29 @@ func (e *socketPairEndpoint) Close() {
 		return
 	}
 	e.closed = true
+	onClose := e.onCloseAction
 	e.mu.Unlock()
 
-	close(e.stopCh)
+	if onClose != nil {
+		onClose()
+	}
+	close(e.closeCh)
 	e.file.Close()
-	e.wg.Wait()
 }
 
 func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 	s := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol, arp.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 
-	linkEP := newSocketPairEndpoint(cfg.FD, cfg.MTU)
+	// Get file handle
+	file := cfg.File
+	if file == nil {
+		file = os.NewFile(uintptr(cfg.FD), "network")
+	}
+
+	linkEP := newSocketPairEndpoint(file, cfg.MTU)
 
 	if tcpipErr := s.CreateNIC(1, linkEP); tcpipErr != nil {
 		return nil, fmt.Errorf("failed to create NIC: %v", tcpipErr)
@@ -256,24 +295,25 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 	}
 
 	r.Complete(false)
-
 	guestConn := gonet.NewTCPConn(&wq, ep)
 
 	dstIP := id.LocalAddress.String()
-	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
-
-	if !ns.policy.IsHostAllowed(host) {
-		ns.emitBlockedEvent(host, "host not in allowlist")
-		guestConn.Close()
-		return
-	}
 
 	switch dstPort {
 	case 80:
+		// HTTP: policy check happens in handler based on Host header
 		go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
 	case 443:
+		// HTTPS: policy check happens in handler based on SNI
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
+		// Non-HTTP: check policy by IP address
+		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+		if !ns.policy.IsHostAllowed(host) {
+			ns.emitBlockedEvent(host, "host not in allowlist")
+			guestConn.Close()
+			return
+		}
 		go ns.handlePassthrough(guestConn, dstIP, int(dstPort))
 	}
 }
