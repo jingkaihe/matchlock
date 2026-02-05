@@ -305,7 +305,8 @@ type sandboxVM struct {
 	id          string
 	config      *api.Config
 	machine     vm.Machine
-	netStack    *sandboxnet.NetworkStack
+	proxy       *sandboxnet.TransparentProxy
+	iptRules    *sandboxnet.IPTablesRules
 	policy      *policy.Engine
 	vfsRoot     *vfs.MountRouter
 	vfsServer   *vfs.VFSServer
@@ -342,20 +343,52 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		return nil, fmt.Errorf("failed to create VM: %w", err)
 	}
 
+	linuxMachine := machine.(*linux.LinuxMachine)
+
 	// Create policy engine
 	policyEngine := policy.NewEngine(config.Network)
 
 	// Create event channel
 	events := make(chan api.Event, 100)
 
-	// Network stack is disabled for now - Firecracker handles networking directly
-	// TODO: Implement network interception using a different architecture
-	// (e.g., veth pairs, or by having gVisor act as a proxy rather than TAP owner)
-	var netStack *sandboxnet.NetworkStack = nil
+	// Set up transparent proxy for HTTP/HTTPS interception
+	const gatewayIP = "192.168.100.1"
+	const proxyBindAddr = "0.0.0.0" // Bind to all interfaces
+	const httpPort = 18080
+	const httpsPort = 18443
 
-	// Set up basic NAT for guest network access
-	if err := setupNAT(machine.(*linux.LinuxMachine)); err != nil {
-		// Non-fatal - guest just won't have network access
+	var proxy *sandboxnet.TransparentProxy
+	var iptRules *sandboxnet.IPTablesRules
+
+	// Only set up proxy if we have network policy (allowlist configured)
+	if config.Network != nil && len(config.Network.AllowedHosts) > 0 {
+		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
+			BindAddr:  proxyBindAddr,
+			HTTPPort:  httpPort,
+			HTTPSPort: httpsPort,
+			Policy:    policyEngine,
+			Events:    events,
+		})
+		if err != nil {
+			machine.Close()
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to create transparent proxy: %w", err)
+		}
+
+		proxy.Start()
+
+		// Set up iptables rules to redirect traffic to the proxy
+		iptRules = sandboxnet.NewIPTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort)
+		if err := iptRules.Setup(); err != nil {
+			proxy.Close()
+			machine.Close()
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to setup iptables rules: %w", err)
+		}
+	}
+
+	// Set up basic NAT for guest network access (for non-HTTP traffic)
+	if err := setupNAT(linuxMachine); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
 	}
 
@@ -382,8 +415,11 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 	vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
 	vfsStopFunc, err := vfsServer.ServeUDSBackground(vfsSocketPath)
 	if err != nil {
-		if netStack != nil {
-			netStack.Close()
+		if proxy != nil {
+			proxy.Close()
+		}
+		if iptRules != nil {
+			iptRules.Cleanup()
 		}
 		machine.Close()
 		stateMgr.Unregister(id)
@@ -394,7 +430,8 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		id:          id,
 		config:      config,
 		machine:     machine,
-		netStack:    netStack,
+		proxy:       proxy,
+		iptRules:    iptRules,
 		policy:      policyEngine,
 		vfsRoot:     vfsRoot,
 		vfsServer:   vfsServer,
@@ -462,8 +499,11 @@ func (v *sandboxVM) Close() error {
 	if v.vfsStopFunc != nil {
 		v.vfsStopFunc()
 	}
-	if v.netStack != nil {
-		v.netStack.Close()
+	if v.iptRules != nil {
+		v.iptRules.Cleanup()
+	}
+	if v.proxy != nil {
+		v.proxy.Close()
 	}
 	close(v.events)
 	v.stateMgr.Unregister(v.id)
@@ -556,14 +596,14 @@ func setupNAT(machine *linux.LinuxMachine) error {
 		return fmt.Errorf("no TAP interface configured")
 	}
 
-	// Add NAT masquerade rule (ignore errors if rule already exists)
-	exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE").Run()
-	exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "wlan0", "-j", "MASQUERADE").Run()
-	exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "ens", "-j", "MASQUERADE").Run()
+	// Add NAT masquerade rule for guest subnet
+	if err := sandboxnet.SetupNATMasquerade("192.168.100.0/24"); err != nil {
+		return fmt.Errorf("failed to setup NAT masquerade: %w", err)
+	}
 
-	// Allow forwarding for the TAP interface
-	exec.Command("iptables", "-A", "FORWARD", "-i", tapName, "-j", "ACCEPT").Run()
-	exec.Command("iptables", "-A", "FORWARD", "-o", tapName, "-j", "ACCEPT").Run()
+	// Insert forwarding rules at beginning of FORWARD chain (before DROP policies)
+	exec.Command("iptables", "-I", "FORWARD", "1", "-i", tapName, "-j", "ACCEPT").Run()
+	exec.Command("iptables", "-I", "FORWARD", "2", "-o", tapName, "-j", "ACCEPT").Run()
 
 	return nil
 }

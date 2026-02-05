@@ -109,12 +109,14 @@ matchlock --rpc
 - `VFSServer`: CBOR protocol server for guest FUSE
 
 ### Network Stack (`pkg/net`)
-- gVisor tcpip userspace TCP/IP stack for packet interception
-- HTTP/HTTPS interception and MITM via TCP forwarder
-- Dynamic certificate generation with CA caching
-- `CAInjector`: Scripts and env vars for CA trust in guest
+- Transparent proxy for HTTP/HTTPS interception using iptables DNAT
+- HTTP interception with Host header-based policy checking
+- HTTPS MITM via dynamic certificate generation
+- `CAPool`: CA certificate generation and per-domain cert caching
+- `TransparentProxy`: Listens on host ports, uses SO_ORIGINAL_DST for destination
+- `IPTablesRules`: Manages PREROUTING DNAT and FORWARD rules
 - Policy-based request/response modification
-- DNS forwarding to 8.8.8.8
+- NAT masquerade auto-detects default interface
 
 ### Vsock Layer (`pkg/vsock`)
 - Pure Go vsock implementation (AF_VSOCK=40)

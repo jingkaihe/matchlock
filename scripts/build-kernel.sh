@@ -84,6 +84,8 @@ CONFIG_IP_ROUTE_MULTIPATH=y
 CONFIG_TCP_CONG_CUBIC=y
 CONFIG_DEFAULT_TCP_CONG=\"cubic\"
 CONFIG_IPV6=y
+CONFIG_NETDEVICES=y
+CONFIG_NET_CORE=y
 CONFIG_TUN=y
 CONFIG_VETH=y
 
@@ -138,7 +140,8 @@ CONFIG_SPARSEMEM=y
 CONFIG_SPARSEMEM_VMEMMAP=y
 
 # ACPI and PCI (required for Firecracker v1.8+)
-CONFIG_ACPI=y
+# Note: ACPI conflicts with virtio-mmio, so we only enable PCI
+CONFIG_ACPI=n
 CONFIG_PCI=y
 
 # Disable unnecessary features

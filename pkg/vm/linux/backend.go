@@ -44,6 +44,7 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 		return nil, fmt.Errorf("failed to create TAP device: %w", err)
 	}
 
+	// Initial TAP configuration (will be refreshed after Firecracker starts)
 	if err := ConfigureInterface(tapName, "192.168.100.1/24"); err != nil {
 		syscall.Close(tapFD)
 		DeleteInterface(tapName)
@@ -116,6 +117,13 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 
 	m.pid = m.cmd.Process.Pid
 	m.started = true
+
+	// Give Firecracker a moment to open the TAP device, then configure it
+	time.Sleep(100 * time.Millisecond)
+	
+	// Re-configure the TAP interface (Firecracker resets it when opening)
+	ConfigureInterface(m.tapName, "192.168.100.1/24")
+	SetMTU(m.tapName, 1500)
 
 	// Wait for VM to be ready
 	if m.config.VsockCID > 0 {
@@ -216,7 +224,9 @@ func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
-		kernelArgs = "console=ttyS0 reboot=k panic=1 pci=off ip=192.168.100.2::192.168.100.1:255.255.255.0::eth0:off"
+		// Use acpi=off to avoid memory region conflicts with virtio-mmio devices
+		// Firecracker uses virtio-mmio transport, not virtio-pci
+		kernelArgs = "console=ttyS0 reboot=k panic=1 acpi=off ip=192.168.100.2::192.168.100.1:255.255.255.0::eth0:off"
 	}
 
 	config := fmt.Sprintf(`{

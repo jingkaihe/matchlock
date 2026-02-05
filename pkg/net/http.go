@@ -61,10 +61,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		targetHost := host
-		if dstPort != 80 {
-			targetHost = fmt.Sprintf("%s:%d", host, dstPort)
-		}
+		targetHost := fmt.Sprintf("%s:%d", host, dstPort)
 
 		realConn, err := net.DialTimeout("tcp", targetHost, 10*time.Second)
 		if err != nil {

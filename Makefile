@@ -133,6 +133,13 @@ install: $(MATCHLOCK_BIN)
 	sudo cp $(MATCHLOCK_BIN) /usr/local/bin/matchlock
 	@echo "Installed. Run 'matchlock --help' to get started."
 
+.PHONY: setup-permissions
+setup-permissions: $(MATCHLOCK_BIN)
+	@echo "Setting up permissions to run without sudo..."
+	sudo ./scripts/setup-permissions.sh $(USER) $(MATCHLOCK_BIN)
+	@echo ""
+	@echo "Log out and back in, then run: matchlock run echo 'Hello'"
+
 .PHONY: install-images
 install-images:
 	@echo "Installing images to $(OUTPUT_DIR)..."
