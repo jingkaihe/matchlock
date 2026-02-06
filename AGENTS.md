@@ -6,7 +6,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - **Language**: Go 1.25
 - **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
-- **Network**: gVisor tcpip userspace TCP/IP stack with HTTP/TLS MITM
+- **Network**: iptables transparent proxy (Linux), gVisor tcpip userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
 
@@ -142,7 +142,7 @@ matchlock --rpc
 
 **macOS (`pkg/vm/darwin`):**
 - Uses Apple Virtualization.framework via code-hex/vz
-- Unix socket pairs for network I/O (passed to gVisor stack)
+- Two network modes: native NAT (no interception) or Unix socket pairs (passed to gVisor userspace TCP/IP stack for interception)
 - Native virtio-vsock for host-guest communication
 - Same guest agent protocol as Linux (full feature parity)
 
@@ -179,14 +179,24 @@ matchlock --rpc
 - `VFSServer`: CBOR protocol server for guest FUSE
 
 ### Network Stack (`pkg/net`)
-- Transparent proxy for HTTP/HTTPS interception using iptables DNAT
-- HTTP interception with Host header-based policy checking
+
+**Linux:**
+- `TransparentProxy`: iptables DNAT redirects ports 80/443 to host proxy, uses `SO_ORIGINAL_DST` to recover original destination
+- `IPTablesRules`: Manages PREROUTING DNAT and FORWARD rules
+- NAT masquerade auto-detects default interface
+- Kernel handles TCP/IP; only HTTP/HTTPS traffic goes through userspace
+
+**macOS:**
+- `NetworkStack`: gVisor userspace TCP/IP stack with `socketPairEndpoint` reading raw Ethernet frames from Unix socket pair
+- Promiscuous + spoofing mode lets gVisor act as transparent gateway
+- TCP/UDP forwarders intercept all connections at L4
+- Falls back to Apple native NAT when no interception is needed
+
+**Shared:**
+- `HTTPInterceptor`: HTTP interception with Host header-based policy checking
 - HTTPS MITM via dynamic certificate generation
 - `CAPool`: CA certificate generation and per-domain cert caching
-- `TransparentProxy`: Listens on host ports, uses SO_ORIGINAL_DST for destination
-- `IPTablesRules`: Manages PREROUTING DNAT and FORWARD rules
 - Policy-based request/response modification
-- NAT masquerade auto-detects default interface
 
 ### Vsock Layer (`pkg/vsock`)
 - Pure Go vsock implementation (AF_VSOCK=40)
@@ -419,7 +429,7 @@ type VFSConfig struct {
 ## Known Limitations
 
 ### gVisor Dependency
-Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details.
+Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details. gVisor's userspace TCP/IP stack is only used on macOS (where iptables is unavailable); Linux uses iptables-based transparent proxy instead.
 
 ### Test Coverage
 Tests implemented for: vfs (memory, overlay, readonly, router), policy, net (tls, ca_inject). Additional tests needed for: vm/linux, rpc, state, vsock (require mocking).

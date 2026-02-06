@@ -4,7 +4,7 @@
 
 Matchlock is a secure sandbox for running AI-generated code using Firecracker micro-VMs. It provides:
 
-- **Network Isolation**: All traffic passes through a userspace TCP/IP stack with MITM interception
+- **Network Isolation**: All HTTP/HTTPS traffic is intercepted via transparent proxy (Linux: iptables DNAT, macOS: gVisor userspace TCP/IP) with MITM
 - **Secret Protection**: Secrets are never exposed to guest code, only placeholders
 - **Filesystem Control**: Programmable VFS with copy-on-write overlays
 - **Policy Enforcement**: Host allowlists, private IP blocking, request modification
@@ -22,8 +22,8 @@ Matchlock is a secure sandbox for running AI-generated code using Firecracker mi
 │  ┌─────────────────────────────────────┐         │              │
 │  │         Network Stack               │         │              │
 │  │  ┌─────────┐  ┌─────────┐  ┌─────┐ │         │              │
-│  │  │  TAP    │  │  gVisor │  │ TLS │ │         │              │
-│  │  │ Device  │──│  tcpip  │──│ MITM│ │         │              │
+│  │  │  TAP    │  │iptables │  │ TLS │ │         │              │
+│  │  │ Device  │──│  proxy  │──│ MITM│ │         │              │
 │  │  └─────────┘  └─────────┘  └─────┘ │         │              │
 │  └──────────────────│──────────────────┘         │              │
 │                     │                            │              │
@@ -79,30 +79,32 @@ func (b *LinuxBackend) Create(ctx context.Context, config *VMConfig) (Machine, e
 
 ### 2. Network Stack (`pkg/net`)
 
-Uses gVisor's userspace TCP/IP stack to intercept all network traffic:
+Intercepts HTTP/HTTPS traffic for policy enforcement and secret injection. The interception mechanism is platform-specific, but both feed into the shared `HTTPInterceptor`.
 
-```go
-type NetworkStack struct {
-    stack    *stack.Stack
-    policy   *policy.Engine
-    caPool   *CAPool
-}
+**Linux: iptables transparent proxy**
 ```
+Guest eth0 → TAP → kernel TCP/IP → iptables DNAT (ports 80/443) → TransparentProxy → HTTPInterceptor
+                                         │
+                                         └─ other ports → kernel routing → Internet (no userspace)
+```
+- `IPTablesRules` adds PREROUTING DNAT rules redirecting ports 80/443 to proxy listener
+- `TransparentProxy` recovers original destination via `SO_ORIGINAL_DST`
+- Kernel handles all TCP/IP; only HTTP/HTTPS enters userspace
 
-**Traffic Flow:**
+**macOS: gVisor userspace TCP/IP stack**
 ```
-Guest eth0 → TAP FD → gVisor Stack → TCP Forwarder → HTTP/TLS Handler → Internet
-                                           │
-                                           ▼
-                                    Policy Engine
-                                    (allow/block)
+Guest eth0 → virtio-net → Unix socket pair → gVisor stack → TCP Forwarder → HTTPInterceptor
 ```
+- `NetworkStack` with `socketPairEndpoint` processes raw Ethernet frames in userspace
+- Promiscuous + spoofing mode lets gVisor act as transparent gateway
+- All packets go through userspace (no iptables on macOS)
+- Falls back to Apple native NAT when no interception is needed
 
-**Port Routing:**
+**Port Routing (both platforms):**
 - Port 80 → HTTP interceptor (request modification)
 - Port 443 → TLS MITM (certificate spoofing)
-- Port 53 → DNS forwarder (8.8.8.8)
-- Other → Direct passthrough
+- Port 53 → DNS forwarder (8.8.8.8) (macOS only; Linux uses kernel DNS)
+- Other → Direct passthrough with policy check
 
 ### 3. TLS MITM (`pkg/net/tls.go`)
 
@@ -323,10 +325,24 @@ func main() {
 
 ### Network Request
 
+**Linux:**
 ```
 1. Guest Code: requests.get("https://api.openai.com/v1/models")
-2. Guest eth0 → TAP FD: TCP SYN to api.openai.com:443
-3. gVisor Stack: Accept connection
+2. Guest eth0 → TAP → kernel TCP/IP: TCP SYN to api.openai.com:443
+3. iptables DNAT: Redirect port 443 to TransparentProxy listener
+4. TransparentProxy: Accept, recover original dst via SO_ORIGINAL_DST
+5. TLS Handler: Complete TLS handshake with spoofed cert
+6. HTTP Handler: Parse request
+7. Policy Engine: Check host allowed? Replace secrets?
+8. HTTP Handler → Internet: Forward modified request
+9. [Response flows back through same path]
+```
+
+**macOS:**
+```
+1. Guest Code: requests.get("https://api.openai.com/v1/models")
+2. Guest eth0 → socket pair: Raw Ethernet frame
+3. gVisor Stack: Parse Ethernet/IP/TCP, accept connection
 4. TCP Forwarder: Route to TLS handler
 5. TLS Handler: Complete TLS handshake with spoofed cert
 6. HTTP Handler: Parse request
@@ -370,7 +386,8 @@ Trusted: Host, Firecracker, Policy engine
 - Total sandbox ready: <1s
 
 ### Network Latency
-- gVisor TCP/IP adds ~1ms per connection
+- Linux: iptables DNAT adds negligible latency (kernel-level redirect)
+- macOS: gVisor userspace TCP/IP adds ~1ms per connection
 - TLS MITM adds ~5ms for certificate generation (cached after first)
 
 ### File System

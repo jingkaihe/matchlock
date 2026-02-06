@@ -6,7 +6,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - **Secure Execution**: Code runs in isolated Firecracker micro-VMs
 - **Container Images**: Run any Docker/OCI image (Alpine, Ubuntu, Python, etc.)
-- **Network MITM**: All HTTP/HTTPS traffic intercepted via gVisor userspace TCP/IP
+- **Network MITM**: All HTTP/HTTPS traffic intercepted via transparent proxy (iptables on Linux, gVisor userspace TCP/IP on macOS)
 - **Secret Protection**: Secrets never enter the VM, only placeholders
 - **Host Allowlisting**: Control which hosts code can access
 - **Programmable VFS**: Overlay filesystems with copy-on-write
@@ -94,7 +94,7 @@ Using cached image alpine:latest
 │         │              │                 │       │
 │         ▼              ▼                 │       │
 │  ┌─────────────────────────────┐        │       │
-│  │   gVisor TCP/IP + TLS MITM  │        │       │
+│  │  Transparent Proxy + TLS MITM │        │       │
 │  └─────────────────────────────┘        │       │
 │              │                          │       │
 ├──────────────│──────────────────────────│───────┤
@@ -144,7 +144,7 @@ matchlock/
 │   ├── image/            # OCI image builder
 │   ├── sandbox/          # Sandbox management
 │   ├── vm/linux/         # Firecracker backend
-│   ├── net/              # gVisor network + TLS MITM
+│   ├── net/              # Network interception + TLS MITM
 │   ├── policy/           # Security policies
 │   ├── vfs/              # Virtual filesystem
 │   ├── vsock/            # Host-guest communication
