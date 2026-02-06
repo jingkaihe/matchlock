@@ -6,7 +6,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - **Secure Execution**: Code runs in isolated Firecracker micro-VMs
 - **Container Images**: Run any Docker/OCI image (Alpine, Ubuntu, Python, etc.)
-- **Network MITM**: All HTTP/HTTPS traffic intercepted via transparent proxy (iptables on Linux, gVisor userspace TCP/IP on macOS)
+- **Network MITM**: All HTTP/HTTPS traffic intercepted via transparent proxy (nftables on Linux, gVisor userspace TCP/IP on macOS)
 - **Secret Protection**: Secrets never enter the VM, only placeholders
 - **Host Allowlisting**: Control which hosts code can access
 - **Programmable VFS**: Overlay filesystems with copy-on-write

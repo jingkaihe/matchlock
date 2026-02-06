@@ -4,7 +4,7 @@
 
 Matchlock is a secure sandbox for running AI-generated code using Firecracker micro-VMs. It provides:
 
-- **Network Isolation**: All HTTP/HTTPS traffic is intercepted via transparent proxy (Linux: iptables DNAT, macOS: gVisor userspace TCP/IP) with MITM
+- **Network Isolation**: All HTTP/HTTPS traffic is intercepted via transparent proxy (Linux: nftables DNAT, macOS: gVisor userspace TCP/IP) with MITM
 - **Secret Protection**: Secrets are never exposed to guest code, only placeholders
 - **Filesystem Control**: Programmable VFS with copy-on-write overlays
 - **Policy Enforcement**: Host allowlists, private IP blocking, request modification
@@ -22,7 +22,7 @@ Matchlock is a secure sandbox for running AI-generated code using Firecracker mi
 │  ┌─────────────────────────────────────┐         │              │
 │  │         Network Stack               │         │              │
 │  │  ┌─────────┐  ┌─────────┐  ┌─────┐ │         │              │
-│  │  │  TAP    │  │iptables │  │ TLS │ │         │              │
+│  │  │  TAP    │  │nftables │  │ TLS │ │         │              │
 │  │  │ Device  │──│  proxy  │──│ MITM│ │         │              │
 │  │  └─────────┘  └─────────┘  └─────┘ │         │              │
 │  └──────────────────│──────────────────┘         │              │
@@ -81,13 +81,13 @@ func (b *LinuxBackend) Create(ctx context.Context, config *VMConfig) (Machine, e
 
 Intercepts HTTP/HTTPS traffic for policy enforcement and secret injection. The interception mechanism is platform-specific, but both feed into the shared `HTTPInterceptor`.
 
-**Linux: iptables transparent proxy**
+**Linux: nftables transparent proxy**
 ```
-Guest eth0 → TAP → kernel TCP/IP → iptables DNAT (ports 80/443) → TransparentProxy → HTTPInterceptor
+Guest eth0 → TAP → kernel TCP/IP → nftables DNAT (ports 80/443) → TransparentProxy → HTTPInterceptor
                                          │
                                          └─ other ports → kernel routing → Internet (no userspace)
 ```
-- `IPTablesRules` adds PREROUTING DNAT rules redirecting ports 80/443 to proxy listener
+- `NFTablesRules` adds PREROUTING DNAT rules redirecting ports 80/443 to proxy listener via netlink
 - `TransparentProxy` recovers original destination via `SO_ORIGINAL_DST`
 - Kernel handles all TCP/IP; only HTTP/HTTPS enters userspace
 
@@ -97,7 +97,7 @@ Guest eth0 → virtio-net → Unix socket pair → gVisor stack → TCP Forwarde
 ```
 - `NetworkStack` with `socketPairEndpoint` processes raw Ethernet frames in userspace
 - Promiscuous + spoofing mode lets gVisor act as transparent gateway
-- All packets go through userspace (no iptables on macOS)
+- All packets go through userspace (no nftables on macOS)
 - Falls back to Apple native NAT when no interception is needed
 
 **Port Routing (both platforms):**
@@ -329,7 +329,7 @@ func main() {
 ```
 1. Guest Code: requests.get("https://api.openai.com/v1/models")
 2. Guest eth0 → TAP → kernel TCP/IP: TCP SYN to api.openai.com:443
-3. iptables DNAT: Redirect port 443 to TransparentProxy listener
+3. nftables DNAT: Redirect port 443 to TransparentProxy listener
 4. TransparentProxy: Accept, recover original dst via SO_ORIGINAL_DST
 5. TLS Handler: Complete TLS handshake with spoofed cert
 6. HTTP Handler: Parse request
@@ -386,7 +386,7 @@ Trusted: Host, Firecracker, Policy engine
 - Total sandbox ready: <1s
 
 ### Network Latency
-- Linux: iptables DNAT adds negligible latency (kernel-level redirect)
+- Linux: nftables DNAT adds negligible latency (kernel-level redirect)
 - macOS: gVisor userspace TCP/IP adds ~1ms per connection
 - TLS MITM adds ~5ms for certificate generation (cached after first)
 

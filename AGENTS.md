@@ -6,7 +6,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - **Language**: Go 1.25
 - **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
-- **Network**: iptables transparent proxy (Linux), gVisor tcpip userspace TCP/IP stack (macOS), HTTP/TLS MITM
+- **Network**: nftables transparent proxy (Linux), gVisor tcpip userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
 
@@ -181,8 +181,8 @@ matchlock --rpc
 ### Network Stack (`pkg/net`)
 
 **Linux:**
-- `TransparentProxy`: iptables DNAT redirects ports 80/443 to host proxy, uses `SO_ORIGINAL_DST` to recover original destination
-- `IPTablesRules`: Manages PREROUTING DNAT and FORWARD rules
+- `TransparentProxy`: nftables DNAT redirects ports 80/443 to host proxy, uses `SO_ORIGINAL_DST` to recover original destination
+- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands)
 - NAT masquerade auto-detects default interface
 - Kernel handles TCP/IP; only HTTP/HTTPS traffic goes through userspace
 
@@ -354,7 +354,7 @@ sudo ./bin/matchlock setup linux
 
 After running `matchlock setup linux`, matchlock can run without sudo because:
 - The binary has `CAP_NET_ADMIN` capability for creating TAP interfaces and nftables rules
-- nftables rules are created/destroyed per-VM at runtime using netlink (no iptables binary needed)
+- nftables rules are created/destroyed per-VM at runtime using netlink (no external binary needed)
 - IP forwarding is already enabled system-wide
 
 ### Setup Options
@@ -480,7 +480,7 @@ type VFSConfig struct {
 ## Known Limitations
 
 ### gVisor Dependency
-Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details. gVisor's userspace TCP/IP stack is only used on macOS (where iptables is unavailable); Linux uses iptables-based transparent proxy instead.
+Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details. gVisor's userspace TCP/IP stack is only used on macOS (where nftables is unavailable); Linux uses nftables-based transparent proxy instead.
 
 ### Test Coverage
 Tests implemented for: vfs (memory, overlay, readonly, router), policy, net (tls, ca_inject). Additional tests needed for: vm/linux, rpc, state, vsock (require mocking).
