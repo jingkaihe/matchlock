@@ -31,13 +31,10 @@ build_x86_64() {
     echo "Building Linux kernel $KERNEL_VERSION for x86_64..."
     DOCKER_BUILDKIT=1 docker build \
         --build-arg KERNEL_VERSION="$KERNEL_VERSION" \
-        --target build-x86_64 \
+        --target output-x86_64 \
         --output "type=local,dest=$OUTPUT_DIR" \
         -f "$DOCKERFILE_DIR/Dockerfile" \
         "$DOCKERFILE_DIR"
-    # docker --output copies the entire /output dir, flatten it
-    mv "$OUTPUT_DIR/output/kernel" "$OUTPUT_DIR/kernel"
-    rmdir "$OUTPUT_DIR/output"
     echo "Built: $OUTPUT_DIR/kernel ($(du -h "$OUTPUT_DIR/kernel" | cut -f1))"
 }
 
@@ -45,13 +42,10 @@ build_arm64() {
     echo "Building Linux kernel $KERNEL_VERSION for arm64..."
     DOCKER_BUILDKIT=1 docker build \
         --build-arg KERNEL_VERSION="$KERNEL_VERSION" \
-        --target build-arm64 \
+        --target output-arm64 \
         --output "type=local,dest=$OUTPUT_DIR" \
         -f "$DOCKERFILE_DIR/Dockerfile" \
         "$DOCKERFILE_DIR"
-    # docker --output copies the entire /output dir, flatten it
-    mv "$OUTPUT_DIR/output/kernel-arm64" "$OUTPUT_DIR/kernel-arm64"
-    rmdir "$OUTPUT_DIR/output"
     echo "Built: $OUTPUT_DIR/kernel-arm64 ($(du -h "$OUTPUT_DIR/kernel-arm64" | cut -f1))"
 }
 
