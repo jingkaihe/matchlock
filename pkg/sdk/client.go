@@ -32,7 +32,8 @@ import (
 	"sync/atomic"
 )
 
-// Client is a Matchlock JSON-RPC client
+// Client is a Matchlock JSON-RPC client.
+// All methods are safe for concurrent use.
 type Client struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
@@ -40,8 +41,14 @@ type Client struct {
 	stderr    io.ReadCloser
 	requestID atomic.Uint64
 	vmID      string
-	mu        sync.Mutex
+	mu        sync.Mutex // legacy — kept for Close()
 	closed    bool
+
+	// Concurrent request handling
+	writeMu    sync.Mutex                  // serializes writes to stdin
+	pendingMu  sync.Mutex                  // protects pending map
+	pending    map[uint64]*pendingRequest   // in-flight requests by ID
+	readerOnce sync.Once                   // ensures reader goroutine starts once
 }
 
 // Config holds client configuration
@@ -95,10 +102,11 @@ func NewClient(cfg Config) (*Client, error) {
 	go io.Copy(io.Discard, stderr)
 
 	return &Client{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-		stderr: stderr,
+		cmd:     cmd,
+		stdin:   stdin,
+		stdout:  bufio.NewReader(stdout),
+		stderr:  stderr,
+		pending: make(map[uint64]*pendingRequest),
 	}, nil
 }
 
@@ -248,7 +256,7 @@ type ExecResult struct {
 	DurationMS int64
 }
 
-// Exec executes a command in the sandbox
+// Exec executes a command in the sandbox and returns the buffered result.
 func (c *Client) Exec(command string) (*ExecResult, error) {
 	return c.ExecWithDir(command, "")
 }
@@ -285,6 +293,72 @@ func (c *Client) ExecWithDir(command, workingDir string) (*ExecResult, error) {
 		Stdout:     string(stdout),
 		Stderr:     string(stderr),
 		DurationMS: execResult.DurationMS,
+	}, nil
+}
+
+// ExecStreamResult holds the final result of a streaming exec (no stdout/stderr
+// since those were delivered via the callback).
+type ExecStreamResult struct {
+	ExitCode   int
+	DurationMS int64
+}
+
+// ExecStream executes a command and streams stdout/stderr to the provided writers
+// in real-time. If stdout or stderr is nil, that stream is discarded.
+// The final ExecStreamResult contains only the exit code and duration.
+func (c *Client) ExecStream(command string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
+	return c.ExecStreamWithDir(command, "", stdout, stderr)
+}
+
+// ExecStreamWithDir executes a command with a working directory and streams
+// stdout/stderr to the provided writers in real-time.
+func (c *Client) ExecStreamWithDir(command, workingDir string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
+	params := map[string]string{
+		"command": command,
+	}
+	if workingDir != "" {
+		params["working_dir"] = workingDir
+	}
+
+	onNotification := func(method string, params json.RawMessage) {
+		var chunk struct {
+			Data string `json:"data"`
+		}
+		if err := json.Unmarshal(params, &chunk); err != nil {
+			return
+		}
+		decoded, err := base64.StdEncoding.DecodeString(chunk.Data)
+		if err != nil {
+			return
+		}
+		switch method {
+		case "exec_stream.stdout":
+			if stdout != nil {
+				stdout.Write(decoded)
+			}
+		case "exec_stream.stderr":
+			if stderr != nil {
+				stderr.Write(decoded)
+			}
+		}
+	}
+
+	result, err := c.sendRequestWithNotify("exec_stream", params, onNotification)
+	if err != nil {
+		return nil, err
+	}
+
+	var streamResult struct {
+		ExitCode   int   `json:"exit_code"`
+		DurationMS int64 `json:"duration_ms"`
+	}
+	if err := json.Unmarshal(result, &streamResult); err != nil {
+		return nil, fmt.Errorf("failed to parse exec_stream result: %w", err)
+	}
+
+	return &ExecStreamResult{
+		ExitCode:   streamResult.ExitCode,
+		DurationMS: streamResult.DurationMS,
 	}, nil
 }
 

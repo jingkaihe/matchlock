@@ -235,11 +235,27 @@ Firecracker exposes vsock via Unix domain sockets with two connection patterns:
 ## JSON-RPC Methods
 
 - `create`: Initialize VM with configuration
-- `exec`: Execute command in sandbox
+- `exec`: Execute command in sandbox (buffered — returns all stdout/stderr in response)
+- `exec_stream`: Execute command with streaming output (stdout/stderr sent as notifications before final response)
 - `write_file`: Write file to sandbox
 - `read_file`: Read file from sandbox
 - `list_files`: List directory contents
 - `close`: Shutdown VM
+
+The RPC handler dispatches `exec`, `exec_stream`, file, and list operations concurrently. `create` and `close` are serialized (drain in-flight requests first).
+
+### exec_stream protocol
+
+Stream notifications (no `id`):
+```json
+{"jsonrpc":"2.0","method":"exec_stream.stdout","params":{"id":2,"data":"<base64>"}}
+{"jsonrpc":"2.0","method":"exec_stream.stderr","params":{"id":2,"data":"<base64>"}}
+```
+
+Final response:
+```json
+{"jsonrpc":"2.0","id":2,"result":{"exit_code":0,"duration_ms":123}}
+```
 
 ## CA Certificate Injection
 

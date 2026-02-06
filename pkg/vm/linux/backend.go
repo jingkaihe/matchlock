@@ -386,7 +386,9 @@ func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecO
 	return m.execVsock(ctx, command, opts)
 }
 
-// execVsock executes a command via vsock
+// execVsock executes a command via vsock.
+// When opts.Stdout/Stderr are set, uses streaming mode (MsgTypeExecStream) and
+// forwards output chunks to the writers in real-time.
 func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	start := time.Now()
 
@@ -396,7 +398,6 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 	}
 	defer conn.Close()
 
-	// Build exec request
 	req := vsock.ExecRequest{
 		Command: command,
 	}
@@ -405,15 +406,19 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 		req.Env = opts.Env
 	}
 
-	// Encode and send request
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode exec request: %w", err)
 	}
 
-	// Write message type and length
+	streaming := opts != nil && (opts.Stdout != nil || opts.Stderr != nil)
+
 	header := make([]byte, 5)
-	header[0] = vsock.MsgTypeExec
+	if streaming {
+		header[0] = vsock.MsgTypeExecStream
+	} else {
+		header[0] = vsock.MsgTypeExec
+	}
 	header[1] = byte(len(reqData) >> 24)
 	header[2] = byte(len(reqData) >> 16)
 	header[3] = byte(len(reqData) >> 8)
@@ -426,10 +431,8 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	// Read response
 	var stdout, stderr bytes.Buffer
 	for {
-		// Read message header
 		if _, err := readFull(conn, header); err != nil {
 			return nil, fmt.Errorf("failed to read response header: %w", err)
 		}
@@ -437,7 +440,6 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 		msgType := header[0]
 		length := uint32(header[1])<<24 | uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
 
-		// Read message data
 		data := make([]byte, length)
 		if length > 0 {
 			if _, err := readFull(conn, data); err != nil {
@@ -447,8 +449,14 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 		switch msgType {
 		case vsock.MsgTypeStdout:
+			if streaming && opts.Stdout != nil {
+				opts.Stdout.Write(data)
+			}
 			stdout.Write(data)
 		case vsock.MsgTypeStderr:
+			if streaming && opts.Stderr != nil {
+				opts.Stderr.Write(data)
+			}
 			stderr.Write(data)
 		case vsock.MsgTypeExecResult:
 			var resp vsock.ExecResponse
@@ -458,7 +466,6 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 			duration := time.Since(start)
 
-			// Use streamed stdout/stderr if available, otherwise use embedded response
 			stdoutData := stdout.Bytes()
 			stderrData := stderr.Bytes()
 			if len(stdoutData) == 0 && len(resp.Stdout) > 0 {

@@ -119,7 +119,6 @@ func (b *Builder) extractImage(img v1.Image, destDir string) error {
 
 	cmd := exec.Command("tar", "-xf", "-", "-C", destDir, "--numeric-owner")
 	cmd.Stdin = reader
-	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {

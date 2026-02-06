@@ -177,8 +177,14 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 		return nil, fmt.Errorf("failed to encode exec request: %w", err)
 	}
 
+	streaming := opts != nil && (opts.Stdout != nil || opts.Stderr != nil)
+
 	header := make([]byte, 5)
-	header[0] = vsock.MsgTypeExec
+	if streaming {
+		header[0] = vsock.MsgTypeExecStream
+	} else {
+		header[0] = vsock.MsgTypeExec
+	}
 	header[1] = byte(len(reqData) >> 24)
 	header[2] = byte(len(reqData) >> 16)
 	header[3] = byte(len(reqData) >> 8)
@@ -209,8 +215,14 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 
 		switch msgType {
 		case vsock.MsgTypeStdout:
+			if streaming && opts.Stdout != nil {
+				opts.Stdout.Write(data)
+			}
 			stdout.Write(data)
 		case vsock.MsgTypeStderr:
+			if streaming && opts.Stderr != nil {
+				opts.Stderr.Write(data)
+			}
 			stderr.Write(data)
 		case vsock.MsgTypeExecResult:
 			var resp vsock.ExecResponse

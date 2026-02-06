@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -40,6 +41,7 @@ const (
 	MsgTypeResize     uint8 = 8
 	MsgTypeExecTTY    uint8 = 9
 	MsgTypeExit       uint8 = 10
+	MsgTypeExecStream uint8 = 11
 )
 
 type sockaddrVM struct {
@@ -162,6 +164,9 @@ func handleExec(fd int) {
 	case MsgTypeExec:
 		handleExecBatch(fd, data)
 		syscall.Close(fd)
+	case MsgTypeExecStream:
+		handleExecStreamBatch(fd, data)
+		syscall.Close(fd)
 	case MsgTypeExecTTY:
 		handleExecTTY(fd, data)
 	default:
@@ -216,6 +221,98 @@ func handleExecBatch(fd int, data []byte) {
 			resp.ExitCode = exitErr.ExitCode()
 		} else {
 			resp.Error = err.Error()
+			resp.ExitCode = 1
+		}
+	}
+
+	sendExecResponse(fd, resp)
+}
+
+// handleExecStreamBatch streams stdout/stderr as MsgTypeStdout/MsgTypeStderr
+// chunks in real-time, then sends MsgTypeExecResult with just the exit code.
+func handleExecStreamBatch(fd int, data []byte) {
+	var req ExecRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendExecResponse(fd, &ExecResponse{Error: err.Error()})
+		return
+	}
+
+	wipeBytes(data)
+
+	cmd := exec.Command("sh", "-c", req.Command)
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		sendExecResponse(fd, &ExecResponse{Error: err.Error()})
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		sendExecResponse(fd, &ExecResponse{Error: err.Error()})
+		return
+	}
+
+	if req.WorkingDir != "" {
+		cmd.Dir = req.WorkingDir
+	}
+
+	if len(req.Env) > 0 {
+		env := os.Environ()
+		for k, v := range req.Env {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+		cmd.Env = env
+	}
+
+	applySandboxSysProcAttr(cmd)
+	wrapCommandForSandbox(cmd)
+	wipeMap(req.Env)
+
+	if err := cmd.Start(); err != nil {
+		sendExecResponse(fd, &ExecResponse{ExitCode: 1, Error: err.Error()})
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdoutPipe.Read(buf)
+			if n > 0 {
+				sendMessage(fd, MsgTypeStdout, buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderrPipe.Read(buf)
+			if n > 0 {
+				sendMessage(fd, MsgTypeStderr, buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	cmdErr := cmd.Wait()
+
+	resp := &ExecResponse{}
+	if cmdErr != nil {
+		if exitErr, ok := cmdErr.(*exec.ExitError); ok {
+			resp.ExitCode = exitErr.ExitCode()
+		} else {
+			resp.Error = cmdErr.Error()
 			resp.ExitCode = 1
 		}
 	}

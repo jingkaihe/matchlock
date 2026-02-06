@@ -20,6 +20,12 @@ type response struct {
 	ID      *uint64         `json:"id,omitempty"`
 }
 
+// notification is a JSON-RPC notification (no ID) with a method and params
+type notification struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -62,16 +68,51 @@ func (e *RPCError) IsFileError() bool {
 	return e.Code == ErrCodeFileFailed
 }
 
-// sendRequest sends a JSON-RPC request and returns the result
+// pendingRequest tracks an in-flight request awaiting its response.
+type pendingRequest struct {
+	ch chan pendingResult
+	// onNotification is called for streaming notifications matching this request ID.
+	// It is only set for exec_stream requests.
+	onNotification func(method string, params json.RawMessage)
+}
+
+type pendingResult struct {
+	result json.RawMessage
+	err    error
+}
+
+// sendRequest sends a JSON-RPC request and returns the result.
+// It is safe for concurrent use.
 func (c *Client) sendRequest(method string, params interface{}) (json.RawMessage, error) {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return nil, fmt.Errorf("client is closed")
-	}
-	c.mu.Unlock()
+	return c.sendRequestWithNotify(method, params, nil)
+}
+
+// sendRequestWithNotify sends a JSON-RPC request and returns the result.
+// If onNotification is non-nil, it is called for each streaming notification
+// matching this request's ID before the final response arrives.
+func (c *Client) sendRequestWithNotify(method string, params interface{}, onNotification func(string, json.RawMessage)) (json.RawMessage, error) {
+	c.readerOnce.Do(c.startReader)
 
 	id := c.requestID.Add(1)
+
+	pending := &pendingRequest{
+		ch:             make(chan pendingResult, 1),
+		onNotification: onNotification,
+	}
+
+	c.pendingMu.Lock()
+	if c.pending == nil {
+		c.pendingMu.Unlock()
+		return nil, fmt.Errorf("client is closed")
+	}
+	c.pending[id] = pending
+	c.pendingMu.Unlock()
+
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pending, id)
+		c.pendingMu.Unlock()
+	}()
 
 	req := request{
 		JSONRPC: "2.0",
@@ -85,38 +126,86 @@ func (c *Client) sendRequest(method string, params interface{}) (json.RawMessage
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	if _, err := fmt.Fprintln(c.stdin, string(data)); err != nil {
-		return nil, fmt.Errorf("failed to write request: %w", err)
+	c.writeMu.Lock()
+	_, writeErr := fmt.Fprintln(c.stdin, string(data))
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		return nil, fmt.Errorf("failed to write request: %w", writeErr)
 	}
 
-	// Read response (skip notifications)
-	for {
-		line, err := c.stdout.ReadBytes('\n')
-		if err != nil {
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
+	result := <-pending.ch
+	return result.result, result.err
+}
 
-		var resp response
-		if err := json.Unmarshal(line, &resp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-		}
+// startReader launches the background goroutine that reads JSON-RPC responses
+// from stdout and dispatches them to the appropriate pending request.
+func (c *Client) startReader() {
+	go func() {
+		for {
+			line, err := c.stdout.ReadBytes('\n')
+			if err != nil {
+				c.pendingMu.Lock()
+				for _, p := range c.pending {
+					p.ch <- pendingResult{err: fmt.Errorf("connection closed: %w", err)}
+				}
+				c.pending = nil
+				c.pendingMu.Unlock()
+				return
+			}
 
-		// Skip notifications (no ID)
-		if resp.ID == nil {
-			continue
-		}
+			var resp response
+			if err := json.Unmarshal(line, &resp); err != nil {
+				continue
+			}
 
-		if *resp.ID != id {
-			continue
-		}
+			// Notification (no ID) — may be a stream chunk or an event
+			if resp.ID == nil {
+				var notif notification
+				if err := json.Unmarshal(line, &notif); err != nil {
+					continue
+				}
+				c.handleNotification(notif)
+				continue
+			}
 
-		if resp.Error != nil {
-			return nil, &RPCError{
-				Code:    resp.Error.Code,
-				Message: resp.Error.Message,
+			c.pendingMu.Lock()
+			p, ok := c.pending[*resp.ID]
+			c.pendingMu.Unlock()
+
+			if !ok {
+				continue
+			}
+
+			if resp.Error != nil {
+				p.ch <- pendingResult{err: &RPCError{
+					Code:    resp.Error.Code,
+					Message: resp.Error.Message,
+				}}
+			} else {
+				p.ch <- pendingResult{result: resp.Result}
 			}
 		}
+	}()
+}
 
-		return resp.Result, nil
+// handleNotification routes JSON-RPC notifications. Stream notifications
+// (exec_stream.stdout, exec_stream.stderr) include a request ID in params
+// and are forwarded to the matching pending request's callback.
+func (c *Client) handleNotification(notif notification) {
+	switch notif.Method {
+	case "exec_stream.stdout", "exec_stream.stderr":
+		var p struct {
+			ID *uint64 `json:"id"`
+		}
+		if err := json.Unmarshal(notif.Params, &p); err != nil || p.ID == nil {
+			return
+		}
+		c.pendingMu.Lock()
+		pending, ok := c.pending[*p.ID]
+		c.pendingMu.Unlock()
+		if ok && pending.onNotification != nil {
+			pending.onNotification(notif.Method, notif.Params)
+		}
 	}
 }
+

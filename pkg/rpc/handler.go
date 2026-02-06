@@ -62,11 +62,13 @@ type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
 type Handler struct {
 	factory VMFactory
 	vm      VM
+	vmMu    sync.RWMutex // protects vm field
 	events  chan api.Event
 	stdin   io.Reader
 	stdout  io.Writer
-	mu      sync.Mutex
+	mu      sync.Mutex // protects stdout writes
 	closed  atomic.Bool
+	wg      sync.WaitGroup // tracks in-flight requests
 }
 
 func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
@@ -100,12 +102,27 @@ func (h *Handler) Run(ctx context.Context) error {
 			continue
 		}
 
-		resp := h.handleRequest(ctx, &req)
-		if resp != nil {
-			h.sendResponse(resp)
+		// Create and close run synchronously to avoid races
+		if req.Method == "create" || req.Method == "close" {
+			h.wg.Wait()
+			resp := h.handleRequest(ctx, &req)
+			if resp != nil {
+				h.sendResponse(resp)
+			}
+			continue
 		}
+
+		h.wg.Add(1)
+		go func(r Request) {
+			defer h.wg.Done()
+			resp := h.handleRequest(ctx, &r)
+			if resp != nil {
+				h.sendResponse(resp)
+			}
+		}(req)
 	}
 
+	h.wg.Wait()
 	return scanner.Err()
 }
 
@@ -132,6 +149,12 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 			ID:      req.ID,
 		}
 	}
+}
+
+func (h *Handler) getVM() VM {
+	h.vmMu.RLock()
+	defer h.vmMu.RUnlock()
+	return h.vm
 }
 
 func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
@@ -174,7 +197,9 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
+	h.vmMu.Lock()
 	h.vm = vm
+	h.vmMu.Unlock()
 
 	go func() {
 		for event := range vm.Events() {
@@ -194,7 +219,8 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 }
 
 func (h *Handler) handleExec(ctx context.Context, req *Request) *Response {
-	if h.vm == nil {
+	vm := h.getVM()
+	if vm == nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
@@ -218,7 +244,7 @@ func (h *Handler) handleExec(ctx context.Context, req *Request) *Response {
 		WorkingDir: params.WorkingDir,
 	}
 
-	result, err := h.vm.Exec(ctx, params.Command, opts)
+	result, err := vm.Exec(ctx, params.Command, opts)
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
@@ -239,12 +265,110 @@ func (h *Handler) handleExec(ctx context.Context, req *Request) *Response {
 	}
 }
 
+// handleExecStream executes a command and streams stdout/stderr as JSON-RPC
+// notifications before sending the final response with the exit code.
+//
+// Notifications:
+//
+//	{"jsonrpc":"2.0","method":"exec_stream.stdout","params":{"id":<req_id>,"data":"<base64>"}}
+//	{"jsonrpc":"2.0","method":"exec_stream.stderr","params":{"id":<req_id>,"data":"<base64>"}}
+//
+// Final response:
+//
+//	{"jsonrpc":"2.0","id":<req_id>,"result":{"exit_code":0,"duration_ms":123}}
 func (h *Handler) handleExecStream(ctx context.Context, req *Request) *Response {
-	return h.handleExec(ctx, req)
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Command    string `json:"command"`
+		WorkingDir string `json:"working_dir,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	reqID := req.ID
+	stdoutWriter := &streamWriter{handler: h, reqID: reqID, method: "exec_stream.stdout"}
+	stderrWriter := &streamWriter{handler: h, reqID: reqID, method: "exec_stream.stderr"}
+
+	opts := &api.ExecOptions{
+		WorkingDir: params.WorkingDir,
+		Stdout:     stdoutWriter,
+		Stderr:     stderrWriter,
+	}
+
+	result, err := vm.Exec(ctx, params.Command, opts)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeExecFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	// For streaming, stdout/stderr were already sent as notifications.
+	// If the VM backend didn't use the writers (fell back to buffered), send them now.
+	if !stdoutWriter.used && len(result.Stdout) > 0 {
+		h.sendStreamData(reqID, "exec_stream.stdout", result.Stdout)
+	}
+	if !stderrWriter.used && len(result.Stderr) > 0 {
+		h.sendStreamData(reqID, "exec_stream.stderr", result.Stderr)
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"exit_code":   result.ExitCode,
+			"duration_ms": result.DurationMS,
+		},
+		ID: req.ID,
+	}
+}
+
+// streamWriter implements io.Writer and sends each Write as a JSON-RPC notification.
+type streamWriter struct {
+	handler *Handler
+	reqID   *uint64
+	method  string
+	used    bool
+}
+
+func (w *streamWriter) Write(p []byte) (int, error) {
+	w.used = true
+	w.handler.sendStreamData(w.reqID, w.method, p)
+	return len(p), nil
+}
+
+func (h *Handler) sendStreamData(reqID *uint64, method string, data []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	notification := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"params": map[string]interface{}{
+			"id":   reqID,
+			"data": base64.StdEncoding.EncodeToString(data),
+		},
+	}
+	encoded, _ := json.Marshal(notification)
+	fmt.Fprintln(h.stdout, string(encoded))
 }
 
 func (h *Handler) handleWriteFile(ctx context.Context, req *Request) *Response {
-	if h.vm == nil {
+	vm := h.getVM()
+	if vm == nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
@@ -279,7 +403,7 @@ func (h *Handler) handleWriteFile(ctx context.Context, req *Request) *Response {
 		mode = 0644
 	}
 
-	if err := h.vm.WriteFile(ctx, params.Path, content, mode); err != nil {
+	if err := vm.WriteFile(ctx, params.Path, content, mode); err != nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeFileFailed, Message: err.Error()},
@@ -295,7 +419,8 @@ func (h *Handler) handleWriteFile(ctx context.Context, req *Request) *Response {
 }
 
 func (h *Handler) handleReadFile(ctx context.Context, req *Request) *Response {
-	if h.vm == nil {
+	vm := h.getVM()
+	if vm == nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
@@ -314,7 +439,7 @@ func (h *Handler) handleReadFile(ctx context.Context, req *Request) *Response {
 		}
 	}
 
-	content, err := h.vm.ReadFile(ctx, params.Path)
+	content, err := vm.ReadFile(ctx, params.Path)
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
@@ -333,7 +458,8 @@ func (h *Handler) handleReadFile(ctx context.Context, req *Request) *Response {
 }
 
 func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
-	if h.vm == nil {
+	vm := h.getVM()
+	if vm == nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
@@ -352,7 +478,7 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 		}
 	}
 
-	files, err := h.vm.ListFiles(ctx, params.Path)
+	files, err := vm.ListFiles(ctx, params.Path)
 	if err != nil {
 		return &Response{
 			JSONRPC: "2.0",
@@ -373,10 +499,14 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.closed.Store(true)
 
-	if h.vm != nil {
-		h.vm.Stop(ctx)
-		h.vm.Close()
-		h.vm = nil
+	h.vmMu.Lock()
+	vm := h.vm
+	h.vm = nil
+	h.vmMu.Unlock()
+
+	if vm != nil {
+		vm.Stop(ctx)
+		vm.Close()
 	}
 
 	return &Response{

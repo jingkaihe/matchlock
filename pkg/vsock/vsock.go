@@ -226,6 +226,7 @@ const (
 	MsgTypeResize     uint8 = 8  // TTY: window resize
 	MsgTypeExecTTY    uint8 = 9  // TTY: exec with PTY
 	MsgTypeExit       uint8 = 10 // TTY: process exited
+	MsgTypeExecStream uint8 = 11 // Streaming batch: stdout/stderr sent as chunks, then ExecResult
 )
 
 // ExecRequest is sent from host to guest to execute a command
