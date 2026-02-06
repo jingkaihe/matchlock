@@ -39,10 +39,17 @@ jobs:
             bin/guest-fused-linux-*
 
   build-darwin:
-    name: Build macOS binaries
-    runs-on: macos-latest
+    name: Build macOS (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            arch: amd64
+          - runner: macos-latest
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,13 +63,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build macOS CLI (arm64, CGO enabled for Virtualization.framework)
+      - name: Build macOS CLI (${{ matrix.arch }}, CGO for Virtualization.framework)
         run: mise run cross-build:darwin
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: darwin-binaries
+          name: darwin-${{ matrix.arch }}-binaries
           path: bin/matchlock-darwin-*
 
   release:
@@ -76,17 +83,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download Linux artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: linux-binaries
           path: bin/
-
-      - name: Download macOS artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: darwin-binaries
-          path: bin/
+          merge-multiple: true
 
       - name: Create GitHub Release
         run: |
@@ -96,7 +97,8 @@ jobs:
             --generate-notes \
             bin/matchlock-linux-amd64 \
             bin/matchlock-linux-arm64 \
-            bin/matchlock-darwin-* \
+            bin/matchlock-darwin-amd64 \
+            bin/matchlock-darwin-arm64 \
             bin/guest-agent-linux-amd64 \
             bin/guest-agent-linux-arm64 \
             bin/guest-fused-linux-amd64 \

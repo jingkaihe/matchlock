@@ -95,6 +95,19 @@ echo "Coverage report: coverage.html"
 description = "Run benchmarks"
 run = "go test -bench=. -benchmem -benchtime=2s -count=1 -run=^$ ./pkg/net/"
 
+[tasks."test:acceptance"]
+description = "Run acceptance tests (requires VM support — cannot run in CI)"
+run = """
+#!/usr/bin/env bash
+set -e
+if [ "$(uname -s)" = "Darwin" ]; then
+  mise run darwin:all
+else
+  mise run build:all
+fi
+MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -v ./tests/acceptance/
+"""
+
 # =============================================================================
 # Development tasks
 # =============================================================================

@@ -7,18 +7,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
-// platformOptions returns remote options for darwin (Apple Silicon requires arm64)
 func (b *Builder) platformOptions() []remote.Option {
 	return []remote.Option{
 		remote.WithPlatform(v1.Platform{
 			OS:           "linux",
-			Architecture: "arm64",
+			Architecture: runtime.GOARCH,
 		}),
 	}
 }

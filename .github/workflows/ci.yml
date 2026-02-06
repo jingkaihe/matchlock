@@ -37,8 +37,15 @@ jobs:
         run: mise run lint
 
   test-darwin:
-    name: Test (macOS)
-    runs-on: macos-latest
+    name: Test (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            arch: amd64
+          - runner: macos-latest
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
 
