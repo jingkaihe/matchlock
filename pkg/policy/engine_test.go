@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -217,6 +218,39 @@ func TestEngine_OnRequest_SecretInURL(t *testing.T) {
 
 	if !strings.Contains(result.URL.RawQuery, "real-secret") {
 		t.Error("Secret should be replaced in URL")
+	}
+}
+
+func TestEngine_OnRequest_NoBodyReplacement(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		Secrets: map[string]api.Secret{
+			"API_KEY": {
+				Value: "real-secret",
+				Hosts: []string{"api.example.com"},
+			},
+		},
+	})
+
+	placeholder := engine.GetPlaceholder("API_KEY")
+	body := `{"key":"` + placeholder + `"}`
+
+	req := &http.Request{
+		Header: http.Header{},
+		URL:    &url.URL{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	result, err := engine.OnRequest(req, "api.example.com")
+	if err != nil {
+		t.Fatalf("OnRequest failed: %v", err)
+	}
+
+	got, _ := io.ReadAll(result.Body)
+	if strings.Contains(string(got), "real-secret") {
+		t.Error("Secret should NOT be replaced in request body")
+	}
+	if !strings.Contains(string(got), placeholder) {
+		t.Error("Placeholder should remain in request body")
 	}
 }
 

@@ -1,10 +1,8 @@
 package policy
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -135,6 +133,10 @@ func (e *Engine) requestContainsPlaceholder(req *http.Request, placeholder strin
 	return false
 }
 
+// replaceInRequest substitutes the placeholder with the real secret in headers
+// and URL query params only. We intentionally skip the request body because the
+// body is processed by the remote server's application layer, which may log or
+// echo it back in responses — leaking the real secret into the VM.
 func (e *Engine) replaceInRequest(req *http.Request, placeholder, value string) {
 	for key, values := range req.Header {
 		for i, v := range values {
@@ -150,24 +152,7 @@ func (e *Engine) replaceInRequest(req *http.Request, placeholder, value string) 
 		}
 	}
 
-	if req.Body != nil {
-		body, err := io.ReadAll(req.Body)
-		req.Body.Close()
-		if err == nil && len(body) > 0 && len(body) < 10*1024*1024 {
-			if bytes.Contains(body, []byte(placeholder)) {
-				body = bytes.ReplaceAll(body, []byte(placeholder), []byte(value))
-			}
-		}
-		req.ContentLength = int64(len(body))
-		req.Body = &readCloser{bytes.NewReader(body)}
-	}
 }
-
-type readCloser struct {
-	*bytes.Reader
-}
-
-func (r *readCloser) Close() error { return nil }
 
 func matchGlob(pattern, str string) bool {
 	if pattern == "*" {
