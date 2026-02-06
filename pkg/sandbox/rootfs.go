@@ -31,6 +31,10 @@ mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
 
 hostname matchlock
 
+# Configure DNS - remove any existing file/symlink and write fresh
+rm -f /etc/resolv.conf
+printf "nameserver 8.8.8.8\nnameserver 8.8.4.4\n" > /etc/resolv.conf
+
 # Network setup - bring up interface and get IP via DHCP
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
 
@@ -67,10 +71,9 @@ done
 exec /opt/matchlock/guest-agent
 `
 
-const resolvConfContent = "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
-
 // prepareRootfs injects matchlock components into an ext4 rootfs image using debugfs.
-// This includes the guest-agent binary, guest-fused binary, init scripts, and DNS config.
+// This includes the guest-agent binary, guest-fused binary, and init scripts.
+// DNS config is written at runtime by the init script to handle symlinked resolv.conf.
 // It also optionally resizes the rootfs if diskSizeMB > 0.
 func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	guestAgentPath := DefaultGuestAgentPath()
@@ -83,7 +86,7 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		return fmt.Errorf("guest-fused not found at %s: %w", guestFusedPath, err)
 	}
 
-	// Write init script and resolv.conf to temp files for debugfs injection
+	// Write init script to temp file for debugfs injection
 	initTmp, err := os.CreateTemp("", "matchlock-init-*")
 	if err != nil {
 		return fmt.Errorf("create init temp: %w", err)
@@ -94,17 +97,6 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		return fmt.Errorf("write init temp: %w", err)
 	}
 	initTmp.Close()
-
-	resolvTmp, err := os.CreateTemp("", "matchlock-resolv-*")
-	if err != nil {
-		return fmt.Errorf("create resolv temp: %w", err)
-	}
-	defer os.Remove(resolvTmp.Name())
-	if _, err := resolvTmp.WriteString(resolvConfContent); err != nil {
-		resolvTmp.Close()
-		return fmt.Errorf("write resolv temp: %w", err)
-	}
-	resolvTmp.Close()
 
 	// Build debugfs commands to inject all components.
 	// debugfs cannot traverse symlinks, so we write to both /sbin/ and /usr/sbin/
@@ -123,9 +115,6 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		"/sys",
 		"/dev",
 		"/workspace",
-		"/etc",
-		"/etc/ssl",
-		"/etc/ssl/certs",
 	} {
 		commands = append(commands, fmt.Sprintf("mkdir %s", dir))
 	}
@@ -133,27 +122,23 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	type injection struct {
 		hostPath  string
 		guestPath string
-		exec      bool
 	}
 
 	injections := []injection{
-		{guestAgentPath, "/opt/matchlock/guest-agent", true},
-		{guestFusedPath, "/opt/matchlock/guest-fused", true},
+		{guestAgentPath, "/opt/matchlock/guest-agent"},
+		{guestFusedPath, "/opt/matchlock/guest-fused"},
 		// Write init to both real and usr-merged paths for cross-distro compat
-		{initTmp.Name(), "/sbin/matchlock-init", true},
-		{initTmp.Name(), "/usr/sbin/matchlock-init", true},
-		{initTmp.Name(), "/init", true},
-		{initTmp.Name(), "/sbin/init", true},
-		{initTmp.Name(), "/usr/sbin/init", true},
-		{resolvTmp.Name(), "/etc/resolv.conf", false},
+		{initTmp.Name(), "/sbin/matchlock-init"},
+		{initTmp.Name(), "/usr/sbin/matchlock-init"},
+		{initTmp.Name(), "/init"},
+		{initTmp.Name(), "/sbin/init"},
+		{initTmp.Name(), "/usr/sbin/init"},
 	}
 
 	for _, inj := range injections {
 		commands = append(commands, fmt.Sprintf("rm %s", inj.guestPath))
 		commands = append(commands, fmt.Sprintf("write %s %s", inj.hostPath, inj.guestPath))
-		if inj.exec {
-			commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100755", inj.guestPath))
-		}
+		commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100755", inj.guestPath))
 	}
 
 	cmdStr := strings.Join(commands, "\n")
