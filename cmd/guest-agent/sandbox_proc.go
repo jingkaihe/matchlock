@@ -46,8 +46,14 @@ const (
 	auditArchAARCH64 = 0xc00000b7
 
 	// prCAP* constants for capability manipulation
-	prCapBSetDrop    = 24
-	capLastCap       = 40 // covers all capabilities as of Linux 6.x
+	prCapBSetDrop = 24
+
+	// Only drop capabilities that enable the attack vector
+	capSysPtrace  = 19 // process_vm_readv/writev, ptrace
+	capSysAdmin   = 21 // mount namespace escape, bpf, etc.
+	capSysModule  = 16 // kernel module loading
+	capSysRawio   = 17 // raw I/O port access
+	capSysBoot    = 22 // kexec_load, reboot
 )
 
 type sockFprog struct {
@@ -130,8 +136,13 @@ func runSandboxLauncher() {
 	// Remove our marker so child doesn't inherit it
 	os.Unsetenv(sandboxLauncherEnvKey)
 
-	// Drop all bounding set capabilities (especially CAP_SYS_PTRACE=19)
-	for cap := uintptr(0); cap <= capLastCap; cap++ {
+	// Remount /proc for our new PID namespace so the workload only sees
+	// its own processes, not the guest-agent in the parent namespace.
+	syscall.Unmount("/proc", syscall.MNT_DETACH)
+	syscall.Mount("proc", "/proc", "proc", 0, "")
+
+	// Drop specific dangerous capabilities from the bounding set
+	for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot} {
 		syscall.RawSyscall(syscall.SYS_PRCTL, prCapBSetDrop, cap, 0)
 	}
 
@@ -208,7 +219,7 @@ func runSandboxLauncher() {
 // The launcher then drops caps, installs seccomp, and execs the real command.
 func applySandboxSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID,
+		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
 		Pdeathsig:  syscall.SIGKILL,
 	}
 }
