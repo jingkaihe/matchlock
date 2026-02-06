@@ -1,6 +1,6 @@
 // Package sdk provides a client for interacting with Matchlock sandboxes via JSON-RPC.
 //
-// Example usage:
+// Use the builder API for a fluent experience:
 //
 //	client, err := sdk.NewClient(sdk.DefaultConfig())
 //	if err != nil {
@@ -8,11 +8,13 @@
 //	}
 //	defer client.Close()
 //
-//	vmID, err := client.Create(sdk.CreateOptions{
-//	    Image:    "alpine:latest",
-//	    CPUs:     1,
-//	    MemoryMB: 512,
-//	})
+//	sandbox := sdk.New("python:3.12-alpine").
+//	    WithCPUs(2).
+//	    WithMemory(1024).
+//	    AllowHost("dl-cdn.alpinelinux.org", "api.openai.com").
+//	    AddSecret("API_KEY", os.Getenv("API_KEY"), "api.openai.com")
+//
+//	vmID, err := client.Launch(sandbox)
 //
 //	result, err := client.Exec("echo hello")
 //	fmt.Println(result.Stdout)
