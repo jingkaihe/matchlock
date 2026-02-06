@@ -58,7 +58,6 @@ func DefaultConfig() Config {
 	}
 	return Config{
 		BinaryPath: path,
-		UseSudo:    true,
 	}
 }
 
@@ -66,9 +65,9 @@ func DefaultConfig() Config {
 func NewClient(cfg Config) (*Client, error) {
 	var cmd *exec.Cmd
 	if cfg.UseSudo {
-		cmd = exec.Command("sudo", cfg.BinaryPath, "--rpc")
+		cmd = exec.Command("sudo", cfg.BinaryPath, "rpc")
 	} else {
-		cmd = exec.Command(cfg.BinaryPath, "--rpc")
+		cmd = exec.Command(cfg.BinaryPath, "rpc")
 	}
 
 	stdin, err := cmd.StdinPipe()

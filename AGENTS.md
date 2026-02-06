@@ -119,7 +119,7 @@ matchlock prune                    # Remove all stopped/crashed state
 matchlock build alpine:latest
 
 # RPC mode (for programmatic access)
-matchlock --rpc
+matchlock rpc
 ```
 
 ## Key Components

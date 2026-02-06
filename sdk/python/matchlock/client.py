@@ -61,7 +61,7 @@ class Client:
         if self._process is not None:
             return
         
-        cmd = [self._config.binary_path, "--rpc"]
+        cmd = [self._config.binary_path, "rpc"]
         if self._config.use_sudo:
             cmd = ["sudo"] + cmd
         
