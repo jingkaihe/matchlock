@@ -50,6 +50,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install e2fsprogs
+        run: brew install e2fsprogs && brew link e2fsprogs
+
       - name: Build
         run: mise run cross-build:darwin
 
