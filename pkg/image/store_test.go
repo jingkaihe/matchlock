@@ -179,12 +179,14 @@ func TestListRegistryCacheEmpty(t *testing.T) {
 	}
 }
 
-func TestListRegistryCacheWithImages(t *testing.T) {
+func TestListRegistryCacheWithMetadata(t *testing.T) {
 	cacheDir := t.TempDir()
 
 	imgDir := filepath.Join(cacheDir, "alpine_latest")
 	os.MkdirAll(imgDir, 0755)
 	os.WriteFile(filepath.Join(imgDir, "abc123def456.ext4"), []byte("rootfs"), 0644)
+	meta := `{"tag":"alpine:latest","digest":"sha256:abc123def456","size":6,"created_at":"2026-01-01T00:00:00Z","source":"registry"}`
+	os.WriteFile(filepath.Join(imgDir, "metadata.json"), []byte(meta), 0644)
 
 	localDir := filepath.Join(cacheDir, "local")
 	os.MkdirAll(localDir, 0755)
@@ -196,28 +198,32 @@ func TestListRegistryCacheWithImages(t *testing.T) {
 	if len(images) != 1 {
 		t.Fatalf("len = %d, want 1", len(images))
 	}
+	if images[0].Tag != "alpine:latest" {
+		t.Errorf("Tag = %q, want %q", images[0].Tag, "alpine:latest")
+	}
 	if images[0].Meta.Source != "registry" {
 		t.Errorf("Source = %q, want %q", images[0].Meta.Source, "registry")
 	}
-	if images[0].Meta.Digest != "abc123def456" {
-		t.Errorf("Digest = %q, want %q", images[0].Meta.Digest, "abc123def456")
+	if images[0].Meta.Digest != "sha256:abc123def456" {
+		t.Errorf("Digest = %q, want %q", images[0].Meta.Digest, "sha256:abc123def456")
 	}
 }
 
-func TestUnsanitizeRef(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"alpine_latest", "alpine:latest"},
-		{"library_alpine_latest", "library/alpine:latest"},
-		{"ghcr.io_user_repo_v1.0", "ghcr.io/user/repo:v1.0"},
-		{"simple", "simple"},
+func TestListRegistryCacheFallbackNoMetadata(t *testing.T) {
+	cacheDir := t.TempDir()
+
+	imgDir := filepath.Join(cacheDir, "alpine_latest")
+	os.MkdirAll(imgDir, 0755)
+	os.WriteFile(filepath.Join(imgDir, "abc123def456.ext4"), []byte("rootfs"), 0644)
+
+	images, err := ListRegistryCache(cacheDir)
+	if err != nil {
+		t.Fatalf("ListRegistryCache: %v", err)
 	}
-	for _, tt := range tests {
-		got := unsanitizeRef(tt.input)
-		if got != tt.expected {
-			t.Errorf("unsanitizeRef(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
+	if len(images) != 1 {
+		t.Fatalf("len = %d, want 1", len(images))
+	}
+	if images[0].Tag != "alpine_latest" {
+		t.Errorf("Tag = %q, want %q (raw dir name)", images[0].Tag, "alpine_latest")
 	}
 }

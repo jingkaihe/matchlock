@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -64,15 +62,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	command := api.ShellQuoteArgs(cmdArgs)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := contextWithSignal(context.Background())
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		cancel()
-	}()
 
 	if interactiveMode {
 		return runExecInteractive(ctx, execSocketPath, command, workdir)

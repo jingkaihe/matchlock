@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -93,7 +91,11 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		cpus = runtime.NumCPU()
 	}
 	if memory == 0 {
-		memory = totalMemoryMB()
+		mem, err := totalMemoryMB()
+		if err != nil {
+			return fmt.Errorf("cannot auto-detect system memory: %w (use --build-memory to set explicitly)", err)
+		}
+		memory = mem
 	}
 
 	absContext, err := filepath.Abs(contextDir)
@@ -114,13 +116,8 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		cancel()
-	}()
+	ctx, cancel = contextWithSignal(ctx)
+	defer cancel()
 
 	buildkitImage := "moby/buildkit:rootless"
 	fmt.Fprintf(os.Stderr, "Preparing BuildKit image (%s)...\n", buildkitImage)
@@ -186,8 +183,8 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		filenameOpt = fmt.Sprintf("  --opt filename=%s \\\n", dockerfileName)
 	}
 
-	buildScript := fmt.Sprintf(
-		`cat > /tmp/buildkit-run.sh << 'SCRIPT'
+	buildScript := fmt.Sprintf(`#!/bin/sh
+set -e
 export HOME=/root
 export TMPDIR=/var/lib/buildkit/tmp
 mkdir -p $TMPDIR
@@ -213,12 +210,13 @@ RC=$?
 [ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
 kill $BKPID 2>/dev/null
 exit $RC
-SCRIPT
-`+`chmod +x /tmp/buildkit-run.sh && /tmp/buildkit-run.sh`,
-		guestDockerfileDir,
-		filenameOpt,
-	)
-	result, execErr := sb.Exec(ctx, buildScript, execOpts)
+`, guestDockerfileDir, filenameOpt)
+
+	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScript), 0755); err != nil {
+		return fmt.Errorf("write build script: %w", err)
+	}
+
+	result, execErr := sb.Exec(ctx, "/workspace/buildkit-run.sh", execOpts)
 	if execErr != nil {
 		return fmt.Errorf("BuildKit build: %w", execErr)
 	}
@@ -228,22 +226,19 @@ SCRIPT
 
 	fmt.Fprintf(os.Stderr, "Importing built image as %s...\n", tag)
 
-	tarballData, err := sb.ReadFile(ctx, "/workspace/output/image.tar")
-	if err != nil {
-		return fmt.Errorf("read built image: %w", err)
-	}
-
 	tmpFile, err := os.CreateTemp("", "matchlock-build-*.tar")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 
-	if _, err := tmpFile.Write(tarballData); err != nil {
+	if _, err := sb.ReadFileTo(ctx, "/workspace/output/image.tar", tmpFile); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("write temp tarball: %w", err)
+		return fmt.Errorf("stream built image: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("flush temp tarball: %w", err)
+	}
 
 	importFile, err := os.Open(tmpFile.Name())
 	if err != nil {

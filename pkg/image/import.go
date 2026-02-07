@@ -54,16 +54,15 @@ func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*Bu
 		return nil, fmt.Errorf("create ext4: %w", err)
 	}
 
-	store := NewStore("")
 	meta := ImageMeta{
 		Digest: digest.String(),
 		Source: "import",
 	}
-	if err := store.Save(tag, rootfsPath, meta); err != nil {
+	if err := b.store.Save(tag, rootfsPath, meta); err != nil {
 		os.Remove(rootfsPath)
 		return nil, fmt.Errorf("save to local store: %w", err)
 	}
 	os.Remove(rootfsPath)
 
-	return store.Get(tag)
+	return b.store.Get(tag)
 }

@@ -2,11 +2,13 @@ package image
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -114,6 +116,18 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 	}
 
 	fi, _ := os.Stat(rootfsPath)
+
+	meta := ImageMeta{
+		Tag:       imageRef,
+		Digest:    digest.String(),
+		Size:      fi.Size(),
+		CreatedAt: time.Now(),
+		Source:    "registry",
+	}
+	if metaBytes, err := json.MarshalIndent(meta, "", "  "); err == nil {
+		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)
+	}
+
 	return &BuildResult{
 		RootfsPath: rootfsPath,
 		Digest:     digest.String(),

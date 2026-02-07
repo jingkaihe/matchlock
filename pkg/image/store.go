@@ -3,6 +3,7 @@ package image
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -54,20 +55,15 @@ func (s *Store) Save(tag string, rootfsPath string, meta ImageMeta) error {
 	if err != nil {
 		return fmt.Errorf("create dest rootfs: %w", err)
 	}
-	defer dst.Close()
 
-	buf := make([]byte, 1024*1024)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if _, werr := dst.Write(buf[:n]); werr != nil {
-				os.Remove(destPath)
-				return fmt.Errorf("write rootfs: %w", werr)
-			}
-		}
-		if err != nil {
-			break
-		}
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("copy rootfs: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("flush rootfs: %w", err)
 	}
 
 	meta.Tag = tag
@@ -191,6 +187,27 @@ func ListRegistryCache(cacheDir string) ([]ImageInfo, error) {
 		}
 
 		subDir := filepath.Join(cacheDir, e.Name())
+
+		if metaBytes, err := os.ReadFile(filepath.Join(subDir, "metadata.json")); err == nil {
+			var meta ImageMeta
+			if err := json.Unmarshal(metaBytes, &meta); err == nil {
+				rootfsPath := ""
+				subEntries, _ := os.ReadDir(subDir)
+				for _, se := range subEntries {
+					if filepath.Ext(se.Name()) == ".ext4" {
+						rootfsPath = filepath.Join(subDir, se.Name())
+						break
+					}
+				}
+				images = append(images, ImageInfo{
+					Tag:        meta.Tag,
+					RootfsPath: rootfsPath,
+					Meta:       meta,
+				})
+				continue
+			}
+		}
+
 		subEntries, err := os.ReadDir(subDir)
 		if err != nil {
 			continue
@@ -200,7 +217,7 @@ func ListRegistryCache(cacheDir string) ([]ImageInfo, error) {
 			if filepath.Ext(se.Name()) == ".ext4" {
 				rootfsPath := filepath.Join(subDir, se.Name())
 				fi, _ := os.Stat(rootfsPath)
-				tag := unsanitizeRef(e.Name())
+				tag := e.Name()
 				var size int64
 				var modTime time.Time
 				if fi != nil {
@@ -223,22 +240,4 @@ func ListRegistryCache(cacheDir string) ([]ImageInfo, error) {
 	}
 
 	return images, nil
-}
-
-func unsanitizeRef(s string) string {
-	parts := strings.SplitN(s, "_", 2)
-	if len(parts) == 1 {
-		return s
-	}
-	// Best-effort: the last _ before a version-like segment is the : separator.
-	// For "library_alpine_latest" → "library/alpine:latest" is tricky.
-	// Simple heuristic: replace the last _ with : and rest with /
-	idx := strings.LastIndex(s, "_")
-	if idx < 0 {
-		return s
-	}
-	prefix := s[:idx]
-	suffix := s[idx+1:]
-	prefix = strings.ReplaceAll(prefix, "_", "/")
-	return prefix + ":" + suffix
 }

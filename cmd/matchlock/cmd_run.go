@@ -94,23 +94,29 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
+	// Image & lifecycle
 	imageName, _ := cmd.Flags().GetString("image")
+	pull, _ := cmd.Flags().GetBool("pull")
+	rm, _ := cmd.Flags().GetBool("rm")
+	privileged, _ := cmd.Flags().GetBool("privileged")
+
+	// Resources
 	cpus, _ := cmd.Flags().GetInt("cpus")
 	memory, _ := cmd.Flags().GetInt("memory")
+	diskSize, _ := cmd.Flags().GetInt("disk-size")
 	timeout, _ := cmd.Flags().GetInt("timeout")
+
+	// Exec options
 	tty, _ := cmd.Flags().GetBool("tty")
 	interactive, _ := cmd.Flags().GetBool("interactive")
+	interactiveMode := tty && interactive
 	workspace, _ := cmd.Flags().GetString("workspace")
+	workdir, _ := cmd.Flags().GetString("workdir")
+
+	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
-	rm, _ := cmd.Flags().GetBool("rm")
-
-	workdir, _ := cmd.Flags().GetString("workdir")
-	privileged, _ := cmd.Flags().GetBool("privileged")
-	interactiveMode := tty && interactive
-	pull, _ := cmd.Flags().GetBool("pull")
-	diskSize, _ := cmd.Flags().GetInt("disk-size")
 
 	command := api.ShellQuoteArgs(args)
 
@@ -127,13 +133,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		cancel()
-	}()
+	ctx, cancel = contextWithSignal(ctx)
+	defer cancel()
 
 	builder := image.NewBuilder(&image.BuildOptions{
 		ForcePull: pull,
