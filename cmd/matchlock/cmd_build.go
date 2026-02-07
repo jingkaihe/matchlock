@@ -38,6 +38,7 @@ func init() {
 	buildCmd.Flags().StringP("file", "f", "", "Path to Dockerfile (enables BuildKit-in-VM build)")
 	buildCmd.Flags().Int("build-cpus", 0, "Number of CPUs for BuildKit VM (0 = all available)")
 	buildCmd.Flags().Int("build-memory", 0, "Memory in MB for BuildKit VM (0 = all available)")
+	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
 
 	rootCmd.AddCommand(buildCmd)
 }
@@ -85,6 +86,8 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 
 	cpus, _ := cmd.Flags().GetInt("build-cpus")
 	memory, _ := cmd.Flags().GetInt("build-memory")
+
+	disk, _ := cmd.Flags().GetInt("build-disk")
 
 	if cpus == 0 {
 		cpus = runtime.NumCPU()
@@ -149,7 +152,7 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		Resources: &api.Resources{
 			CPUs:           cpus,
 			MemoryMB:       memory,
-			DiskSizeMB:     api.DefaultDiskSizeMB,
+			DiskSizeMB:     disk,
 			TimeoutSeconds: 1800,
 		},
 		Network: &api.NetworkConfig{},
