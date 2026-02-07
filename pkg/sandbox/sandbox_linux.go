@@ -95,6 +95,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
+		var err error
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
 			os.Remove(vmRootfsPath)
