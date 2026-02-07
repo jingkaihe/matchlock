@@ -140,7 +140,7 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 	}
 
 	opts := &api.ExecOptions{Env: make(map[string]string)}
-	if r.sb.CAInjector() != nil {
+	if r.sb.CAPool() != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath

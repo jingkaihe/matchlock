@@ -41,7 +41,7 @@ type Sandbox struct {
 	events      chan api.Event
 	stateMgr    *state.Manager
 	tapName     string
-	caInjector  *sandboxnet.CAInjector
+	caPool      *sandboxnet.CAPool
 	subnetInfo  *state.SubnetInfo
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
@@ -89,6 +89,24 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		os.Remove(vmRootfsPath)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
+	}
+
+	// Create CAPool early and inject cert into rootfs before VM creation
+	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	var caPool *sandboxnet.CAPool
+	if needsProxy {
+		var err error
+		caPool, err = sandboxnet.NewCAPool()
+		if err != nil {
+			os.Remove(vmRootfsPath)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to create CA pool: %w", err)
+		}
+		if err := injectFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
+			os.Remove(vmRootfsPath)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to inject CA cert into rootfs: %w", err)
+		}
 	}
 
 	// Allocate unique subnet for this VM
@@ -163,7 +181,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	var proxy *sandboxnet.TransparentProxy
 	var fwRules FirewallRules
 
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	if needsProxy {
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:  proxyBindAddr,
@@ -171,6 +188,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			HTTPSPort: httpsPort,
 			Policy:    policyEngine,
 			Events:    events,
+			CAPool:    caPool,
 		})
 		if err != nil {
 			machine.Close()
@@ -232,16 +250,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to start VFS server: %w", err)
 	}
 
-	// Set up CA injector if proxy is enabled
-	// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
-	var caInjector *sandboxnet.CAInjector
-	if proxy != nil {
-		caInjector = sandboxnet.NewCAInjector(proxy.CAPool())
-		if err := injectFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
-		}
-	}
-
 	return &Sandbox{
 		id:          id,
 		config:      config,
@@ -256,7 +264,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		events:      events,
 		stateMgr:    stateMgr,
 		tapName:     linuxMachine.TapName(),
-		caInjector:  caInjector,
+		caPool:      caPool,
 		subnetInfo:  subnetInfo,
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
@@ -279,8 +287,7 @@ func (s *Sandbox) Machine() vm.Machine { return s.machine }
 // Policy returns the policy engine.
 func (s *Sandbox) Policy() *policy.Engine { return s.policy }
 
-// CAInjector returns the CA injector, or nil if not enabled.
-func (s *Sandbox) CAInjector() *sandboxnet.CAInjector { return s.caInjector }
+func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 // Start starts the sandbox VM.
 func (s *Sandbox) Start(ctx context.Context) error {
@@ -302,7 +309,7 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 	}
 
 	// Inject CA certificate environment variables if proxy is enabled
-	if s.caInjector != nil {
+	if s.caPool != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath

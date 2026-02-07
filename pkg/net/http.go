@@ -21,19 +21,13 @@ type HTTPInterceptor struct {
 	connPool *upstreamConnPool
 }
 
-func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event) *HTTPInterceptor {
-	caPool, _ := NewCAPool()
-
+func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool) *HTTPInterceptor {
 	return &HTTPInterceptor{
 		policy:   pol,
 		events:   events,
 		caPool:   caPool,
 		connPool: newUpstreamConnPool(),
 	}
-}
-
-func (i *HTTPInterceptor) CAPool() *CAPool {
-	return i.caPool
 }
 
 func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {

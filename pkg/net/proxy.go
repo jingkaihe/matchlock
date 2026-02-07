@@ -40,6 +40,7 @@ type ProxyConfig struct {
 	HTTPSPort int    // Port for HTTPS interception (e.g., 8443)
 	Policy    *policy.Engine
 	Events    chan api.Event
+	CAPool    *CAPool
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -60,7 +61,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 	tp := &TransparentProxy{
 		httpListener:  httpLn,
 		httpsListener: httpsLn,
-		interceptor:   NewHTTPInterceptor(cfg.Policy, cfg.Events),
+		interceptor:   NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
 		policy:        cfg.Policy,
 		events:        cfg.Events,
 		httpPort:      cfg.HTTPPort,
@@ -139,7 +140,6 @@ func (tp *TransparentProxy) Close() error {
 func (tp *TransparentProxy) HTTPPort() int    { return tp.httpPort }
 func (tp *TransparentProxy) HTTPSPort() int   { return tp.httpsPort }
 func (tp *TransparentProxy) BindAddr() string { return tp.bindAddr }
-func (tp *TransparentProxy) CAPool() *CAPool  { return tp.interceptor.CAPool() }
 
 type originalDst struct {
 	IP   net.IP

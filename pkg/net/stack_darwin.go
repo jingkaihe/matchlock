@@ -57,6 +57,7 @@ type Config struct {
 	MTU       uint32
 	Policy    *policy.Engine
 	Events    chan api.Event
+	CAPool    *CAPool
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -308,7 +309,7 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		linkEP: linkEP,
 	}
 
-	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events)
+	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
@@ -477,3 +478,4 @@ func (ns *NetworkStack) Close() error {
 func (ns *NetworkStack) Stack() *stack.Stack {
 	return ns.stack
 }
+

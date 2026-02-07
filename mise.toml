@@ -97,7 +97,7 @@ run = "go test -bench=. -benchmem -benchtime=2s -count=1 -run=^$ ./pkg/net/"
 
 [tasks."test:acceptance"]
 description = "Run acceptance tests (requires VM support — cannot run in CI)"
-depends = ["build"]
+# depends = ["build"]
 run = """
 #!/usr/bin/env bash
 set -e

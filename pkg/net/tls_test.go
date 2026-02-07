@@ -2,18 +2,10 @@ package net
 
 import (
 	"crypto/x509"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestCAPool_Generate(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	pool, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("NewCAPool failed: %v", err)
@@ -32,37 +24,23 @@ func TestCAPool_Generate(t *testing.T) {
 	}
 }
 
-func TestCAPool_LoadExisting(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
+func TestCAPool_EphemeralCA(t *testing.T) {
 	pool1, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("First NewCAPool failed: %v", err)
 	}
-
-	serial1 := pool1.caCert.SerialNumber
 
 	pool2, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("Second NewCAPool failed: %v", err)
 	}
 
-	if pool2.caCert.SerialNumber.Cmp(serial1) != 0 {
-		t.Error("Should load existing CA, not generate new one")
+	if pool1.caCert.SerialNumber.Cmp(pool2.caCert.SerialNumber) == 0 {
+		t.Error("Each NewCAPool should generate a unique CA")
 	}
 }
 
 func TestCAPool_GetCertificate(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	pool, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("NewCAPool failed: %v", err)
@@ -99,12 +77,6 @@ func TestCAPool_GetCertificate(t *testing.T) {
 }
 
 func TestCAPool_CertificateCache(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	pool, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("NewCAPool failed: %v", err)
@@ -119,12 +91,6 @@ func TestCAPool_CertificateCache(t *testing.T) {
 }
 
 func TestCAPool_CACertPEM(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	pool, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("NewCAPool failed: %v", err)
@@ -141,36 +107,7 @@ func TestCAPool_CACertPEM(t *testing.T) {
 	}
 }
 
-func TestCAPool_CACertPath(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
-	pool, err := NewCAPool()
-	if err != nil {
-		t.Fatalf("NewCAPool failed: %v", err)
-	}
-
-	path := pool.CACertPath()
-
-	if !filepath.IsAbs(path) {
-		t.Error("Path should be absolute")
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("CA cert file should exist at %s", path)
-	}
-}
-
 func TestCAPool_DifferentDomains(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", origHome)
-
 	pool, err := NewCAPool()
 	if err != nil {
 		t.Fatalf("NewCAPool failed: %v", err)

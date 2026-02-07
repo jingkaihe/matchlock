@@ -127,7 +127,6 @@ func (c *Client) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 
-	// Try to close the VM gracefully
 	c.sendRequest("close", nil)
 
 	c.stdin.Close()

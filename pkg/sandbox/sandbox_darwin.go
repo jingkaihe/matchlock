@@ -29,7 +29,7 @@ type Sandbox struct {
 	vfsStopFunc func()
 	events      chan api.Event
 	stateMgr    *state.Manager
-	caInjector  *sandboxnet.CAInjector
+	caPool      *sandboxnet.CAPool
 	subnetInfo  *state.SubnetInfo
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
@@ -79,6 +79,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	// Determine if we need network interception (calculated before VM creation)
 	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
+	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
+	var caPool *sandboxnet.CAPool
+	if needsInterception {
+		caPool, err = sandboxnet.NewCAPool()
+		if err != nil {
+			subnetAlloc.Release(id)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to create CA pool: %w", err)
+		}
+	}
+
 	// Copy rootfs, inject matchlock components, and resize before backend.Create()
 	// so the VZ disk attachment sees the final size with all components in place
 	prebuiltRootfs, err := darwin.CopyRootfsToTemp(rootfsPath)
@@ -96,6 +107,16 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
+	}
+
+	// Inject CA cert into rootfs before backend.Create() attaches the disk
+	if caPool != nil {
+		if err := injectFileIntoRootfs(prebuiltRootfs, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
+			os.Remove(prebuiltRootfs)
+			subnetAlloc.Release(id)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to inject CA cert into rootfs: %w", err)
+		}
 	}
 
 	vmConfig := &vm.VMConfig{
@@ -146,7 +167,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	events := make(chan api.Event, 100)
 
 	var netStack *sandboxnet.NetworkStack
-	var caInjector *sandboxnet.CAInjector
 
 	if needsInterception {
 		networkFile := darwinMachine.NetworkFile()
@@ -164,6 +184,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			MTU:       1500,
 			Policy:    policyEngine,
 			Events:    events,
+			CAPool:    caPool,
 		})
 		if err != nil {
 			machine.Close()
@@ -224,23 +245,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 	}()
 
-	if netStack != nil {
-		caPool, err := sandboxnet.NewCAPool()
-		if err != nil {
-			vfsStopFunc()
-			netStack.Close()
-			machine.Close()
-			subnetAlloc.Release(id)
-			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to create CA pool: %w", err)
-		}
-		caInjector = sandboxnet.NewCAInjector(caPool)
-		// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
-		if err := injectFileIntoRootfs(machine.RootfsPath(), "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
-		}
-	}
-
 	return &Sandbox{
 		id:          id,
 		config:      config,
@@ -252,7 +256,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		vfsStopFunc: vfsStopFunc,
 		events:      events,
 		stateMgr:    stateMgr,
-		caInjector:  caInjector,
+		caPool:      caPool,
 		subnetInfo:  subnetInfo,
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
@@ -264,7 +268,7 @@ func (s *Sandbox) Config() *api.Config                { return s.config }
 func (s *Sandbox) Workspace() string                  { return s.workspace }
 func (s *Sandbox) Machine() vm.Machine                { return s.machine }
 func (s *Sandbox) Policy() *policy.Engine             { return s.policy }
-func (s *Sandbox) CAInjector() *sandboxnet.CAInjector { return s.caInjector }
+func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 func (s *Sandbox) Start(ctx context.Context) error {
 	return s.machine.Start(ctx)
@@ -282,7 +286,7 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 		opts.Env = make(map[string]string)
 	}
 
-	if s.caInjector != nil {
+	if s.caPool != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath

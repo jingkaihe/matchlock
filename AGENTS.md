@@ -331,4 +331,4 @@ type VFSConfig struct {
 Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details. gVisor's userspace TCP/IP stack is only used on macOS (where nftables is unavailable); Linux uses nftables-based transparent proxy instead.
 
 ### Test Coverage
-Tests implemented for: vfs (memory, overlay, readonly, router), policy, net (tls, ca_inject). Additional tests needed for: vm/linux, rpc, state, vsock (require mocking).
+Tests implemented for: vfs (memory, overlay, readonly, router), policy, net (tls). Additional tests needed for: vm/linux, rpc, state, vsock (require mocking).
