@@ -15,11 +15,10 @@ import (
 )
 
 type HTTPInterceptor struct {
-	policy    *policy.Engine
-	events    chan api.Event
-	tlsConfig *tls.Config
-	caPool    *CAPool
-	connPool  *upstreamConnPool
+	policy   *policy.Engine
+	events   chan api.Event
+	caPool   *CAPool
+	connPool *upstreamConnPool
 }
 
 func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event) *HTTPInterceptor {

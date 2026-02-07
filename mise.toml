@@ -4,7 +4,7 @@
 
 [tools]
 go = "1.25"
-golangci-lint = "1.62"
+golangci-lint = "latest"
 gh = "latest"
 "go:github.com/google/go-containerregistry/cmd/crane" = "latest"
 
