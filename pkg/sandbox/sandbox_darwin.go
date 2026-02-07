@@ -225,17 +225,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	}()
 
 	if netStack != nil {
-		caPool, err := sandboxnet.NewCAPool()
-		if err != nil {
-			vfsStopFunc()
-			netStack.Close()
-			machine.Close()
-			subnetAlloc.Release(id)
-			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to create CA pool: %w", err)
-		}
-		caInjector = sandboxnet.NewCAInjector(caPool)
-		// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
+		caInjector = sandboxnet.NewCAInjector(netStack.CAPool())
 		if err := injectFileIntoRootfs(machine.RootfsPath(), "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
 		}

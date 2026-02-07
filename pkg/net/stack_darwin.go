@@ -477,3 +477,7 @@ func (ns *NetworkStack) Close() error {
 func (ns *NetworkStack) Stack() *stack.Stack {
 	return ns.stack
 }
+
+func (ns *NetworkStack) CAPool() *CAPool {
+	return ns.interceptor.CAPool()
+}
