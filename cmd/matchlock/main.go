@@ -340,7 +340,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	defer execRelay.Stop()
 
 	if !rm {
-		fmt.Printf("%s\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Connect: matchlock exec %s -it bash\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
 	if interactiveMode {
