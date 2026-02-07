@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 
@@ -90,9 +89,7 @@ type LinuxMachine struct {
 	cmd          *exec.Cmd
 	pid          int
 	started      bool
-	vsockConn    *vsock.Conn
-	vsockMu      sync.Mutex
-	vsockUDSPath string
+
 }
 
 func (m *LinuxMachine) Start(ctx context.Context) error {

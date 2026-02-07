@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -592,26 +591,4 @@ func (c *VFSClient) Close() error {
 	return syscall.Close(c.fd)
 }
 
-// Implement net.Conn interface for compatibility
-type vsockConn struct {
-	fd int
-}
 
-func (c *vsockConn) Read(b []byte) (int, error) {
-	return syscall.Read(c.fd, b)
-}
-
-func (c *vsockConn) Write(b []byte) (int, error) {
-	return syscall.Write(c.fd, b)
-}
-
-func (c *vsockConn) Close() error {
-	return syscall.Close(c.fd)
-}
-
-func (c *vsockConn) LocalAddr() net.Addr  { return nil }
-func (c *vsockConn) RemoteAddr() net.Addr { return nil }
-
-func (c *vsockConn) SetDeadline(t interface{}) error      { return nil }
-func (c *vsockConn) SetReadDeadline(t interface{}) error  { return nil }
-func (c *vsockConn) SetWriteDeadline(t interface{}) error { return nil }

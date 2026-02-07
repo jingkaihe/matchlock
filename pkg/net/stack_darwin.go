@@ -355,11 +355,11 @@ func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstP
 	defer guestConn.Close()
 
 	if !ns.policy.IsHostAllowed(dstIP) {
-		ns.emitBlockedEvent(fmt.Sprintf("%s:%d", dstIP, dstPort), "host not in allowlist")
+		ns.emitBlockedEvent(net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)), "host not in allowlist")
 		return
 	}
 
-	realConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", dstIP, dstPort))
+	realConn, err := net.Dial("tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
 	if err != nil {
 		return
 	}

@@ -15,11 +15,10 @@ import (
 )
 
 type HTTPInterceptor struct {
-	policy    *policy.Engine
-	events    chan api.Event
-	tlsConfig *tls.Config
-	caPool    *CAPool
-	connPool  *upstreamConnPool
+	policy   *policy.Engine
+	events   chan api.Event
+	caPool   *CAPool
+	connPool *upstreamConnPool
 }
 
 func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event) *HTTPInterceptor {
@@ -68,7 +67,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		targetHost := fmt.Sprintf("%s:%d", host, dstPort)
+		targetHost := net.JoinHostPort(host, fmt.Sprintf("%d", dstPort))
 
 		// Try to reuse an existing upstream connection from the pool.
 		pc := i.connPool.get(targetHost)
@@ -163,7 +162,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		return
 	}
 
-	realConn, err := tls.Dial("tcp", fmt.Sprintf("%s:%d", serverName, dstPort), &tls.Config{
+	realConn, err := tls.Dial("tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), &tls.Config{
 		ServerName: serverName,
 	})
 	if err != nil {

@@ -5,7 +5,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 ## Tech Stack
 
 - **Language**: Go 1.25
-- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
+- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon only, Intel not supported)
 - **Network**: nftables transparent proxy (Linux), Apple native NAT or gVisor userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
@@ -57,16 +57,15 @@ This project uses [mise](https://mise.jdx.dev/) for task management and dev depe
 
 ```bash
 mise install         # Install dev dependencies (Go, golangci-lint, crane)
-mise run build       # Build CLI binary
-mise run build:all   # Build CLI + guest binaries
+mise run build       # Build CLI (codesigned on macOS) + guest binaries
 mise run test        # Run tests
 mise run check       # Run all checks (fmt, vet, lint, test)
 mise run fmt         # Format code
 ```
 
-**macOS (Apple Silicon):**
+**macOS:**
 ```bash
-mise run darwin:setup   # Build + codesign CLI + ARM64 guest binaries
+mise run setup:darwin   # Build + codesign CLI + guest binaries
 ```
 
 **Linux:**
@@ -77,6 +76,25 @@ sudo ./bin/matchlock setup linux   # Configure Firecracker, KVM, capabilities, n
 ```
 
 **Kernels** are auto-downloaded from GHCR on first run. Override with `MATCHLOCK_KERNEL=/path/to/kernel`.
+
+**Testing:**
+```bash
+mise run test              # Unit tests
+mise run test:acceptance   # Acceptance tests (requires VM support, builds first)
+mise run test:coverage     # Coverage report
+```
+
+**Release:**
+```bash
+mise run push-tag          # Push v$VERSION tag → triggers GitHub Actions release
+mise run release           # Manual release (cross-builds + uploads to GitHub)
+```
+
+## CI/CD
+
+- **CI** (`.github/workflows/ci.yml`): Runs on PRs and pushes to `main`. Builds + tests on Linux (ubuntu-latest) and macOS (macos-latest ARM64 only).
+- **Release** (`.github/workflows/release.yml`): Triggered by `v*` tags. Cross-builds for Linux amd64/arm64, macOS arm64 only, publishes GitHub release with all binaries.
+- **Kernel** (`.github/workflows/kernel.yml`): Builds and publishes kernel images to GHCR.
 
 ## CLI Usage
 

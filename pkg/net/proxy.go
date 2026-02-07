@@ -118,21 +118,7 @@ func (tp *TransparentProxy) handleHTTPS(conn net.Conn, dstIP string, dstPort int
 	tp.interceptor.HandleHTTPS(conn, dstIP, dstPort)
 }
 
-func (tp *TransparentProxy) emitBlockedEvent(host, reason string) {
-	if tp.events != nil {
-		select {
-		case tp.events <- api.Event{
-			Type: "network",
-			Network: &api.NetworkEvent{
-				Host:        host,
-				Blocked:     true,
-				BlockReason: reason,
-			},
-		}:
-		default:
-		}
-	}
-}
+
 
 func (tp *TransparentProxy) Close() error {
 	tp.mu.Lock()

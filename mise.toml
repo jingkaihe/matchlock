@@ -4,7 +4,8 @@
 
 [tools]
 go = "1.25"
-golangci-lint = "1.62"
+golangci-lint = "latest"
+gh = "latest"
 "go:github.com/google/go-containerregistry/cmd/crane" = "latest"
 
 [env]
@@ -13,45 +14,59 @@ KERNEL_VERSION = "6.1.137"
 OUTPUT_DIR = "{{env.HOME}}/.cache/matchlock"
 REGISTRY = "ghcr.io/jingkaihe/matchlock"
 
+VERSION = "{{exec(command='echo ${VERSION:-$(cat VERSION.txt)}')}}"
+GIT_COMMIT = "{{exec(command='echo ${GIT_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}')}}"
+BUILD_TIME = "{{exec(command='echo ${BUILD_TIME:-$(date -u \"+%a %b %d %H:%M:%S UTC %Y\")}')}}"
+VERSION_PKG = "github.com/jingkaihe/matchlock/pkg/version"
+
 # =============================================================================
 # Build tasks
 # =============================================================================
 
 [tasks.build]
-description = "Build the matchlock CLI"
-run = "go build -o bin/matchlock ./cmd/matchlock"
-
-[tasks."build:all"]
-description = "Build CLI and guest binaries"
-depends = ["build", "build:guest"]
-
-[tasks."build:guest"]
-description = "Build guest-agent and guest-fused (static Linux binaries, auto-detects arch on macOS)"
+description = "Build CLI (codesigned on macOS) and guest binaries"
 run = """
 #!/usr/bin/env bash
 set -e
-mkdir -p bin
 
-# Auto-detect target architecture based on host
-GUEST_ARCH="amd64"
-if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-    GUEST_ARCH="arm64"
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+  echo "Error: Intel macOS is not supported. Please use Apple Silicon (arm64)."
+  exit 1
 fi
 
-CGO_ENABLED=0 GOOS=linux GOARCH=$GUEST_ARCH go build -trimpath -o bin/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=$GUEST_ARCH go build -trimpath -o bin/guest-fused ./cmd/guest-fused
-echo "Built ($GUEST_ARCH): bin/guest-agent, bin/guest-fused"
-"""
-
-[tasks."build:guest-arm64"]
-description = "Build guest binaries for ARM64 (macOS)"
-run = """
-#!/usr/bin/env bash
-set -e
 mkdir -p bin
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-agent-arm64 ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-fused-arm64 ./cmd/guest-fused
-echo "Built: bin/guest-agent-arm64, bin/guest-fused-arm64"
+
+LDFLAGS="-X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
+go build -ldflags="$LDFLAGS" -o bin/matchlock ./cmd/matchlock
+
+# Codesign on macOS (Virtualization.framework requires entitlement)
+if [ "$(uname -s)" = "Darwin" ]; then
+  cat > matchlock.entitlements << 'ENTITLEMENTS'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.virtualization</key>
+    <true/>
+</dict>
+</plist>
+ENTITLEMENTS
+  codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
+fi
+
+# Build guest binaries (auto-detect arch)
+GOARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-agent ./cmd/guest-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-fused ./cmd/guest-fused
+
+# Cache guest binaries on macOS
+if [ "$(uname -s)" = "Darwin" ]; then
+  mkdir -p "$OUTPUT_DIR"
+  cp bin/guest-agent "$OUTPUT_DIR/guest-agent"
+  cp bin/guest-fused "$OUTPUT_DIR/guest-fused"
+fi
+
+echo "Built: bin/matchlock, bin/guest-agent, bin/guest-fused ($GOARCH)"
 """
 
 [tasks.clean]
@@ -66,10 +81,6 @@ run = "rm -rf bin/"
 description = "Run all tests"
 run = "go test ./..."
 
-[tasks."test:verbose"]
-description = "Run tests with verbose output"
-run = "go test -v ./..."
-
 [tasks."test:coverage"]
 description = "Generate coverage report"
 run = """
@@ -83,6 +94,15 @@ echo "Coverage report: coverage.html"
 [tasks.bench]
 description = "Run benchmarks"
 run = "go test -bench=. -benchmem -benchtime=2s -count=1 -run=^$ ./pkg/net/"
+
+[tasks."test:acceptance"]
+description = "Run acceptance tests (requires VM support — cannot run in CI)"
+depends = ["build"]
+run = """
+#!/usr/bin/env bash
+set -e
+MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -v ./tests/acceptance/
+"""
 
 # =============================================================================
 # Development tasks
@@ -126,12 +146,8 @@ description = "Build kernel for arm64 only"
 run = "OUTPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION ARCH=arm64 ./scripts/build-kernel.sh"
 
 [tasks."kernel:publish"]
-description = "Publish kernels to GHCR"
+description = "Publish kernels to GHCR (pass TAG_LATEST=true to also tag as latest)"
 run = "INPUT_DIR=$OUTPUT_DIR/kernels/$KERNEL_VERSION KERNEL_VERSION=$KERNEL_VERSION REGISTRY=$REGISTRY ./scripts/publish-kernel.sh"
-
-[tasks."kernel:publish-latest"]
-description = "Publish kernels and tag as latest"
-run = "KERNEL_VERSION=$KERNEL_VERSION REGISTRY=$REGISTRY TAG_LATEST=true ./scripts/publish-kernel.sh"
 
 [tasks."kernel:clean"]
 description = "Clean kernel cache"
@@ -143,7 +159,7 @@ run = "rm -rf $OUTPUT_DIR/kernels"
 
 [tasks."rootfs:docker"]
 description = "Build rootfs using Docker (no sudo required)"
-depends = ["build:guest"]
+depends = ["build"]
 run = """
 #!/usr/bin/env bash
 set -e
@@ -162,7 +178,7 @@ docker run --rm --privileged \
 """
 
 # =============================================================================
-# Installation tasks
+# Installation & setup tasks
 # =============================================================================
 
 [tasks.install]
@@ -179,16 +195,12 @@ echo "Installed matchlock to /usr/local/bin"
 description = "Install Firecracker binary"
 run = "./scripts/install-firecracker.sh"
 
-# =============================================================================
-# Combined tasks
-# =============================================================================
-
 [tasks.images]
 description = "Build kernel + rootfs"
 depends = ["kernel:build", "rootfs:docker"]
 
 [tasks.setup]
-description = "Full setup (firecracker + images + install)"
+description = "Full Linux setup (firecracker + images + install)"
 depends = ["install:firecracker", "images", "install"]
 run = """
 #!/usr/bin/env bash
@@ -201,69 +213,9 @@ echo "Test with:"
 echo "  sudo matchlock run --image alpine:latest echo 'Hello from matchlock'"
 """
 
-[tasks."quick-test"]
-description = "Quick test with built images"
+[tasks."setup:darwin"]
+description = "Full macOS setup (build + guest binaries)"
 depends = ["build"]
-run = """
-#!/usr/bin/env bash
-set -e
-if [ -f "$OUTPUT_DIR/kernels/$KERNEL_VERSION/kernel" ]; then
-    echo "Testing matchlock..."
-    sudo matchlock run --image alpine:latest echo "Matchlock works!"
-else
-    echo "Kernel not found. Run 'mise run kernel:build' first."
-    exit 1
-fi
-"""
-
-# =============================================================================
-# macOS tasks (Apple Silicon)
-# =============================================================================
-
-[tasks."darwin:build"]
-description = "Build and codesign CLI for macOS"
-run = """
-#!/usr/bin/env bash
-set -e
-mkdir -p bin
-
-# Create entitlements file
-cat > matchlock.entitlements << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.virtualization</key>
-    <true/>
-</dict>
-</plist>
-EOF
-
-go build -o bin/matchlock ./cmd/matchlock
-codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
-echo "Built and signed bin/matchlock for macOS"
-"""
-
-[tasks."darwin:guest"]
-description = "Build ARM64 guest binaries for macOS VMs"
-run = """
-#!/usr/bin/env bash
-set -e
-mkdir -p bin $OUTPUT_DIR
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-fused ./cmd/guest-fused
-cp bin/guest-agent $OUTPUT_DIR/guest-agent
-cp bin/guest-fused $OUTPUT_DIR/guest-fused
-echo "Built ARM64 guest binaries in bin/ and $OUTPUT_DIR"
-"""
-
-[tasks."darwin:all"]
-description = "Build CLI (codesigned) and ARM64 guest binaries for macOS"
-depends = ["darwin:build", "darwin:guest"]
-
-[tasks."darwin:setup"]
-description = "Full macOS setup (build + sign + guest binaries)"
-depends = ["darwin:build", "darwin:guest"]
 run = """
 #!/usr/bin/env bash
 echo ""
@@ -277,7 +229,94 @@ echo "Test with:"
 echo "  ./bin/matchlock run --image alpine:latest echo 'Hello from macOS VM!'"
 """
 
-[tasks."darwin:test"]
-description = "Quick test on macOS"
-depends = ["darwin:build", "darwin:guest"]
-run = "./bin/matchlock run --image alpine:latest echo 'Matchlock works on macOS!'"
+# =============================================================================
+# Cross-build tasks (CI / release)
+# =============================================================================
+
+[tasks."cross-build:linux"]
+description = "Cross-compile matchlock for Linux (amd64 + arm64)"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p bin
+LDFLAGS="-s -w -X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o ./bin/matchlock-linux-amd64 ./cmd/matchlock/
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o ./bin/matchlock-linux-arm64 ./cmd/matchlock/
+echo "Built: matchlock-linux-amd64, matchlock-linux-arm64"
+"""
+
+[tasks."cross-build:darwin"]
+description = "Build matchlock for macOS arm64 (requires Apple Silicon host for CGO)"
+run = """
+#!/usr/bin/env bash
+set -e
+
+if [ "$(uname -m)" = "x86_64" ]; then
+  echo "Error: Intel macOS is not supported. Please use Apple Silicon (arm64)."
+  exit 1
+fi
+
+mkdir -p bin
+LDFLAGS="-s -w -X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
+go build -ldflags="$LDFLAGS" -o ./bin/matchlock-darwin-arm64 ./cmd/matchlock/
+echo "Built: matchlock-darwin-arm64"
+"""
+
+[tasks."cross-build:guest"]
+description = "Cross-compile guest binaries for all architectures"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p bin
+for ARCH in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath -o bin/guest-agent-linux-${ARCH} ./cmd/guest-agent
+  CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath -o bin/guest-fused-linux-${ARCH} ./cmd/guest-fused
+done
+echo "Built guest binaries for amd64 and arm64"
+"""
+
+# =============================================================================
+# Release tasks
+# =============================================================================
+
+[tasks."release"]
+description = "Create GitHub release with binaries (run on macOS for darwin builds)"
+depends = ["cross-build:linux", "cross-build:darwin", "cross-build:guest"]
+run = """
+#!/usr/bin/env bash
+set -e
+
+echo "Creating GitHub release v$VERSION..."
+
+# Collect all release artifacts
+ARTIFACTS=()
+for f in bin/matchlock-linux-amd64 bin/matchlock-linux-arm64 bin/matchlock-darwin-* bin/guest-agent-linux-* bin/guest-fused-linux-*; do
+  [ -f "$f" ] && ARTIFACTS+=("$f")
+done
+
+if [ ${#ARTIFACTS[@]} -eq 0 ]; then
+  echo "Error: no release artifacts found in bin/"
+  exit 1
+fi
+
+echo "Uploading ${#ARTIFACTS[@]} artifacts..."
+gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${ARTIFACTS[@]}"
+echo "GitHub release v$VERSION created successfully!"
+"""
+
+[tasks."push-tag"]
+description = "Push version tag to trigger automated GitHub Actions release"
+run = """
+#!/usr/bin/env bash
+set -e
+echo "Creating and pushing tag v$VERSION..."
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+  echo "Tag v$VERSION already exists locally. Pushing to origin..."
+else
+  echo "Creating new tag v$VERSION..."
+  git tag "v$VERSION"
+fi
+git push origin "v$VERSION"
+echo "Tag v$VERSION pushed successfully!"
+echo "GitHub Actions will automatically create a release with binaries."
+"""

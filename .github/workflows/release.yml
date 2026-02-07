@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    name: Build Linux binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          experimental: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Linux CLI + guest binaries
+        run: |
+          mise run cross-build:linux
+          mise run cross-build:guest
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            bin/matchlock-linux-*
+            bin/guest-agent-linux-*
+            bin/guest-fused-linux-*
+
+  build-darwin:
+    name: Build macOS (arm64)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          experimental: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build macOS CLI (arm64, CGO for Virtualization.framework)
+        run: mise run cross-build:darwin
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-arm64-binaries
+          path: bin/matchlock-darwin-arm64
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-darwin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bin/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        run: |
+          chmod +x bin/*
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            bin/matchlock-linux-amd64 \
+            bin/matchlock-linux-arm64 \
+            bin/matchlock-darwin-arm64 \
+            bin/guest-agent-linux-amd64 \
+            bin/guest-agent-linux-arm64 \
+            bin/guest-fused-linux-amd64 \
+            bin/guest-fused-linux-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
