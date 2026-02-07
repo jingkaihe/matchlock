@@ -4,11 +4,9 @@ Matchlock is a CLI tool for running AI agents in ephemeral micro-VMs - with netw
 
 ## Why Matchlock?
 
-Every command runs inside its own micro-VM - Firecracker on Linux, Virtualization.framework on macOS - booting in under a second from any OCI image you throw at it.
+AI agents need to run code, but giving them unrestricted access to your machine is a risk. Matchlock lets you hand an agent a full Linux environment that boots in under a second - isolated, disposable, and locked down by default.
 
-Only the hosts you allowlist are reachable. Everything else is blocked. When your agent calls an API, a transparent MITM proxy injects the real credentials in-flight - the VM itself never sees them.
-
-The workspace is a FUSE-mounted overlay filesystem with copy-on-write, so the host stays clean. And it all works identically on Linux (x86_64) and macOS (Apple Silicon).
+When your agent calls an API the real credentials are injected in-flight by the host. The sandbox only ever sees a placeholder. The network is sealed by default and nothing gets out unless you say so. Even if the agent is tricked into running something malicious your keys don't leak and there's nowhere for data to go. Inside the agent gets a full Linux environment to do whatever it needs. It can install packages and write files and make a mess. Outside your machine doesn't feel a thing. Every sandbox runs on its own copy-on-write filesystem that vanishes when you're done. Same CLI and same behaviour whether you're on a Linux server or a MacBook.
 
 ## Quick Start
 
@@ -16,6 +14,16 @@ The workspace is a FUSE-mounted overlay filesystem with copy-on-write, so the ho
 
 - [mise](https://mise.jdx.dev/)
 - `e2fsprogs` (`mke2fs`, `debugfs`, `resize2fs`)
+  ```bash
+  # macOS (Homebrew)
+  brew install e2fsprogs
+
+  # Debian/Ubuntu
+  sudo apt-get install -y e2fsprogs
+
+  # RHEL/CentOS/Fedora
+  sudo dnf install -y e2fsprogs
+  ```
 - **Linux**: KVM support
 - **macOS**: Apple Silicon
 
