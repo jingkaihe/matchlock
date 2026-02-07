@@ -139,6 +139,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		GuestIP:    subnetInfo.GuestIP,
 		SubnetCIDR: subnetInfo.GatewayIP + "/24",
 		Workspace:  workspace,
+		Privileged: config.Privileged,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -299,102 +300,28 @@ func (s *Sandbox) Stop(ctx context.Context) error {
 	return s.machine.Stop(ctx)
 }
 
-// PrepareExecEnv returns an ExecOptions with CA cert env vars and secret
-// placeholders pre-populated. Callers that need custom env should merge
-// additional entries into the returned options.
 func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
-	opts := &api.ExecOptions{
-		WorkingDir: s.config.GetWorkspace(),
-		Env:        make(map[string]string),
-	}
-	if s.caPool != nil {
-		certPath := "/etc/ssl/certs/matchlock-ca.crt"
-		opts.Env["SSL_CERT_FILE"] = certPath
-		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
-		opts.Env["CURL_CA_BUNDLE"] = certPath
-		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
-	}
-	if s.policy != nil {
-		for name, placeholder := range s.policy.GetPlaceholders() {
-			opts.Env[name] = placeholder
-		}
-	}
-	return opts
+	return prepareExecEnv(s.config, s.caPool, s.policy)
 }
 
-// Exec executes a command in the sandbox.
 func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
-	if opts == nil {
-		opts = &api.ExecOptions{}
-	}
-	if opts.Env == nil {
-		opts.Env = make(map[string]string)
-	}
-
-	prepared := s.PrepareExecEnv()
-	if opts.WorkingDir == "" {
-		opts.WorkingDir = prepared.WorkingDir
-	}
-	for k, v := range prepared.Env {
-		opts.Env[k] = v
-	}
-
-	return s.machine.Exec(ctx, command, opts)
+	return execCommand(ctx, s.machine, s.config, s.caPool, s.policy, command, opts)
 }
 
-// WriteFile writes content to a file in the sandbox.
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
-	if mode == 0 {
-		mode = 0644
-	}
-	h, err := s.vfsRoot.Create(path, os.FileMode(mode))
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	_, err = h.Write(content)
-	return err
+	return writeFile(s.vfsRoot, path, content, mode)
 }
 
-// ReadFile reads a file from the sandbox.
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	h, err := s.vfsRoot.Open(path, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer h.Close()
-
-	info, err := s.vfsRoot.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-
-	content := make([]byte, info.Size())
-	_, err = h.Read(content)
-	if err != nil {
-		return nil, err
-	}
-	return content, nil
+	return readFile(s.vfsRoot, path)
 }
 
-// ListFiles lists files in a directory.
-func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
-	entries, err := s.vfsRoot.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
+func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
+	return readFileTo(s.vfsRoot, path, w)
+}
 
-	result := make([]api.FileInfo, len(entries))
-	for i, e := range entries {
-		info, _ := e.Info()
-		result[i] = api.FileInfo{
-			Name:  e.Name(),
-			Size:  info.Size(),
-			Mode:  uint32(info.Mode()),
-			IsDir: e.IsDir(),
-		}
-	}
-	return result, nil
+func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	return listFiles(s.vfsRoot, path)
 }
 
 // Events returns a channel for receiving sandbox events.

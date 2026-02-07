@@ -127,6 +127,21 @@ func buildSeccompFilter() []sockFilter {
 // process is a re-execed sandbox launcher (not the main agent).
 const sandboxLauncherEnvKey = "__MATCHLOCK_SANDBOX_LAUNCHER"
 
+// isPrivilegedMode checks /proc/cmdline for matchlock.privileged=1.
+// When privileged, the sandbox launcher skips cap drops, seccomp, and no_new_privs.
+func isPrivilegedMode() bool {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return false
+	}
+	for _, field := range strings.Fields(string(data)) {
+		if field == "matchlock.privileged=1" {
+			return true
+		}
+	}
+	return false
+}
+
 // isSandboxLauncher returns true if this process was re-execed as a sandbox launcher.
 func isSandboxLauncher() bool {
 	return os.Getenv(sandboxLauncherEnvKey) == "1"
@@ -143,26 +158,30 @@ func runSandboxLauncher() {
 	syscall.Unmount("/proc", syscall.MNT_DETACH)
 	syscall.Mount("proc", "/proc", "proc", 0, "")
 
-	// Drop specific dangerous capabilities from the bounding set
-	for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot} {
-		syscall.RawSyscall(syscall.SYS_PRCTL, prCapBSetDrop, cap, 0)
-	}
+	privileged := isPrivilegedMode()
 
-	// Set no_new_privs (required for seccomp and prevents privilege escalation)
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0); errno != 0 {
-		fmt.Fprintf(os.Stderr, "matchlock: failed to set no_new_privs: %v\n", errno)
-		os.Exit(127)
-	}
+	if !privileged {
+		// Drop specific dangerous capabilities from the bounding set
+		for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot} {
+			syscall.RawSyscall(syscall.SYS_PRCTL, prCapBSetDrop, cap, 0)
+		}
 
-	// Install seccomp filter
-	filter := buildSeccompFilter()
-	prog := sockFprog{
-		Len:    uint16(len(filter)),
-		Filter: &filter[0],
-	}
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetSeccomp, seccompModeFilter, uintptr(unsafe.Pointer(&prog))); errno != 0 {
-		fmt.Fprintf(os.Stderr, "matchlock: failed to install seccomp filter: %v\n", errno)
-		os.Exit(127)
+		// Set no_new_privs (required for seccomp and prevents privilege escalation)
+		if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetNoNewPrivs, 1, 0); errno != 0 {
+			fmt.Fprintf(os.Stderr, "matchlock: failed to set no_new_privs: %v\n", errno)
+			os.Exit(127)
+		}
+
+		// Install seccomp filter
+		filter := buildSeccompFilter()
+		prog := sockFprog{
+			Len:    uint16(len(filter)),
+			Filter: &filter[0],
+		}
+		if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetSeccomp, seccompModeFilter, uintptr(unsafe.Pointer(&prog))); errno != 0 {
+			fmt.Fprintf(os.Stderr, "matchlock: failed to install seccomp filter: %v\n", errno)
+			os.Exit(127)
+		}
 	}
 
 	// The command to exec is passed via MATCHLOCK_CMD env var,

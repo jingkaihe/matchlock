@@ -154,6 +154,8 @@ func (c *Client) Remove() error {
 type CreateOptions struct {
 	// Image is the container image reference (required, e.g., alpine:latest)
 	Image string
+	// Privileged skips in-guest security restrictions (seccomp, cap drop, no_new_privs)
+	Privileged bool
 	// CPUs is the number of vCPUs
 	CPUs int
 	// MemoryMB is the memory in megabytes
@@ -218,6 +220,10 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 			"disk_size_mb":    opts.DiskSizeMB,
 			"timeout_seconds": opts.TimeoutSeconds,
 		},
+	}
+
+	if opts.Privileged {
+		params["privileged"] = true
 	}
 
 	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 {

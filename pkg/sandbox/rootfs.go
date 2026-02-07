@@ -19,15 +19,30 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 
-mkdir -p /dev/pts /dev/shm
+mkdir -p /dev/pts /dev/shm /dev/mqueue
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+mount -t mqueue mqueue /dev/mqueue 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
-# Mount cgroup2 unified hierarchy
+# Mount BPF filesystem (required for runc cgroup device management)
+mkdir -p /sys/fs/bpf
+mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
+
+# Mount cgroup2 unified hierarchy and enable controller delegation
 mkdir -p /sys/fs/cgroup
 mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+# Enable subtree delegation for BuildKit/runc. Cgroup v2 requires that no
+# processes live in a cgroup before its subtree_control can be written.
+# Move our PID to a child cgroup ("init"), then enable controllers on root.
+if [ -f /sys/fs/cgroup/cgroup.subtree_control ] && [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    mkdir -p /sys/fs/cgroup/init
+    echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
+    for c in $(cat /sys/fs/cgroup/cgroup.controllers); do
+        echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+    done
+fi
 
 hostname matchlock
 

@@ -23,6 +23,12 @@ func New(image string) *SandboxBuilder {
 	}
 }
 
+// WithPrivileged enables privileged mode, skipping in-guest security restrictions.
+func (b *SandboxBuilder) WithPrivileged() *SandboxBuilder {
+	b.opts.Privileged = true
+	return b
+}
+
 // WithCPUs sets the number of vCPUs.
 func (b *SandboxBuilder) WithCPUs(cpus int) *SandboxBuilder {
 	b.opts.CPUs = cpus

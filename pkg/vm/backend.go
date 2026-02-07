@@ -26,6 +26,7 @@ type VMConfig struct {
 	SubnetCIDR      string // CIDR notation (e.g., 192.168.100.1/24)
 	Workspace       string // Guest VFS mount point (default: /workspace)
 	UseInterception bool   // Use network interception (MITM proxy)
+	Privileged      bool   // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	PrebuiltRootfs  string // Pre-prepared rootfs path (skips internal copy if set)
 }
 

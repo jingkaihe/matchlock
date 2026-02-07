@@ -160,6 +160,11 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	}
 
 	// Root device is /dev/vda (first virtio block device)
+	privilegedArg := ""
+	if config.Privileged {
+		privilegedArg = " matchlock.privileged=1"
+	}
+
 	if config.UseInterception {
 		// Static IP for interception mode (gVisor stack, no DHCP)
 		guestIP := config.GuestIP
@@ -171,15 +176,15 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s",
-			guestIP, gatewayIP, workspace,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s%s",
+			guestIP, gatewayIP, workspace, privilegedArg,
 		)
 	}
 
 	// Use DHCP for NAT mode - Apple's Virtualization.framework provides DHCP server
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s",
-		workspace,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s%s",
+		workspace, privilegedArg,
 	)
 }
 

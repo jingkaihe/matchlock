@@ -2,11 +2,13 @@ package image
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -18,6 +20,7 @@ import (
 type Builder struct {
 	cacheDir  string
 	forcePull bool
+	store     *Store
 }
 
 type BuildOptions struct {
@@ -34,6 +37,7 @@ func NewBuilder(opts *BuildOptions) *Builder {
 	return &Builder{
 		cacheDir:  cacheDir,
 		forcePull: opts.ForcePull,
+		store:     NewStore(""),
 	}
 }
 
@@ -45,6 +49,12 @@ type BuildResult struct {
 }
 
 func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, error) {
+	if !b.forcePull {
+		if result, err := b.store.Get(imageRef); err == nil {
+			return result, nil
+		}
+	}
+
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
 		return nil, fmt.Errorf("parse image reference: %w", err)
@@ -106,6 +116,18 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 	}
 
 	fi, _ := os.Stat(rootfsPath)
+
+	meta := ImageMeta{
+		Tag:       imageRef,
+		Digest:    digest.String(),
+		Size:      fi.Size(),
+		CreatedAt: time.Now(),
+		Source:    "registry",
+	}
+	if metaBytes, err := json.MarshalIndent(meta, "", "  "); err == nil {
+		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)
+	}
+
 	return &BuildResult{
 		RootfsPath: rootfsPath,
 		Digest:     digest.String(),
@@ -128,6 +150,18 @@ func (b *Builder) extractImage(img v1.Image, destDir string) error {
 	return nil
 }
 
+
+func (b *Builder) SaveTag(tag string, result *BuildResult) error {
+	meta := ImageMeta{
+		Digest: result.Digest,
+		Source: "tag",
+	}
+	return b.store.Save(tag, result.RootfsPath, meta)
+}
+
+func (b *Builder) Store() *Store {
+	return b.store
+}
 
 func sanitizeRef(ref string) string {
 	ref = strings.ReplaceAll(ref, "/", "_")

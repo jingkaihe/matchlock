@@ -61,6 +61,17 @@ matchlock exec vm-abc12345 -it sh                # attach to it
 
 # Lifecycle
 matchlock list | kill | rm | prune
+
+# Build from Dockerfile (uses BuildKit-in-VM)
+matchlock build -f Dockerfile -t myapp:latest .
+
+# Pre-build rootfs from registry image (caches for faster startup)
+matchlock build alpine:latest
+
+# Image management
+matchlock image ls                                           # List all images
+matchlock image rm myapp:latest                              # Remove a local image
+docker save myapp:latest | matchlock image import myapp:latest  # Import from tarball
 ```
 
 ## SDK

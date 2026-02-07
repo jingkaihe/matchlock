@@ -50,6 +50,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install e2fsprogs
+        run: |
+          brew install e2fsprogs
+          echo "/opt/homebrew/opt/e2fsprogs/bin" >> $GITHUB_PATH
+          echo "/opt/homebrew/opt/e2fsprogs/sbin" >> $GITHUB_PATH
+
       - name: Build
         run: mise run cross-build:darwin
 

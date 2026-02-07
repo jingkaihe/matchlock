@@ -254,6 +254,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		// Format: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>:<dns0>:<dns1>
 		// matchlock.workspace is passed to guest-fused via /proc/cmdline
 		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s", guestIP, gatewayIP, workspace)
+		if m.config.Privileged {
+			kernelArgs += " matchlock.privileged=1"
+		}
 	}
 
 	config := fmt.Sprintf(`{

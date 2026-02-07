@@ -16,11 +16,12 @@ const (
 )
 
 type Config struct {
-	Image     string            `json:"image,omitempty"`
-	Resources *Resources        `json:"resources,omitempty"`
-	Network   *NetworkConfig    `json:"network,omitempty"`
-	VFS       *VFSConfig        `json:"vfs,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
+	Image      string            `json:"image,omitempty"`
+	Privileged bool              `json:"privileged,omitempty"`
+	Resources  *Resources        `json:"resources,omitempty"`
+	Network    *NetworkConfig    `json:"network,omitempty"`
+	VFS        *VFSConfig        `json:"vfs,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
 }
 
 type Resources struct {
@@ -129,6 +130,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.VFS != nil {
 		result.VFS = other.VFS
+	}
+	if other.Privileged {
+		result.Privileged = true
 	}
 	if other.Env != nil {
 		result.Env = other.Env
