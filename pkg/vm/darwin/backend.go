@@ -189,8 +189,8 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s%s%s",
-		workspace, privilegedArg, diskArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s%s%s",
+		workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs,
 	)
 }
 
