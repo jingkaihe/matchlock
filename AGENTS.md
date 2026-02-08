@@ -5,7 +5,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 ## Tech Stack
 
 - **Language**: Go 1.25
-- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon only, Intel not supported)
+- **VM Backend**: Firecracker microVMs (Linux), Virtualization.framework (macOS/Apple Silicon only, Intel not supported)
 - **Network**: nftables transparent proxy (Linux), Apple native NAT or gVisor userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API

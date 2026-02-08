@@ -1,6 +1,6 @@
 # Matchlock
 
-Matchlock is a CLI tool for running AI agents in ephemeral micro-VMs - with network allowlisting, secret injection via MITM proxy, and everything else blocked by default. Your secrets never enter the VM.
+Matchlock is a CLI tool for running AI agents in ephemeral microVMs - with network allowlisting, secret injection via MITM proxy, and everything else blocked by default. Your secrets never enter the VM.
 
 ## Why Matchlock?
 
