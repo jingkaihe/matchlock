@@ -218,10 +218,10 @@ matchlock rpc
 ### Network Stack (`pkg/net`)
 
 **Linux:**
-- `TransparentProxy`: nftables DNAT redirects ports 80/443 to host proxy, uses `SO_ORIGINAL_DST` to recover original destination
-- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands)
+- `TransparentProxy`: nftables DNAT redirects ports 80/443 to HTTP/HTTPS proxy, all other TCP to passthrough proxy; uses `SO_ORIGINAL_DST` to recover original destination
+- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands). Port 80→HTTP handler, port 443→HTTPS handler, catch-all→passthrough handler (policy-gated raw TCP relay)
 - NAT masquerade auto-detects default interface
-- Kernel handles TCP/IP; only HTTP/HTTPS traffic goes through userspace
+- Kernel handles TCP/IP; HTTP/HTTPS traffic goes through MITM inspection, non-standard ports go through policy-gated passthrough
 
 **macOS (two modes):**
 - **NAT mode** (default): Uses Apple Virtualization.framework's built-in NAT with DHCP — no traffic interception, simplest path for unrestricted networking

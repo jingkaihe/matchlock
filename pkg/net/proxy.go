@@ -5,9 +5,11 @@ package net
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -19,15 +21,17 @@ const (
 )
 
 type TransparentProxy struct {
-	httpListener  net.Listener
-	httpsListener net.Listener
-	interceptor   *HTTPInterceptor
-	policy        *policy.Engine
-	events        chan api.Event
+	httpListener        net.Listener
+	httpsListener       net.Listener
+	passthroughListener net.Listener
+	interceptor         *HTTPInterceptor
+	policy              *policy.Engine
+	events              chan api.Event
 
-	httpPort  int
-	httpsPort int
-	bindAddr  string
+	httpPort        int
+	httpsPort       int
+	passthroughPort int
+	bindAddr        string
 
 	mu     sync.Mutex
 	closed bool
@@ -35,12 +39,13 @@ type TransparentProxy struct {
 }
 
 type ProxyConfig struct {
-	BindAddr  string // Address to bind (e.g., "192.168.100.1")
-	HTTPPort  int    // Port for HTTP interception (e.g., 8080)
-	HTTPSPort int    // Port for HTTPS interception (e.g., 8443)
-	Policy    *policy.Engine
-	Events    chan api.Event
-	CAPool    *CAPool
+	BindAddr        string // Address to bind (e.g., "192.168.100.1")
+	HTTPPort        int    // Port for HTTP interception (e.g., 8080)
+	HTTPSPort       int    // Port for HTTPS interception (e.g., 8443)
+	PassthroughPort int    // Port for policy-gated TCP passthrough (non-80/443)
+	Policy          *policy.Engine
+	Events          chan api.Event
+	CAPool          *CAPool
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -58,24 +63,44 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		return nil, fmt.Errorf("failed to listen on HTTPS port %s: %w", httpsAddr, err)
 	}
 
+	var passthroughLn net.Listener
+	if cfg.PassthroughPort > 0 {
+		ptAddr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.PassthroughPort)
+		passthroughLn, err = net.Listen("tcp", ptAddr)
+		if err != nil {
+			httpLn.Close()
+			httpsLn.Close()
+			return nil, fmt.Errorf("failed to listen on passthrough port %s: %w", ptAddr, err)
+		}
+	}
+
 	tp := &TransparentProxy{
-		httpListener:  httpLn,
-		httpsListener: httpsLn,
-		interceptor:   NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
-		policy:        cfg.Policy,
-		events:        cfg.Events,
-		httpPort:      cfg.HTTPPort,
-		httpsPort:     cfg.HTTPSPort,
-		bindAddr:      cfg.BindAddr,
+		httpListener:        httpLn,
+		httpsListener:       httpsLn,
+		passthroughListener: passthroughLn,
+		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
+		policy:              cfg.Policy,
+		events:              cfg.Events,
+		httpPort:            cfg.HTTPPort,
+		httpsPort:           cfg.HTTPSPort,
+		passthroughPort:     cfg.PassthroughPort,
+		bindAddr:            cfg.BindAddr,
 	}
 
 	return tp, nil
 }
 
 func (tp *TransparentProxy) Start() {
-	tp.wg.Add(2)
+	n := 2
+	if tp.passthroughListener != nil {
+		n = 3
+	}
+	tp.wg.Add(n)
 	go tp.acceptLoop(tp.httpListener, tp.handleHTTP)
 	go tp.acceptLoop(tp.httpsListener, tp.handleHTTPS)
+	if tp.passthroughListener != nil {
+		go tp.acceptLoop(tp.passthroughListener, tp.handlePassthrough)
+	}
 }
 
 func (tp *TransparentProxy) acceptLoop(ln net.Listener, handler func(net.Conn, string, int)) {
@@ -119,7 +144,51 @@ func (tp *TransparentProxy) handleHTTPS(conn net.Conn, dstIP string, dstPort int
 	tp.interceptor.HandleHTTPS(conn, dstIP, dstPort)
 }
 
+func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPort int) {
+	defer conn.Close()
 
+	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+	if !tp.policy.IsHostAllowed(host) {
+		tp.emitBlockedEvent(host, "host not in allowlist")
+		return
+	}
+
+	if !tp.policy.IsHostAllowed(dstIP) {
+		tp.emitBlockedEvent(host, "host not in allowlist")
+		return
+	}
+
+	realConn, err := net.DialTimeout("tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)), 30*time.Second)
+	if err != nil {
+		return
+	}
+	defer realConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(realConn, conn)
+		close(done)
+	}()
+	io.Copy(conn, realConn)
+	<-done
+}
+
+func (tp *TransparentProxy) emitBlockedEvent(host, reason string) {
+	if tp.events == nil {
+		return
+	}
+	select {
+	case tp.events <- api.Event{
+		Type: "network",
+		Network: &api.NetworkEvent{
+			Host:        host,
+			Blocked:     true,
+			BlockReason: reason,
+		},
+	}:
+	default:
+	}
+}
 
 func (tp *TransparentProxy) Close() error {
 	tp.mu.Lock()
@@ -132,14 +201,18 @@ func (tp *TransparentProxy) Close() error {
 
 	tp.httpListener.Close()
 	tp.httpsListener.Close()
+	if tp.passthroughListener != nil {
+		tp.passthroughListener.Close()
+	}
 	tp.wg.Wait()
 
 	return nil
 }
 
-func (tp *TransparentProxy) HTTPPort() int    { return tp.httpPort }
-func (tp *TransparentProxy) HTTPSPort() int   { return tp.httpsPort }
-func (tp *TransparentProxy) BindAddr() string { return tp.bindAddr }
+func (tp *TransparentProxy) HTTPPort() int        { return tp.httpPort }
+func (tp *TransparentProxy) HTTPSPort() int       { return tp.httpsPort }
+func (tp *TransparentProxy) PassthroughPort() int { return tp.passthroughPort }
+func (tp *TransparentProxy) BindAddr() string     { return tp.bindAddr }
 
 type originalDst struct {
 	IP   net.IP
