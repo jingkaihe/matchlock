@@ -131,10 +131,22 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	dockerfileInContext := filepath.Join(absContext, dockerfileName)
 	dockerfileDir := filepath.Dir(absDockerfile)
 
+	workspaceDir, err := os.MkdirTemp("", "matchlock-build-workspace-*")
+	if err != nil {
+		return fmt.Errorf("create workspace temp dir: %w", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	outputDir, err := os.MkdirTemp("", "matchlock-build-output-*")
+	if err != nil {
+		return fmt.Errorf("create output temp dir: %w", err)
+	}
+	defer os.RemoveAll(outputDir)
+
 	mounts := map[string]api.MountConfig{
-		"/workspace":         {Type: "memory"},
+		"/workspace":         {Type: "real_fs", HostPath: workspaceDir},
 		"/workspace/context": {Type: "real_fs", HostPath: absContext, Readonly: true},
-		"/workspace/output":  {Type: "memory"},
+		"/workspace/output":  {Type: "real_fs", HostPath: outputDir},
 	}
 
 	guestDockerfileDir := "/workspace/context"
@@ -226,23 +238,10 @@ exit $RC
 
 	fmt.Fprintf(os.Stderr, "Importing built image as %s...\n", tag)
 
-	tmpFile, err := os.CreateTemp("", "matchlock-build-*.tar")
+	tarballPath := filepath.Join(outputDir, "image.tar")
+	importFile, err := os.Open(tarballPath)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := sb.ReadFileTo(ctx, "/workspace/output/image.tar", tmpFile); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("stream built image: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("flush temp tarball: %w", err)
-	}
-
-	importFile, err := os.Open(tmpFile.Name())
-	if err != nil {
-		return fmt.Errorf("open temp tarball: %w", err)
+		return fmt.Errorf("open built image tarball: %w", err)
 	}
 	defer importFile.Close()
 
