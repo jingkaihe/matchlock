@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -22,6 +24,25 @@ type Config struct {
 	Network    *NetworkConfig    `json:"network,omitempty"`
 	VFS        *VFSConfig        `json:"vfs,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	ExtraDisks []DiskMount       `json:"extra_disks,omitempty"`
+}
+
+// DiskMount describes a persistent ext4 disk image to attach as a block device.
+type DiskMount struct {
+	HostPath   string `json:"host_path"`
+	GuestMount string `json:"guest_mount"`
+	ReadOnly   bool   `json:"readonly,omitempty"`
+}
+
+var validGuestMountPath = regexp.MustCompile(`^/[a-zA-Z0-9/_.-]+$`)
+
+// ValidateGuestMount checks that a guest mount path is safe for use in
+// kernel cmdline args and shell scripts.
+func ValidateGuestMount(path string) error {
+	if !validGuestMountPath.MatchString(path) {
+		return fmt.Errorf("invalid guest mount path %q: must be absolute and contain only alphanumeric, '/', '_', '.', '-'", path)
+	}
+	return nil
 }
 
 type Resources struct {
@@ -136,6 +157,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.Env != nil {
 		result.Env = other.Env
+	}
+	if len(other.ExtraDisks) > 0 {
+		result.ExtraDisks = other.ExtraDisks
 	}
 	return &result
 }

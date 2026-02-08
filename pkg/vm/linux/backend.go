@@ -236,7 +236,6 @@ func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
-		// Use configured IPs or defaults
 		guestIP := m.config.GuestIP
 		if guestIP == "" {
 			guestIP = "192.168.100.2"
@@ -249,93 +248,85 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if workspace == "" {
 			workspace = "/workspace"
 		}
-		// Use acpi=off to avoid memory region conflicts with virtio-mmio devices
-		// Firecracker uses virtio-mmio transport, not virtio-pci
-		// Format: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>:<dns0>:<dns1>
-		// matchlock.workspace is passed to guest-fused via /proc/cmdline
 		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s", guestIP, gatewayIP, workspace)
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
+		for i, disk := range m.config.ExtraDisks {
+			dev := string(rune('b' + i)) // vdb, vdc, ...
+			kernelArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
+		}
 	}
 
-	config := fmt.Sprintf(`{
-  "boot-source": {
-    "kernel_image_path": %q,
-    "boot_args": %q
-  },
-  "drives": [
-    {
-      "drive_id": "rootfs",
-      "path_on_host": %q,
-      "is_root_device": true,
-      "is_read_only": false
-    }
-  ],
-  "machine-config": {
-    "vcpu_count": %d,
-    "mem_size_mib": %d
-  },
-  "network-interfaces": [
-    {
-      "iface_id": "eth0",
-      "guest_mac": %q,
-      "host_dev_name": %q
-    }
-  ]
-}`,
-		m.config.KernelPath,
-		kernelArgs,
-		m.config.RootfsPath,
-		m.config.CPUs,
-		m.config.MemoryMB,
-		m.macAddress,
-		m.tapName,
-	)
+	type fcDrive struct {
+		DriveID      string `json:"drive_id"`
+		PathOnHost   string `json:"path_on_host"`
+		IsRootDevice bool   `json:"is_root_device"`
+		IsReadOnly   bool   `json:"is_read_only"`
+	}
+
+	drives := []fcDrive{
+		{DriveID: "rootfs", PathOnHost: m.config.RootfsPath, IsRootDevice: true, IsReadOnly: false},
+	}
+	for i, disk := range m.config.ExtraDisks {
+		drives = append(drives, fcDrive{
+			DriveID:      fmt.Sprintf("disk%d", i),
+			PathOnHost:   disk.HostPath,
+			IsRootDevice: false,
+			IsReadOnly:   disk.ReadOnly,
+		})
+	}
+
+	type fcConfig struct {
+		BootSource struct {
+			KernelImagePath string `json:"kernel_image_path"`
+			BootArgs        string `json:"boot_args"`
+		} `json:"boot-source"`
+		Drives    []fcDrive `json:"drives"`
+		MachineConfig struct {
+			VCPUCount int `json:"vcpu_count"`
+			MemSizeMiB int `json:"mem_size_mib"`
+		} `json:"machine-config"`
+		NetworkInterfaces []struct {
+			IfaceID     string `json:"iface_id"`
+			GuestMAC    string `json:"guest_mac"`
+			HostDevName string `json:"host_dev_name"`
+		} `json:"network-interfaces"`
+		Vsock *struct {
+			GuestCID uint32 `json:"guest_cid"`
+			UDSPath  string `json:"uds_path"`
+		} `json:"vsock,omitempty"`
+	}
+
+	var cfg fcConfig
+	cfg.BootSource.KernelImagePath = m.config.KernelPath
+	cfg.BootSource.BootArgs = kernelArgs
+	cfg.Drives = drives
+	cfg.MachineConfig.VCPUCount = m.config.CPUs
+	cfg.MachineConfig.MemSizeMiB = m.config.MemoryMB
+	cfg.NetworkInterfaces = []struct {
+		IfaceID     string `json:"iface_id"`
+		GuestMAC    string `json:"guest_mac"`
+		HostDevName string `json:"host_dev_name"`
+	}{
+		{IfaceID: "eth0", GuestMAC: m.macAddress, HostDevName: m.tapName},
+	}
 
 	if m.config.VsockCID > 0 {
-		config = fmt.Sprintf(`{
-  "boot-source": {
-    "kernel_image_path": %q,
-    "boot_args": %q
-  },
-  "drives": [
-    {
-      "drive_id": "rootfs",
-      "path_on_host": %q,
-      "is_root_device": true,
-      "is_read_only": false
-    }
-  ],
-  "machine-config": {
-    "vcpu_count": %d,
-    "mem_size_mib": %d
-  },
-  "network-interfaces": [
-    {
-      "iface_id": "eth0",
-      "guest_mac": %q,
-      "host_dev_name": %q
-    }
-  ],
-  "vsock": {
-    "guest_cid": %d,
-    "uds_path": %q
-  }
-}`,
-			m.config.KernelPath,
-			kernelArgs,
-			m.config.RootfsPath,
-			m.config.CPUs,
-			m.config.MemoryMB,
-			m.macAddress,
-			m.tapName,
-			m.config.VsockCID,
-			m.config.VsockPath,
-		)
+		cfg.Vsock = &struct {
+			GuestCID uint32 `json:"guest_cid"`
+			UDSPath  string `json:"uds_path"`
+		}{
+			GuestCID: m.config.VsockCID,
+			UDSPath:  m.config.VsockPath,
+		}
 	}
 
-	return []byte(config)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal firecracker config: %v", err))
+	}
+	return data
 }
 
 func (m *LinuxMachine) Stop(ctx context.Context) error {

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/image"
@@ -37,6 +39,8 @@ func init() {
 	buildCmd.Flags().Int("build-cpus", 0, "Number of CPUs for BuildKit VM (0 = all available)")
 	buildCmd.Flags().Int("build-memory", 0, "Memory in MB for BuildKit VM (0 = all available)")
 	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
+	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
+	buildCmd.Flags().Int("build-cache-size", 10240, "BuildKit cache disk size in MB")
 
 	rootCmd.AddCommand(buildCmd)
 }
@@ -77,6 +81,103 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// buildCachePath returns the path to the persistent BuildKit cache ext4 image.
+func buildCachePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("get home dir: %w", err)
+	}
+	cacheDir := filepath.Join(home, ".cache", "matchlock", "buildkit")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return "", fmt.Errorf("create cache dir: %w", err)
+	}
+	return filepath.Join(cacheDir, "cache.ext4"), nil
+}
+
+// ensureBuildCacheImage creates an ext4 image at cachePath if it doesn't already exist.
+// If the image exists but is smaller than sizeMB, it is grown in-place.
+// Must be called while holding the build cache lock.
+func ensureBuildCacheImage(cachePath string, sizeMB int) error {
+	if sizeMB <= 0 {
+		return fmt.Errorf("build-cache-size must be positive, got %d", sizeMB)
+	}
+
+	targetBytes := int64(sizeMB) * 1024 * 1024
+
+	if fi, err := os.Stat(cachePath); err == nil {
+		if fi.Size() >= targetBytes {
+			return nil
+		}
+		return growExt4Image(cachePath, targetBytes)
+	}
+
+	f, err := os.Create(cachePath)
+	if err != nil {
+		return fmt.Errorf("create cache image: %w", err)
+	}
+	if err := f.Truncate(targetBytes); err != nil {
+		f.Close()
+		os.Remove(cachePath)
+		return fmt.Errorf("truncate cache image: %w", err)
+	}
+	f.Close()
+
+	mkfs := exec.Command("mkfs.ext4", "-q", cachePath)
+	if out, err := mkfs.CombinedOutput(); err != nil {
+		os.Remove(cachePath)
+		return fmt.Errorf("mkfs.ext4: %w: %s", err, out)
+	}
+
+	return nil
+}
+
+// growExt4Image expands an existing ext4 image to targetBytes using truncate + resize2fs.
+func growExt4Image(path string, targetBytes int64) error {
+	fmt.Fprintf(os.Stderr, "Growing build cache to %d MB...\n", targetBytes/(1024*1024))
+
+	if err := os.Truncate(path, targetBytes); err != nil {
+		return fmt.Errorf("truncate cache image: %w", err)
+	}
+
+	if e2fsck, err := exec.LookPath("e2fsck"); err == nil {
+		cmd := exec.Command(e2fsck, "-fy", path)
+		cmd.CombinedOutput()
+	}
+
+	resize2fs, err := exec.LookPath("resize2fs")
+	if err != nil {
+		return fmt.Errorf("resize2fs not found; install e2fsprogs to grow cache")
+	}
+
+	cmd := exec.Command(resize2fs, "-f", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs: %w: %s", err, out)
+	}
+
+	return nil
+}
+
+// lockBuildCache acquires an exclusive file lock on the build cache.
+// Returns the lock file which must be closed to release the lock.
+func lockBuildCache(cachePath string) (*os.File, error) {
+	lockPath := cachePath + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	// Try non-blocking lock first to avoid noisy message when uncontended.
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		fmt.Fprintf(os.Stderr, "Waiting for build cache lock (another build is running)...\n")
+		if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("acquire lock: %w", err)
+		}
+	}
+
+	return f, nil
+}
+
 func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) error {
 	if tag == "" {
 		return fmt.Errorf("-t/--tag is required when building from a Dockerfile")
@@ -86,6 +187,8 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	memory, _ := cmd.Flags().GetInt("build-memory")
 
 	disk, _ := cmd.Flags().GetInt("build-disk")
+	noCache, _ := cmd.Flags().GetBool("no-cache")
+	buildCacheSize, _ := cmd.Flags().GetInt("build-cache-size")
 
 	if cpus == 0 {
 		cpus = runtime.NumCPU()
@@ -131,16 +234,49 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	dockerfileInContext := filepath.Join(absContext, dockerfileName)
 	dockerfileDir := filepath.Dir(absDockerfile)
 
+	workspaceDir, err := os.MkdirTemp("", "matchlock-build-workspace-*")
+	if err != nil {
+		return fmt.Errorf("create workspace temp dir: %w", err)
+	}
+	defer os.RemoveAll(workspaceDir)
+
+	outputDir, err := os.MkdirTemp("", "matchlock-build-output-*")
+	if err != nil {
+		return fmt.Errorf("create output temp dir: %w", err)
+	}
+	defer os.RemoveAll(outputDir)
+
 	mounts := map[string]api.MountConfig{
-		"/workspace":         {Type: "memory"},
+		"/workspace":         {Type: "real_fs", HostPath: workspaceDir},
 		"/workspace/context": {Type: "real_fs", HostPath: absContext, Readonly: true},
-		"/workspace/output":  {Type: "memory"},
+		"/workspace/output":  {Type: "real_fs", HostPath: outputDir},
 	}
 
 	guestDockerfileDir := "/workspace/context"
 	if _, err := os.Stat(dockerfileInContext); os.IsNotExist(err) {
 		mounts["/workspace/dockerfile"] = api.MountConfig{Type: "real_fs", HostPath: dockerfileDir, Readonly: true}
 		guestDockerfileDir = "/workspace/dockerfile"
+	}
+
+	var extraDisks []api.DiskMount
+	if !noCache {
+		cachePath, err := buildCachePath()
+		if err != nil {
+			return fmt.Errorf("resolve build cache path: %w", err)
+		}
+		lockFile, err := lockBuildCache(cachePath)
+		if err != nil {
+			return fmt.Errorf("lock build cache: %w", err)
+		}
+		defer lockFile.Close()
+		if err := ensureBuildCacheImage(cachePath, buildCacheSize); err != nil {
+			return fmt.Errorf("prepare build cache: %w", err)
+		}
+		extraDisks = append(extraDisks, api.DiskMount{
+			HostPath:   cachePath,
+			GuestMount: "/var/lib/buildkit",
+		})
+		fmt.Fprintf(os.Stderr, "Using build cache at %s\n", cachePath)
 	}
 
 	config := &api.Config{
@@ -152,7 +288,8 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 			DiskSizeMB:     disk,
 			TimeoutSeconds: 1800,
 		},
-		Network: &api.NetworkConfig{},
+		Network:    &api.NetworkConfig{},
+		ExtraDisks: extraDisks,
 		VFS: &api.VFSConfig{
 			Workspace: "/workspace",
 			Mounts:    mounts,
@@ -183,6 +320,11 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		filenameOpt = fmt.Sprintf("  --opt filename=%s \\\n", dockerfileName)
 	}
 
+	noCacheOpt := ""
+	if noCache {
+		noCacheOpt = "  --no-cache \\\n"
+	}
+
 	buildScript := fmt.Sprintf(`#!/bin/sh
 set -e
 export HOME=/root
@@ -205,12 +347,12 @@ buildctl --addr unix://$SOCK build \
   --frontend dockerfile.v0 \
   --local context=/workspace/context \
   --local dockerfile=%s \
-%s  --output type=docker,dest=/workspace/output/image.tar
+%s%s  --output type=docker,dest=/workspace/output/image.tar
 RC=$?
 [ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
 kill $BKPID 2>/dev/null
 exit $RC
-`, guestDockerfileDir, filenameOpt)
+`, guestDockerfileDir, filenameOpt, noCacheOpt)
 
 	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScript), 0755); err != nil {
 		return fmt.Errorf("write build script: %w", err)
@@ -226,23 +368,10 @@ exit $RC
 
 	fmt.Fprintf(os.Stderr, "Importing built image as %s...\n", tag)
 
-	tmpFile, err := os.CreateTemp("", "matchlock-build-*.tar")
+	tarballPath := filepath.Join(outputDir, "image.tar")
+	importFile, err := os.Open(tarballPath)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer os.Remove(tmpFile.Name())
-
-	if _, err := sb.ReadFileTo(ctx, "/workspace/output/image.tar", tmpFile); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("stream built image: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("flush temp tarball: %w", err)
-	}
-
-	importFile, err := os.Open(tmpFile.Name())
-	if err != nil {
-		return fmt.Errorf("open temp tarball: %w", err)
+		return fmt.Errorf("open built image tarball: %w", err)
 	}
 	defer importFile.Close()
 

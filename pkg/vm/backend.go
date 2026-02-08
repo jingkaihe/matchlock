@@ -7,6 +7,13 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
+// DiskConfig describes an additional block device to attach to the VM.
+type DiskConfig struct {
+	HostPath   string // Path to the ext4 image on the host
+	GuestMount string // Mount point inside the guest (e.g., "/var/lib/buildkit")
+	ReadOnly   bool
+}
+
 type VMConfig struct {
 	ID              string
 	KernelPath      string
@@ -28,6 +35,7 @@ type VMConfig struct {
 	UseInterception bool   // Use network interception (MITM proxy)
 	Privileged      bool   // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	PrebuiltRootfs  string // Pre-prepared rootfs path (skips internal copy if set)
+	ExtraDisks      []DiskConfig // Additional block devices to attach
 }
 
 type Backend interface {

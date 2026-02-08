@@ -91,7 +91,9 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		return nil, fmt.Errorf("failed to create VM configuration: %w", err)
 	}
 
-	if err := b.configureStorage(vzConfig, tempRootfs); err != nil {
+	configWithRootfs := *config
+	configWithRootfs.RootfsPath = tempRootfs
+	if err := b.configureStorage(vzConfig, &configWithRootfs); err != nil {
 		os.Remove(tempRootfs)
 		socketPair.Close()
 		return nil, fmt.Errorf("failed to configure storage: %w", err)
@@ -165,8 +167,13 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 		privilegedArg = " matchlock.privileged=1"
 	}
 
+	diskArgs := ""
+	for i, disk := range config.ExtraDisks {
+		dev := string(rune('b' + i))
+		diskArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
+	}
+
 	if config.UseInterception {
-		// Static IP for interception mode (gVisor stack, no DHCP)
 		guestIP := config.GuestIP
 		if guestIP == "" {
 			guestIP = "192.168.100.2"
@@ -176,21 +183,20 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s%s",
-			guestIP, gatewayIP, workspace, privilegedArg,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s%s%s",
+			guestIP, gatewayIP, workspace, privilegedArg, diskArgs,
 		)
 	}
 
-	// Use DHCP for NAT mode - Apple's Virtualization.framework provides DHCP server
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s%s",
-		workspace, privilegedArg,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s%s%s",
+		workspace, privilegedArg, diskArgs,
 	)
 }
 
-func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, rootfsPath string) error {
+func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {
 	diskAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
-		rootfsPath,
+		config.RootfsPath,
 		false,
 		vz.DiskImageCachingModeAutomatic,
 		vz.DiskImageSynchronizationModeFsync,
@@ -204,7 +210,28 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 		return fmt.Errorf("failed to create storage config: %w", err)
 	}
 
-	vzConfig.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{storageConfig})
+	devices := []vz.StorageDeviceConfiguration{storageConfig}
+
+	for i, disk := range config.ExtraDisks {
+		extraAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+			disk.HostPath,
+			disk.ReadOnly,
+			vz.DiskImageCachingModeAutomatic,
+			vz.DiskImageSynchronizationModeFsync,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create extra disk %d attachment: %w", i, err)
+		}
+
+		extraConfig, err := vz.NewVirtioBlockDeviceConfiguration(extraAttachment)
+		if err != nil {
+			return fmt.Errorf("failed to create extra disk %d config: %w", i, err)
+		}
+
+		devices = append(devices, extraConfig)
+	}
+
+	vzConfig.SetStorageDevicesVirtualMachineConfiguration(devices)
 	return nil
 }
 

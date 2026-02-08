@@ -120,6 +120,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 	}
 
+	var extraDisks []vm.DiskConfig
+	for _, d := range config.ExtraDisks {
+		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
+			subnetAlloc.Release(id)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("invalid extra disk config: %w", err)
+		}
+		extraDisks = append(extraDisks, vm.DiskConfig{
+			HostPath:   d.HostPath,
+			GuestMount: d.GuestMount,
+			ReadOnly:   d.ReadOnly,
+		})
+	}
+
 	vmConfig := &vm.VMConfig{
 		ID:              id,
 		KernelPath:      kernelPath,
@@ -136,6 +150,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		UseInterception: needsInterception,
 		Privileged:      config.Privileged,
 		PrebuiltRootfs:  prebuiltRootfs,
+		ExtraDisks:      extraDisks,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
