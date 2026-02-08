@@ -10,34 +10,17 @@ When your agent calls an API the real credentials are injected in-flight by the 
 
 ## Quick Start
 
-### Prerequisites
+### System Requirements
 
-- **Linux**: KVM support
-- **macOS**: Apple Silicon
+- **Linux** with KVM support
+- **macOS** on Apple Silicon
 
 ### Install
-
-```bash
-brew install jingkaihe/essentials/matchlock
-```
-
-Or add the tap first:
 
 ```bash
 brew tap jingkaihe/essentials
 brew install matchlock
 ```
-
-#### Updating
-
-```bash
-brew update
-brew upgrade matchlock
-```
-
-#### Build from source
-
-If you prefer to build from source, see the [developer reference](AGENTS.md) for instructions using [mise](https://mise.jdx.dev/).
 
 ### Usage
 
@@ -76,28 +59,43 @@ docker save myapp:latest | matchlock image import myapp:latest  # Import from ta
 
 ## SDK
 
-Beyond the CLI, Matchlock ships with Go and Python SDKs for embedding sandboxes directly in your application. Launch a VM, exec commands, stream output, and write files - all programmatically.
+Matchlock also ships with Go and Python SDKs for embedding sandboxes directly in your application. Allows you to programmatically launch VMs, exec commands, stream output and write files.
 
 **Go**
 
 ```go
-import "github.com/jingkaihe/matchlock/pkg/sdk"
+package main
 
-client, _ := sdk.NewClient(sdk.DefaultConfig())
-defer client.Close()
+import (
+	"fmt"
+	"os"
 
-sandbox := sdk.New("python:3.12-alpine").
-    AllowHost("api.anthropic.com").
-    AddSecret("ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY"), "api.anthropic.com")
+	"github.com/jingkaihe/matchlock/pkg/sdk"
+)
 
-client.Launch(sandbox)
+func main() {
+	client, _ := sdk.NewClient(sdk.DefaultConfig())
+	defer client.Close()
 
-// The VM only ever sees a placeholder - the real key never enters the sandbox
-result, _ := client.Exec("echo $ANTHROPIC_API_KEY")
-fmt.Print(result.Stdout) // prints "SANDBOX_SECRET_a1b2c3d4..."
+	sandbox := sdk.New("alpine:latest").
+		AllowHost("dl-cdn.alpinelinux.org", "api.anthropic.com").
+		AddSecret("ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY"), "api.anthropic.com")
 
-client.WriteFile("/workspace/ask.py", script)
-client.ExecStream("uv run /workspace/ask.py", os.Stdout, os.Stderr)
+	client.Launch(sandbox)
+	client.Exec("apk add --no-cache curl")
+
+	// The VM only ever sees a placeholder - the real key never enters the sandbox
+	result, _ := client.Exec("echo $ANTHROPIC_API_KEY")
+	fmt.Print(result.Stdout) // prints "SANDBOX_SECRET_a1b2c3d4..."
+
+	curlCmd := `curl -s --no-buffer https://api.anthropic.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
+       "messages":[{"role":"user","content":"Explain TCP to me"}]}'`
+	client.ExecStream(curlCmd, os.Stdout, os.Stderr)
+}
 ```
 
 **Python** ([PyPI](https://pypi.org/project/matchlock/))
@@ -109,18 +107,30 @@ uv add matchlock
 ```
 
 ```python
+import os
+import sys
+
 from matchlock import Client, Config, Sandbox
 
 sandbox = (
-    Sandbox("python:3.12-alpine")
-    .allow_host("api.anthropic.com")
-    .add_secret("ANTHROPIC_API_KEY", os.environ["ANTHROPIC_API_KEY"], "api.anthropic.com")
+    Sandbox("alpine:latest")
+    .allow_host("dl-cdn.alpinelinux.org", "api.anthropic.com")
+    .add_secret(
+        "ANTHROPIC_API_KEY", os.environ["ANTHROPIC_API_KEY"], "api.anthropic.com"
+    )
 )
+
+curl_cmd = """curl -s --no-buffer https://api.anthropic.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
+       "messages":[{"role":"user","content":"Explain TCP/IP."}]}'"""
 
 with Client(Config()) as client:
     client.launch(sandbox)
-    client.write_file("/workspace/ask.py", script)
-    client.exec_stream("uv run /workspace/ask.py", stdout=sys.stdout, stderr=sys.stderr)
+    client.exec("apk add --no-cache curl")
+    client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
 ```
 
 See full examples in [`examples/go`](examples/go/main.go) and [`examples/python`](examples/python/main.py).
