@@ -322,7 +322,10 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		}
 	}
 
-	data, _ := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal firecracker config: %v", err))
+	}
 	return data
 }
 

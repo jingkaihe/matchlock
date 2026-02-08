@@ -69,10 +69,12 @@ fi
 for param in $(cat /proc/cmdline); do
     case "$param" in
         matchlock.disk.*)
-            DEV=$(echo "$param" | sed 's/matchlock\.disk\.\(.*\)=.*/\1/')
+            DEV=$(echo "$param" | sed 's/matchlock\.disk\.//;s/=.*//')
             MNTPATH=$(echo "$param" | cut -d= -f2)
             mkdir -p "$MNTPATH"
-            mount -t ext4 "/dev/$DEV" "$MNTPATH" 2>/dev/null || true
+            if ! mount -t ext4 "/dev/$DEV" "$MNTPATH"; then
+                echo "WARNING: failed to mount /dev/$DEV at $MNTPATH" >&2
+            fi
             ;;
     esac
 done

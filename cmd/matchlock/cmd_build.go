@@ -81,42 +81,49 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ensureBuildCacheImage creates or reuses a persistent ext4 image for BuildKit cache.
-func ensureBuildCacheImage(sizeMB int) (string, error) {
+// buildCachePath returns the path to the persistent BuildKit cache ext4 image.
+func buildCachePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("get home dir: %w", err)
 	}
-
 	cacheDir := filepath.Join(home, ".cache", "matchlock", "buildkit")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}
+	return filepath.Join(cacheDir, "cache.ext4"), nil
+}
 
-	cachePath := filepath.Join(cacheDir, "cache.ext4")
+// ensureBuildCacheImage creates an ext4 image at cachePath if it doesn't already exist.
+// Must be called while holding the build cache lock.
+func ensureBuildCacheImage(cachePath string, sizeMB int) error {
+	if sizeMB <= 0 {
+		return fmt.Errorf("build-cache-size must be positive, got %d", sizeMB)
+	}
+
 	if _, err := os.Stat(cachePath); err == nil {
-		return cachePath, nil
+		return nil
 	}
 
 	sizeBytes := int64(sizeMB) * 1024 * 1024
 	f, err := os.Create(cachePath)
 	if err != nil {
-		return "", fmt.Errorf("create cache image: %w", err)
+		return fmt.Errorf("create cache image: %w", err)
 	}
 	if err := f.Truncate(sizeBytes); err != nil {
 		f.Close()
 		os.Remove(cachePath)
-		return "", fmt.Errorf("truncate cache image: %w", err)
+		return fmt.Errorf("truncate cache image: %w", err)
 	}
 	f.Close()
 
 	mkfs := exec.Command("mkfs.ext4", "-q", cachePath)
 	if out, err := mkfs.CombinedOutput(); err != nil {
 		os.Remove(cachePath)
-		return "", fmt.Errorf("mkfs.ext4: %w: %s", err, out)
+		return fmt.Errorf("mkfs.ext4: %w: %s", err, out)
 	}
 
-	return cachePath, nil
+	return nil
 }
 
 // lockBuildCache acquires an exclusive file lock on the build cache.
@@ -128,10 +135,13 @@ func lockBuildCache(cachePath string) (*os.File, error) {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Acquiring build cache lock...\n")
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("acquire lock: %w", err)
+	// Try non-blocking lock first to avoid noisy message when uncontended.
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		fmt.Fprintf(os.Stderr, "Waiting for build cache lock (another build is running)...\n")
+		if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+			f.Close()
+			return nil, fmt.Errorf("acquire lock: %w", err)
+		}
 	}
 
 	return f, nil
@@ -219,15 +229,18 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 
 	var extraDisks []api.DiskMount
 	if !noCache {
-		cachePath, err := ensureBuildCacheImage(buildCacheSize)
+		cachePath, err := buildCachePath()
 		if err != nil {
-			return fmt.Errorf("prepare build cache: %w", err)
+			return fmt.Errorf("resolve build cache path: %w", err)
 		}
 		lockFile, err := lockBuildCache(cachePath)
 		if err != nil {
 			return fmt.Errorf("lock build cache: %w", err)
 		}
 		defer lockFile.Close()
+		if err := ensureBuildCacheImage(cachePath, buildCacheSize); err != nil {
+			return fmt.Errorf("prepare build cache: %w", err)
+		}
 		extraDisks = append(extraDisks, api.DiskMount{
 			HostPath:   cachePath,
 			GuestMount: "/var/lib/buildkit",
@@ -276,6 +289,11 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		filenameOpt = fmt.Sprintf("  --opt filename=%s \\\n", dockerfileName)
 	}
 
+	noCacheOpt := ""
+	if noCache {
+		noCacheOpt = "  --no-cache \\\n"
+	}
+
 	buildScript := fmt.Sprintf(`#!/bin/sh
 set -e
 export HOME=/root
@@ -298,12 +316,12 @@ buildctl --addr unix://$SOCK build \
   --frontend dockerfile.v0 \
   --local context=/workspace/context \
   --local dockerfile=%s \
-%s  --output type=docker,dest=/workspace/output/image.tar
+%s%s  --output type=docker,dest=/workspace/output/image.tar
 RC=$?
 [ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
 kill $BKPID 2>/dev/null
 exit $RC
-`, guestDockerfileDir, filenameOpt)
+`, guestDockerfileDir, filenameOpt, noCacheOpt)
 
 	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScript), 0755); err != nil {
 		return fmt.Errorf("write build script: %w", err)
