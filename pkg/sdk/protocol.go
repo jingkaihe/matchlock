@@ -41,6 +41,7 @@ const (
 	ErrCodeVMFailed       = -32000
 	ErrCodeExecFailed     = -32001
 	ErrCodeFileFailed     = -32002
+	ErrCodeImageFailed    = -32003
 )
 
 // RPCError represents an error from the Matchlock RPC
@@ -66,6 +67,11 @@ func (e *RPCError) IsExecError() bool {
 // IsFileError returns true if the error is a file operation error
 func (e *RPCError) IsFileError() bool {
 	return e.Code == ErrCodeFileFailed
+}
+
+// IsImageError returns true if the error is an image operation error
+func (e *RPCError) IsImageError() bool {
+	return e.Code == ErrCodeImageFailed
 }
 
 // pendingRequest tracks an in-flight request awaiting its response.

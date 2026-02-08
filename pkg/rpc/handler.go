@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/image"
 )
 
 type Request struct {
@@ -42,6 +43,7 @@ const (
 	ErrCodeVMFailed       = -32000
 	ErrCodeExecFailed     = -32001
 	ErrCodeFileFailed     = -32002
+	ErrCodeImageFailed    = -32003
 )
 
 type VM interface {
@@ -60,23 +62,25 @@ type VM interface {
 type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
 
 type Handler struct {
-	factory VMFactory
-	vm      VM
-	vmMu    sync.RWMutex // protects vm field
-	events  chan api.Event
-	stdin   io.Reader
-	stdout  io.Writer
-	mu      sync.Mutex // protects stdout writes
-	closed  atomic.Bool
-	wg      sync.WaitGroup // tracks in-flight requests
+	factory  VMFactory
+	vm       VM
+	vmMu     sync.RWMutex // protects vm field
+	events   chan api.Event
+	stdin    io.Reader
+	stdout   io.Writer
+	mu       sync.Mutex // protects stdout writes
+	closed   atomic.Bool
+	wg       sync.WaitGroup // tracks in-flight requests
+	imgBuilder *image.Builder
 }
 
 func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 	return &Handler{
-		factory: factory,
-		events:  make(chan api.Event, 100),
-		stdin:   stdin,
-		stdout:  stdout,
+		factory:    factory,
+		events:     make(chan api.Event, 100),
+		stdin:      stdin,
+		stdout:     stdout,
+		imgBuilder: image.NewBuilder(&image.BuildOptions{}),
 	}
 }
 
@@ -102,8 +106,10 @@ func (h *Handler) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Create and close run synchronously to avoid races
-		if req.Method == "create" || req.Method == "close" {
+		// Create, close, and image operations run synchronously to avoid races
+		if req.Method == "create" || req.Method == "close" ||
+			req.Method == "build" || req.Method == "image_import" ||
+			req.Method == "image_list" || req.Method == "image_remove" {
 			h.wg.Wait()
 			resp := h.handleRequest(ctx, &req)
 			if resp != nil {
@@ -142,6 +148,14 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleListFiles(ctx, req)
 	case "close":
 		return h.handleClose(ctx, req)
+	case "build":
+		return h.handleBuild(ctx, req)
+	case "image_import":
+		return h.handleImageImport(ctx, req)
+	case "image_list":
+		return h.handleImageList(ctx, req)
+	case "image_remove":
+		return h.handleImageRemove(ctx, req)
 	default:
 		return &Response{
 			JSONRPC: "2.0",
@@ -557,6 +571,238 @@ func (h *Handler) sendEvent(event api.Event) {
 	}
 	data, _ := json.Marshal(notification)
 	fmt.Fprintln(h.stdout, string(data))
+}
+
+func (h *Handler) handleBuild(ctx context.Context, req *Request) *Response {
+	var params struct {
+		Image     string `json:"image"`
+		ForcePull bool   `json:"force_pull,omitempty"`
+		Tag       string `json:"tag,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if params.Image == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "image is required"},
+			ID:      req.ID,
+		}
+	}
+
+	builder := h.imgBuilder
+	if params.ForcePull {
+		builder = image.NewBuilder(&image.BuildOptions{ForcePull: true})
+	}
+
+	result, err := builder.Build(ctx, params.Image)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if params.Tag != "" {
+		if err := builder.SaveTag(params.Tag, result); err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				Error:   &Error{Code: ErrCodeImageFailed, Message: fmt.Sprintf("saving tag: %v", err)},
+				ID:      req.ID,
+			}
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"rootfs_path": result.RootfsPath,
+			"digest":      result.Digest,
+			"size":        result.Size,
+			"cached":      result.Cached,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleImageImport(ctx context.Context, req *Request) *Response {
+	var params struct {
+		Tag     string `json:"tag"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if params.Tag == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "tag is required"},
+			ID:      req.ID,
+		}
+	}
+
+	data, err := base64.StdEncoding.DecodeString(params.Content)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "invalid base64 content"},
+			ID:      req.ID,
+		}
+	}
+
+	tmpFile, err := os.CreateTemp("", "matchlock-rpc-import-*.tar")
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	if _, err := tmpFile.Seek(0, 0); err != nil {
+		tmpFile.Close()
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	result, err := h.imgBuilder.Import(ctx, tmpFile, params.Tag)
+	tmpFile.Close()
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"rootfs_path": result.RootfsPath,
+			"digest":      result.Digest,
+			"size":        result.Size,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleImageList(_ context.Context, req *Request) *Response {
+	store := h.imgBuilder.Store()
+	localImages, err := store.List()
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	registryImages, err := image.ListRegistryCache("")
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	type imageEntry struct {
+		Tag       string `json:"tag"`
+		Source    string `json:"source"`
+		Digest   string `json:"digest,omitempty"`
+		Size     int64  `json:"size"`
+		CreatedAt string `json:"created_at"`
+	}
+
+	var images []imageEntry
+	for _, img := range localImages {
+		source := img.Meta.Source
+		if source == "" {
+			source = "local"
+		}
+		images = append(images, imageEntry{
+			Tag:       img.Tag,
+			Source:    source,
+			Digest:   img.Meta.Digest,
+			Size:     img.Meta.Size,
+			CreatedAt: img.Meta.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	for _, img := range registryImages {
+		images = append(images, imageEntry{
+			Tag:       img.Tag,
+			Source:    "registry",
+			Digest:   img.Meta.Digest,
+			Size:     img.Meta.Size,
+			CreatedAt: img.Meta.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"images": images,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleImageRemove(_ context.Context, req *Request) *Response {
+	var params struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if params.Tag == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "tag is required"},
+			ID:      req.ID,
+		}
+	}
+
+	if err := h.imgBuilder.Store().Remove(params.Tag); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result:  map[string]interface{}{},
+		ID:      req.ID,
+	}
 }
 
 func RunRPC(ctx context.Context, factory VMFactory) error {

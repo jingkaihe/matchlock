@@ -140,6 +140,43 @@ class FileInfo:
     """Whether this is a directory."""
 
 
+@dataclass
+class BuildResult:
+    """Result of an image build or import operation."""
+
+    rootfs_path: str
+    """Path to the built rootfs image."""
+
+    digest: str
+    """Image digest."""
+
+    size: int
+    """Image size in bytes."""
+
+    cached: bool = False
+    """Whether the result came from cache."""
+
+
+@dataclass
+class ImageInfo:
+    """Information about a cached image."""
+
+    tag: str
+    """Image tag."""
+
+    source: str
+    """Image source (local, registry, import, tag)."""
+
+    size: int
+    """Image size in bytes."""
+
+    created_at: str
+    """Creation timestamp."""
+
+    digest: str = ""
+    """Image digest."""
+
+
 class MatchlockError(Exception):
     """Base exception for Matchlock errors."""
 
@@ -157,6 +194,7 @@ class RPCError(MatchlockError):
     VM_FAILED = -32000
     EXEC_FAILED = -32001
     FILE_FAILED = -32002
+    IMAGE_FAILED = -32003
 
     def __init__(self, code: int, message: str):
         self.code = code
@@ -171,3 +209,6 @@ class RPCError(MatchlockError):
 
     def is_file_error(self) -> bool:
         return self.code == self.FILE_FAILED
+
+    def is_image_error(self) -> bool:
+        return self.code == self.IMAGE_FAILED

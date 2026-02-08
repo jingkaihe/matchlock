@@ -455,3 +455,96 @@ func (c *Client) ListFiles(path string) ([]FileInfo, error) {
 
 	return listResult.Files, nil
 }
+
+// BuildResult holds the result of an image build or import operation
+type BuildResult struct {
+	RootfsPath string `json:"rootfs_path"`
+	Digest     string `json:"digest"`
+	Size       int64  `json:"size"`
+	Cached     bool   `json:"cached,omitempty"`
+}
+
+// ImageInfo holds information about a cached image
+type ImageInfo struct {
+	Tag       string `json:"tag"`
+	Source    string `json:"source"`
+	Digest   string `json:"digest,omitempty"`
+	Size     int64  `json:"size"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Build pulls and caches a container image, converting it to a rootfs.
+// If the image is already cached, the cached result is returned.
+func (c *Client) Build(imageRef string, forcePull bool) (*BuildResult, error) {
+	return c.BuildWithTag(imageRef, "", forcePull)
+}
+
+// BuildWithTag pulls and caches a container image, optionally tagging it locally.
+func (c *Client) BuildWithTag(imageRef, tag string, forcePull bool) (*BuildResult, error) {
+	params := map[string]interface{}{
+		"image":      imageRef,
+		"force_pull": forcePull,
+	}
+	if tag != "" {
+		params["tag"] = tag
+	}
+
+	result, err := c.sendRequest("build", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var buildResult BuildResult
+	if err := json.Unmarshal(result, &buildResult); err != nil {
+		return nil, fmt.Errorf("failed to parse build result: %w", err)
+	}
+
+	return &buildResult, nil
+}
+
+// ImageImport imports a Docker/OCI tarball (docker save format) and tags it locally.
+func (c *Client) ImageImport(tag string, tarballContent []byte) (*BuildResult, error) {
+	params := map[string]interface{}{
+		"tag":     tag,
+		"content": base64.StdEncoding.EncodeToString(tarballContent),
+	}
+
+	result, err := c.sendRequest("image_import", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var importResult BuildResult
+	if err := json.Unmarshal(result, &importResult); err != nil {
+		return nil, fmt.Errorf("failed to parse import result: %w", err)
+	}
+
+	return &importResult, nil
+}
+
+// ImageList lists all cached images (local store + registry cache).
+func (c *Client) ImageList() ([]ImageInfo, error) {
+	result, err := c.sendRequest("image_list", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var listResult struct {
+		Images []ImageInfo `json:"images"`
+	}
+	if err := json.Unmarshal(result, &listResult); err != nil {
+		return nil, fmt.Errorf("failed to parse image list result: %w", err)
+	}
+
+	return listResult.Images, nil
+}
+
+// ImageRemove removes a locally tagged image.
+func (c *Client) ImageRemove(tag string) error {
+	params := map[string]string{
+		"tag": tag,
+	}
+
+	_, err := c.sendRequest("image_remove", params)
+	return err
+}

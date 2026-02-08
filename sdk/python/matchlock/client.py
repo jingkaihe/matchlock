@@ -23,11 +23,13 @@ from typing import IO, Any, Callable
 
 from .builder import Sandbox
 from .types import (
+    BuildResult,
     Config,
     CreateOptions,
     ExecResult,
     ExecStreamResult,
     FileInfo,
+    ImageInfo,
     MatchlockError,
     RPCError,
 )
@@ -387,3 +389,72 @@ class Client:
             )
             for f in result.get("files", [])
         ]
+
+    # ── Image operations ─────────────────────────────────────────────
+
+    def build(self, image: str, force_pull: bool = False, tag: str = "") -> BuildResult:
+        """Pull and cache a container image, converting it to a rootfs.
+
+        Args:
+            image: Container image reference (e.g., "alpine:latest").
+            force_pull: Always pull from registry, ignoring cache.
+            tag: Optionally tag the image in the local store.
+
+        Returns:
+            BuildResult with rootfs path, digest, size, and cache status.
+        """
+        params: dict[str, Any] = {"image": image, "force_pull": force_pull}
+        if tag:
+            params["tag"] = tag
+
+        result = self._send_request("build", params)
+        return BuildResult(
+            rootfs_path=result["rootfs_path"],
+            digest=result["digest"],
+            size=result["size"],
+            cached=result.get("cached", False),
+        )
+
+    def image_import(self, tag: str, tarball_content: bytes) -> BuildResult:
+        """Import a Docker/OCI tarball (docker save format) and tag it locally.
+
+        Args:
+            tag: Tag to assign to the imported image.
+            tarball_content: Raw bytes of the tarball.
+
+        Returns:
+            BuildResult with rootfs path, digest, and size.
+        """
+        params: dict[str, Any] = {
+            "tag": tag,
+            "content": base64.b64encode(tarball_content).decode("ascii"),
+        }
+
+        result = self._send_request("image_import", params)
+        return BuildResult(
+            rootfs_path=result["rootfs_path"],
+            digest=result["digest"],
+            size=result["size"],
+        )
+
+    def image_list(self) -> list[ImageInfo]:
+        """List all cached images (local store + registry cache)."""
+        result = self._send_request("image_list")
+        return [
+            ImageInfo(
+                tag=img["tag"],
+                source=img["source"],
+                digest=img.get("digest", ""),
+                size=img["size"],
+                created_at=img["created_at"],
+            )
+            for img in result.get("images", [])
+        ]
+
+    def image_remove(self, tag: str) -> None:
+        """Remove a locally tagged image.
+
+        Args:
+            tag: Tag of the image to remove.
+        """
+        self._send_request("image_remove", {"tag": tag})

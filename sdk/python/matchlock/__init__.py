@@ -20,11 +20,13 @@ Builder API:
 from .builder import Sandbox
 from .client import Client
 from .types import (
+    BuildResult,
     Config,
     CreateOptions,
     ExecResult,
     ExecStreamResult,
     FileInfo,
+    ImageInfo,
     MatchlockError,
     MountConfig,
     RPCError,
@@ -36,12 +38,14 @@ from importlib.metadata import version as _version
 __version__ = _version("matchlock")
 
 __all__ = [
+    "BuildResult",
     "Client",
     "Config",
     "CreateOptions",
     "ExecResult",
     "ExecStreamResult",
     "FileInfo",
+    "ImageInfo",
     "MatchlockError",
     "MountConfig",
     "RPCError",
