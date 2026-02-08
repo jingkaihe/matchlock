@@ -41,5 +41,5 @@ func runRPC(cmd *cobra.Command, args []string) error {
 		return sandbox.New(ctx, config, &sandbox.Options{RootfsPath: result.RootfsPath})
 	}
 
-	return rpc.RunRPC(ctx, factory)
+	return rpc.RunRPC(ctx, factory, rpc.WithSandboxFactory(newSandboxFactory()))
 }

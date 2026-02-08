@@ -548,3 +548,60 @@ func (c *Client) ImageRemove(tag string) error {
 	_, err := c.sendRequest("image_remove", params)
 	return err
 }
+
+// DockerfileBuildOptions configures a Dockerfile build via BuildKit-in-VM.
+type DockerfileBuildOptions struct {
+	// ContextDir is the build context directory (required).
+	ContextDir string
+	// Dockerfile is the path to the Dockerfile (required).
+	Dockerfile string
+	// Tag is the local image tag for the built image (required).
+	Tag string
+	// CPUs for the BuildKit VM (0 = all available).
+	CPUs int
+	// MemoryMB for the BuildKit VM (0 = all available).
+	MemoryMB int
+	// DiskSizeMB for the BuildKit VM (0 = 10240).
+	DiskSizeMB int
+	// BuildCacheMB is the persistent BuildKit cache size (0 = 10240).
+	BuildCacheMB int
+	// NoCache disables the BuildKit build cache.
+	NoCache bool
+}
+
+// BuildDockerfile builds a container image from a Dockerfile using BuildKit-in-VM.
+// The built image is tagged locally and can be used with Create/Launch.
+func (c *Client) BuildDockerfile(opts DockerfileBuildOptions) (*BuildResult, error) {
+	params := map[string]interface{}{
+		"context_dir": opts.ContextDir,
+		"dockerfile":  opts.Dockerfile,
+		"tag":         opts.Tag,
+	}
+	if opts.CPUs > 0 {
+		params["cpus"] = opts.CPUs
+	}
+	if opts.MemoryMB > 0 {
+		params["memory_mb"] = opts.MemoryMB
+	}
+	if opts.DiskSizeMB > 0 {
+		params["disk_size_mb"] = opts.DiskSizeMB
+	}
+	if opts.BuildCacheMB > 0 {
+		params["build_cache_mb"] = opts.BuildCacheMB
+	}
+	if opts.NoCache {
+		params["no_cache"] = true
+	}
+
+	result, err := c.sendRequest("dockerfile_build", params)
+	if err != nil {
+		return nil, err
+	}
+
+	var buildResult BuildResult
+	if err := json.Unmarshal(result, &buildResult); err != nil {
+		return nil, fmt.Errorf("failed to parse dockerfile build result: %w", err)
+	}
+
+	return &buildResult, nil
+}

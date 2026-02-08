@@ -36,6 +36,9 @@ sudo go run examples/go/main.go
 
 # With secrets (MITM replaces placeholder in HTTP headers)
 sudo ANTHROPIC_API_KEY=sk-xxx go run examples/go/main.go
+
+# Dockerfile build example — build from Dockerfile, launch, and verify
+sudo go run examples/go/image_build/main.go
 ```
 
 ## Python SDK Examples
@@ -43,4 +46,7 @@ sudo ANTHROPIC_API_KEY=sk-xxx go run examples/go/main.go
 ```bash
 # With secrets
 sudo ANTHROPIC_API_KEY=sk-xxx python3 examples/python/main.py
+
+# Dockerfile build example — build from Dockerfile, launch, and verify
+sudo uv run examples/python/image_build/main.py
 ```

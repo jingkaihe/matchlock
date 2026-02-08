@@ -62,16 +62,17 @@ type VM interface {
 type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
 
 type Handler struct {
-	factory  VMFactory
-	vm       VM
-	vmMu     sync.RWMutex // protects vm field
-	events   chan api.Event
-	stdin    io.Reader
-	stdout   io.Writer
-	mu       sync.Mutex // protects stdout writes
-	closed   atomic.Bool
-	wg       sync.WaitGroup // tracks in-flight requests
-	imgBuilder *image.Builder
+	factory        VMFactory
+	sandboxFactory image.SandboxFactory
+	vm             VM
+	vmMu           sync.RWMutex // protects vm field
+	events         chan api.Event
+	stdin          io.Reader
+	stdout         io.Writer
+	mu             sync.Mutex // protects stdout writes
+	closed         atomic.Bool
+	wg             sync.WaitGroup // tracks in-flight requests
+	imgBuilder     *image.Builder
 }
 
 func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
@@ -82,6 +83,12 @@ func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 		stdout:     stdout,
 		imgBuilder: image.NewBuilder(&image.BuildOptions{}),
 	}
+}
+
+// SetSandboxFactory sets the factory used for Dockerfile builds (BuildKit-in-VM).
+// Must be called before Run.
+func (h *Handler) SetSandboxFactory(f image.SandboxFactory) {
+	h.sandboxFactory = f
 }
 
 func (h *Handler) Run(ctx context.Context) error {
@@ -108,7 +115,8 @@ func (h *Handler) Run(ctx context.Context) error {
 
 		// Create, close, and image operations run synchronously to avoid races
 		if req.Method == "create" || req.Method == "close" ||
-			req.Method == "build" || req.Method == "image_import" ||
+			req.Method == "build" || req.Method == "dockerfile_build" ||
+			req.Method == "image_import" ||
 			req.Method == "image_list" || req.Method == "image_remove" {
 			h.wg.Wait()
 			resp := h.handleRequest(ctx, &req)
@@ -150,6 +158,8 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleClose(ctx, req)
 	case "build":
 		return h.handleBuild(ctx, req)
+	case "dockerfile_build":
+		return h.handleDockerfileBuild(ctx, req)
 	case "image_import":
 		return h.handleImageImport(ctx, req)
 	case "image_list":
@@ -631,6 +641,84 @@ func (h *Handler) handleBuild(ctx context.Context, req *Request) *Response {
 	}
 }
 
+func (h *Handler) handleDockerfileBuild(ctx context.Context, req *Request) *Response {
+	if h.sandboxFactory == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: "Dockerfile builds are not supported (no sandbox factory configured)"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		ContextDir   string `json:"context_dir"`
+		Dockerfile   string `json:"dockerfile"`
+		Tag          string `json:"tag"`
+		CPUs         int    `json:"cpus,omitempty"`
+		MemoryMB     int    `json:"memory_mb,omitempty"`
+		DiskSizeMB   int    `json:"disk_size_mb,omitempty"`
+		BuildCacheMB int    `json:"build_cache_mb,omitempty"`
+		NoCache      bool   `json:"no_cache,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if params.Tag == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "tag is required"},
+			ID:      req.ID,
+		}
+	}
+	if params.ContextDir == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "context_dir is required"},
+			ID:      req.ID,
+		}
+	}
+	if params.Dockerfile == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "dockerfile is required"},
+			ID:      req.ID,
+		}
+	}
+
+	result, err := h.imgBuilder.BuildDockerfile(ctx, image.DockerfileBuildOptions{
+		ContextDir:   params.ContextDir,
+		Dockerfile:   params.Dockerfile,
+		Tag:          params.Tag,
+		CPUs:         params.CPUs,
+		MemoryMB:     params.MemoryMB,
+		DiskSizeMB:   params.DiskSizeMB,
+		BuildCacheMB: params.BuildCacheMB,
+		NoCache:      params.NoCache,
+	}, h.sandboxFactory)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeImageFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"rootfs_path": result.RootfsPath,
+			"digest":      result.Digest,
+			"size":        result.Size,
+		},
+		ID: req.ID,
+	}
+}
+
 func (h *Handler) handleImageImport(ctx context.Context, req *Request) *Response {
 	var params struct {
 		Tag     string `json:"tag"`
@@ -805,7 +893,20 @@ func (h *Handler) handleImageRemove(_ context.Context, req *Request) *Response {
 	}
 }
 
-func RunRPC(ctx context.Context, factory VMFactory) error {
+// RPCOption configures a RunRPC handler.
+type RPCOption func(*Handler)
+
+// WithSandboxFactory sets the sandbox factory for Dockerfile builds.
+func WithSandboxFactory(f image.SandboxFactory) RPCOption {
+	return func(h *Handler) {
+		h.sandboxFactory = f
+	}
+}
+
+func RunRPC(ctx context.Context, factory VMFactory, opts ...RPCOption) error {
 	handler := NewHandler(factory, os.Stdin, os.Stdout)
+	for _, o := range opts {
+		o(handler)
+	}
 	return handler.Run(ctx)
 }

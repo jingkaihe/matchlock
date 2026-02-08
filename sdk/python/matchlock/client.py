@@ -458,3 +458,55 @@ class Client:
             tag: Tag of the image to remove.
         """
         self._send_request("image_remove", {"tag": tag})
+
+    def build_dockerfile(
+        self,
+        context_dir: str,
+        dockerfile: str,
+        tag: str,
+        *,
+        cpus: int = 0,
+        memory_mb: int = 0,
+        disk_size_mb: int = 0,
+        build_cache_mb: int = 0,
+        no_cache: bool = False,
+    ) -> BuildResult:
+        """Build a container image from a Dockerfile using BuildKit-in-VM.
+
+        The built image is tagged locally and can be used with create/launch.
+
+        Args:
+            context_dir: Path to the build context directory.
+            dockerfile: Path to the Dockerfile.
+            tag: Local image tag for the built image.
+            cpus: CPUs for the BuildKit VM (0 = all available).
+            memory_mb: Memory for the BuildKit VM (0 = all available).
+            disk_size_mb: Disk size for the BuildKit VM (0 = 10240).
+            build_cache_mb: Persistent BuildKit cache size (0 = 10240).
+            no_cache: Disable BuildKit build cache.
+
+        Returns:
+            BuildResult with rootfs path, digest, and size.
+        """
+        params: dict[str, Any] = {
+            "context_dir": context_dir,
+            "dockerfile": dockerfile,
+            "tag": tag,
+        }
+        if cpus > 0:
+            params["cpus"] = cpus
+        if memory_mb > 0:
+            params["memory_mb"] = memory_mb
+        if disk_size_mb > 0:
+            params["disk_size_mb"] = disk_size_mb
+        if build_cache_mb > 0:
+            params["build_cache_mb"] = build_cache_mb
+        if no_cache:
+            params["no_cache"] = True
+
+        result = self._send_request("dockerfile_build", params)
+        return BuildResult(
+            rootfs_path=result["rootfs_path"],
+            digest=result["digest"],
+            size=result["size"],
+        )
