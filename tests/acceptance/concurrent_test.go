@@ -166,10 +166,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 		"sk-concurrent-secret-bbb",
 	}
 
-	var (
-		mu      sync.Mutex
-		clients []*sdk.Client
-	)
+	clients := make([]*sdk.Client, n)
 
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -189,9 +186,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 				return
 			}
 
-			mu.Lock()
-			clients = append(clients, client)
-			mu.Unlock()
+			clients[idx] = client
 
 			_, err = client.Launch(sb)
 			if err != nil {
@@ -205,11 +200,11 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 	close(errs)
 
 	t.Cleanup(func() {
-		mu.Lock()
-		defer mu.Unlock()
 		for _, c := range clients {
-			c.Close(0)
-			c.Remove()
+			if c != nil {
+				c.Close(0)
+				c.Remove()
+			}
 		}
 	})
 
@@ -217,12 +212,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mu.Lock()
-	activeClients := make([]*sdk.Client, len(clients))
-	copy(activeClients, clients)
-	mu.Unlock()
-
-	for i, client := range activeClients {
+	for i, client := range clients {
 		result, err := client.Exec(`sh -c 'wget -q -O - --header "Authorization: Bearer $MY_KEY" https://httpbin.org/headers 2>&1'`)
 		if err != nil {
 			t.Errorf("sandbox %d: Exec: %v", i, err)
