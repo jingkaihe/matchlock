@@ -654,11 +654,11 @@ func (m *LinuxMachine) RootfsPath() string {
 	return m.config.RootfsPath
 }
 
-func (m *LinuxMachine) Close() error {
+func (m *LinuxMachine) Close(ctx context.Context) error {
 	var errs []error
 
 	if m.cmd != nil && m.cmd.Process != nil {
-		if err := m.Stop(context.Background()); err != nil {
+		if err := m.Stop(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("stop: %w", err))
 		}
 		// Wait for process to fully exit

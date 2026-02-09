@@ -85,11 +85,14 @@ func (m *DarwinMachine) dialVsock(port uint32) (net.Conn, error) {
 }
 
 func (m *DarwinMachine) Stop(ctx context.Context) error {
+	return m.stop(ctx, false)
+}
+
+func (m *DarwinMachine) stop(ctx context.Context, force bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.started {
-		// Still clean up temp rootfs even if not started
 		if m.tempRootfs != "" {
 			os.Remove(m.tempRootfs)
 			m.tempRootfs = ""
@@ -97,24 +100,29 @@ func (m *DarwinMachine) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	if m.vm.CanRequestStop() {
+	if !force && m.vm.CanRequestStop() {
 		success, err := m.vm.RequestStop()
 		if err == nil && success {
-			done := make(chan struct{})
-			go func() {
-				for m.vm.State() != vz.VirtualMachineStateStopped {
-					time.Sleep(100 * time.Millisecond)
+			stateChanged := m.vm.StateChangedNotify()
+		waitLoop:
+			for {
+				if m.vm.State() == vz.VirtualMachineStateStopped {
+					break
 				}
-				close(done)
-			}()
+				select {
+				case <-stateChanged:
+					if m.vm.State() == vz.VirtualMachineStateStopped {
+						break waitLoop
+					}
+				case <-ctx.Done():
+					break waitLoop
+				}
+			}
 
-			select {
-			case <-done:
+			if m.vm.State() == vz.VirtualMachineStateStopped {
 				m.started = false
 				m.cleanup()
 				return nil
-			case <-time.After(5 * time.Second):
-			case <-ctx.Done():
 			}
 		}
 	}
@@ -415,7 +423,7 @@ func (m *DarwinMachine) RootfsPath() string {
 	return m.tempRootfs
 }
 
-func (m *DarwinMachine) Close() error {
+func (m *DarwinMachine) Close(ctx context.Context) error {
 	var errs []error
 
 	m.mu.Lock()
@@ -423,7 +431,7 @@ func (m *DarwinMachine) Close() error {
 	m.mu.Unlock()
 
 	if started {
-		if err := m.Stop(context.Background()); err != nil {
+		if err := m.stop(ctx, false); err != nil {
 			errs = append(errs, fmt.Errorf("stop: %w", err))
 		}
 	}

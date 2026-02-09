@@ -6,7 +6,7 @@
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	defer client.Close()
+//	defer client.Close(0)
 //
 //	sandbox := sdk.New("python:3.12-alpine").
 //	    WithCPUs(2).
@@ -30,6 +30,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -120,7 +121,11 @@ func (c *Client) VMID() string {
 // Close closes the sandbox and cleans up resources.
 // The VM state directory is preserved so it appears in "matchlock list".
 // Call Remove after Close to delete the state entirely.
-func (c *Client) Close() error {
+//
+// timeout controls how long to wait for the process to exit after sending the
+// close request. A zero value kills the process immediately. When a non-zero
+// timeout expires, the process is forcefully killed.
+func (c *Client) Close(timeout time.Duration) error {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -129,10 +134,29 @@ func (c *Client) Close() error {
 	c.closed = true
 	c.mu.Unlock()
 
-	c.sendRequest("close", nil)
+	if timeout == 0 {
+		c.stdin.Close()
+		c.cmd.Process.Kill()
+		return c.cmd.Wait()
+	}
 
+	params := map[string]interface{}{
+		"timeout_seconds": timeout.Seconds(),
+	}
+	c.sendRequest("close", params)
 	c.stdin.Close()
-	return c.cmd.Wait()
+
+	done := make(chan error, 1)
+	go func() { done <- c.cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		c.cmd.Process.Kill()
+		<-done
+		return fmt.Errorf("close timed out after %s, process killed", timeout)
+	}
 }
 
 // Remove deletes the stopped VM state directory.

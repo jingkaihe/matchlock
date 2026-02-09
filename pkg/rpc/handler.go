@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -54,7 +55,7 @@ type VM interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	ListFiles(ctx context.Context, path string) ([]api.FileInfo, error)
 	Events() <-chan api.Event
-	Close() error
+	Close(ctx context.Context) error
 }
 
 type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
@@ -189,7 +190,7 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	}
 
 	if err := vm.Start(ctx); err != nil {
-		vm.Close()
+		vm.Close(ctx)
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
@@ -499,14 +500,23 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.closed.Store(true)
 
+	var params struct {
+		TimeoutSeconds float64 `json:"timeout_seconds"`
+	}
+	if req.Params != nil {
+		json.Unmarshal(req.Params, &params)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(params.TimeoutSeconds*float64(time.Second)))
+	defer cancel()
+
 	h.vmMu.Lock()
 	vm := h.vm
 	h.vm = nil
 	h.vmMu.Unlock()
 
 	if vm != nil {
-		vm.Stop(ctx)
-		vm.Close()
+		vm.Close(ctx)
 	}
 
 	return &Response{

@@ -19,12 +19,12 @@ func launchAlpineWithNetwork(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Cli
 
 	_, err = client.Launch(builder)
 	if err != nil {
-		client.Close()
+		client.Close(0)
 		t.Fatalf("Launch: %v", err)
 	}
 
 	t.Cleanup(func() {
-		client.Close()
+		client.Close(0)
 		client.Remove()
 	})
 	return client

@@ -26,7 +26,7 @@ func run() error {
 		return fmt.Errorf("create client: %w", err)
 	}
 	defer client.Remove()
-	defer client.Close()
+	defer client.Close(0)
 
 	sandbox := sdk.New("python:3.12-alpine").
 		AllowHost(

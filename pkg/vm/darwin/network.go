@@ -12,6 +12,7 @@ type SocketPair struct {
 	guestFD int
 	hostF   *os.File
 	guestF  *os.File
+	closed  bool
 }
 
 func createSocketPair() (*SocketPair, error) {
@@ -56,6 +57,10 @@ func (sp *SocketPair) GuestFile() *os.File {
 }
 
 func (sp *SocketPair) Close() error {
+	if sp.closed {
+		return nil
+	}
+	sp.closed = true
 	var errs []error
 	if sp.hostF != nil {
 		if err := sp.hostF.Close(); err != nil {

@@ -301,7 +301,11 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	if err != nil {
 		return fmt.Errorf("creating BuildKit sandbox: %w", err)
 	}
-	defer sb.Close()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), api.DefaultGracefulShutdownPeriod)
+		defer cancel()
+		sb.Close(closeCtx)
+	}()
 
 	if err := sb.Start(ctx); err != nil {
 		return fmt.Errorf("starting BuildKit sandbox: %w", err)

@@ -102,7 +102,14 @@ class Client:
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
 
-    def close(self) -> None:
+    def close(self, timeout: float = 0) -> None:
+        """Close the sandbox and clean up resources.
+
+        Args:
+            timeout: Seconds to wait for the process to exit. 0 kills the
+                process immediately. When a non-zero timeout expires the
+                process is forcefully killed.
+        """
         if self._closed:
             return
         self._closed = True
@@ -111,8 +118,21 @@ class Client:
         if self._process is None or self._process.poll() is not None:
             return
 
+        if timeout <= 0:
+            try:
+                assert self._process.stdin is not None
+                self._process.stdin.close()
+            except Exception:
+                pass
+            try:
+                self._process.kill()
+                self._process.wait(timeout=1)
+            except Exception:
+                pass
+            return
+
         try:
-            self._send_request("close")
+            self._send_request("close", {"timeout_seconds": timeout})
         except Exception:
             pass
 
@@ -123,7 +143,7 @@ class Client:
             pass
 
         try:
-            self._process.wait(timeout=5)
+            self._process.wait(timeout=timeout)
         except Exception:
             try:
                 self._process.kill()

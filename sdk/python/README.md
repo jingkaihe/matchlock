@@ -244,7 +244,7 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
-| `.close()` | Shut down the sandbox VM |
+| `.close(timeout=0)` | Shut down the sandbox VM. `timeout` in seconds; 0 = kill immediately |
 | `.remove()` | Remove the stopped VM's state directory |
 | `.vm_id` | The current VM ID (property) |
 
