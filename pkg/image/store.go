@@ -165,6 +165,23 @@ func (s *Store) Remove(tag string) error {
 	return os.RemoveAll(dir)
 }
 
+// RemoveRegistryCache removes a registry-cached image by tag.
+func RemoveRegistryCache(tag string, cacheDir string) error {
+	if cacheDir == "" {
+		home, _ := os.UserHomeDir()
+		cacheDir = filepath.Join(home, ".cache", "matchlock", "images")
+	}
+
+	dir := filepath.Join(cacheDir, sanitizeRef(tag))
+	if dir == filepath.Clean(cacheDir) || dir == filepath.Join(cacheDir, "local") {
+		return fmt.Errorf("image %q not found", tag)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return fmt.Errorf("image %q not found", tag)
+	}
+	return os.RemoveAll(dir)
+}
+
 // ListRegistryCache lists images cached from registry pulls (non-local store).
 func ListRegistryCache(cacheDir string) ([]ImageInfo, error) {
 	if cacheDir == "" {

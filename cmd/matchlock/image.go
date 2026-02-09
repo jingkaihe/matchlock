@@ -27,7 +27,7 @@ var imageLsCmd = &cobra.Command{
 var imageRmCmd = &cobra.Command{
 	Use:     "rm <tag>",
 	Aliases: []string{"remove"},
-	Short:   "Remove a local image",
+	Short:   "Remove an image (local or cached registry)",
 	Args:    cobra.ExactArgs(1),
 	RunE:    runImageRm,
 }
@@ -93,11 +93,16 @@ func runImageLs(cmd *cobra.Command, args []string) error {
 }
 
 func runImageRm(cmd *cobra.Command, args []string) error {
+	tag := args[0]
 	store := image.NewStore("")
-	if err := store.Remove(args[0]); err != nil {
+	if err := store.Remove(tag); err == nil {
+		fmt.Printf("Removed %s\n", tag)
+		return nil
+	}
+	if err := image.RemoveRegistryCache(tag, ""); err != nil {
 		return err
 	}
-	fmt.Printf("Removed %s\n", args[0])
+	fmt.Printf("Removed %s\n", tag)
 	return nil
 }
 

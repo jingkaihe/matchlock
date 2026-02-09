@@ -526,3 +526,85 @@ func TestCLIRmStopped(t *testing.T) {
 		t.Errorf("rm --stopped exit code = %d, want 0", exitCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// image ls / image rm (registry-cached images)
+// ---------------------------------------------------------------------------
+
+func TestCLIImageLsShowsHeader(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "image", "ls")
+	if exitCode != 0 {
+		t.Fatalf("image ls exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout, "TAG") || !strings.Contains(stdout, "SOURCE") {
+		t.Errorf("image ls should show header, got: %s", stdout)
+	}
+}
+
+func TestCLIImageRmNonExistent(t *testing.T) {
+	_, _, exitCode := runCLI(t, "image", "rm", "nonexistent:tag")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code for non-existent image")
+	}
+}
+
+func TestCLIImageRmNoArgs(t *testing.T) {
+	_, _, exitCode := runCLI(t, "image", "rm")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when no tag provided")
+	}
+}
+
+func TestCLIImagePullAndRm(t *testing.T) {
+	const img = "alpine:latest"
+
+	// Pull the image (ensures it's in the registry cache)
+	_, _, exitCode := runCLIWithTimeout(t, 5*time.Minute, "pull", img)
+	if exitCode != 0 {
+		t.Fatalf("pull exit code = %d", exitCode)
+	}
+
+	// Verify it appears in image ls
+	stdout, _, exitCode := runCLI(t, "image", "ls")
+	if exitCode != 0 {
+		t.Fatalf("image ls exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout, img) {
+		t.Fatalf("image ls should contain %q, got:\n%s", img, stdout)
+	}
+
+	// Remove it
+	stdout, _, exitCode = runCLI(t, "image", "rm", img)
+	if exitCode != 0 {
+		t.Fatalf("image rm exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stdout, "Removed") {
+		t.Errorf("image rm output = %q, want to contain 'Removed'", stdout)
+	}
+
+	// Verify it's gone from image ls
+	stdout, _, exitCode = runCLI(t, "image", "ls")
+	if exitCode != 0 {
+		t.Fatalf("image ls exit code = %d", exitCode)
+	}
+	if strings.Contains(stdout, img) {
+		t.Errorf("image ls should not contain %q after rm, got:\n%s", img, stdout)
+	}
+}
+
+func TestCLIImageRmIdempotent(t *testing.T) {
+	const img = "alpine:latest"
+
+	// Pull, then remove twice — second remove should fail
+	runCLIWithTimeout(t, 5*time.Minute, "pull", img)
+
+	_, _, exitCode := runCLI(t, "image", "rm", img)
+	if exitCode != 0 {
+		t.Fatalf("first image rm exit code = %d, want 0", exitCode)
+	}
+
+	_, _, exitCode = runCLI(t, "image", "rm", img)
+	if exitCode == 0 {
+		t.Errorf("second image rm should fail for already-removed image")
+	}
+}

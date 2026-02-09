@@ -169,6 +169,30 @@ func TestStoreOverwrite(t *testing.T) {
 	}
 }
 
+func TestRemoveRegistryCache(t *testing.T) {
+	cacheDir := t.TempDir()
+
+	imgDir := filepath.Join(cacheDir, "ubuntu_24.04")
+	os.MkdirAll(imgDir, 0755)
+	os.WriteFile(filepath.Join(imgDir, "abc123.ext4"), []byte("rootfs"), 0644)
+	os.WriteFile(filepath.Join(imgDir, "metadata.json"), []byte(`{"tag":"ubuntu:24.04"}`), 0644)
+
+	if err := RemoveRegistryCache("ubuntu:24.04", cacheDir); err != nil {
+		t.Fatalf("RemoveRegistryCache: %v", err)
+	}
+
+	if _, err := os.Stat(imgDir); !os.IsNotExist(err) {
+		t.Error("expected directory to be removed")
+	}
+}
+
+func TestRemoveRegistryCacheNotFound(t *testing.T) {
+	cacheDir := t.TempDir()
+	if err := RemoveRegistryCache("nonexistent:tag", cacheDir); err == nil {
+		t.Error("expected error for nonexistent tag")
+	}
+}
+
 func TestListRegistryCacheEmpty(t *testing.T) {
 	images, err := ListRegistryCache(t.TempDir())
 	if err != nil {
