@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -41,10 +42,30 @@ func TestRemoveRunningVM(t *testing.T) {
 	vmDir := filepath.Join(dir, "vm-running1")
 	os.MkdirAll(vmDir, 0700)
 	os.WriteFile(filepath.Join(vmDir, "status"), []byte("running"), 0600)
+	os.WriteFile(filepath.Join(vmDir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0600)
 
 	err := mgr.Remove("vm-running1")
 	if err == nil {
 		t.Fatal("expected error when removing running VM, got nil")
+	}
+}
+
+func TestRemoveRunningVMWithDeadProcess(t *testing.T) {
+	dir := t.TempDir()
+	mgr := NewManagerWithDir(dir)
+
+	vmDir := filepath.Join(dir, "vm-dead1")
+	os.MkdirAll(vmDir, 0700)
+	os.WriteFile(filepath.Join(vmDir, "status"), []byte("running"), 0600)
+	os.WriteFile(filepath.Join(vmDir, "pid"), []byte("999999999"), 0600)
+
+	err := mgr.Remove("vm-dead1")
+	if err != nil {
+		t.Fatalf("expected no error removing VM with dead process, got: %v", err)
+	}
+
+	if _, err := os.Stat(vmDir); !os.IsNotExist(err) {
+		t.Fatal("expected VM directory to be removed")
 	}
 }
 

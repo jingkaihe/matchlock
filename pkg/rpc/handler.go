@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
 type Request struct {
@@ -191,6 +192,7 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 
 	if err := vm.Start(ctx); err != nil {
 		vm.Close(ctx)
+		state.NewManager().Remove(vm.ID())
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},

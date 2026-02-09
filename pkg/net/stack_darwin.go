@@ -412,7 +412,7 @@ func (ns *NetworkStack) handleUDPPacket(r *udp.ForwarderRequest) bool {
 		return true
 	}
 
-	r.CreateEndpoint(nil)
+	// Non-DNS UDP: silently drop by not creating an endpoint.
 	return true
 }
 

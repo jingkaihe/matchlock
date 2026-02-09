@@ -164,8 +164,13 @@ func (m *Manager) Remove(id string) error {
 		return err
 	}
 	if state.Status == "running" {
-		return fmt.Errorf("cannot remove running VM %s, kill it first", id)
+		if m.isProcessRunning(state.PID) {
+			return fmt.Errorf("cannot remove running VM %s, kill it first", id)
+		}
+		os.WriteFile(filepath.Join(m.baseDir, id, "status"), []byte("crashed"), 0644)
 	}
+
+	NewSubnetAllocator().Release(id)
 
 	return os.RemoveAll(filepath.Join(m.baseDir, id))
 }
@@ -186,6 +191,8 @@ func (m *Manager) Prune() ([]string, error) {
 			}
 		}
 	}
+
+	NewSubnetAllocator().Cleanup(m)
 
 	return pruned, nil
 }

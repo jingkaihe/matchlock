@@ -27,17 +27,17 @@ func launchAlpine(t *testing.T) *sdk.Client {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	sandbox := sdk.New("alpine:latest")
-	_, err = client.Launch(sandbox)
-	if err != nil {
-		client.Close(0)
-		t.Fatalf("Launch: %v", err)
-	}
-
 	t.Cleanup(func() {
 		client.Close(0)
 		client.Remove()
 	})
+
+	sandbox := sdk.New("alpine:latest")
+	_, err = client.Launch(sandbox)
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
 	return client
 }
 
