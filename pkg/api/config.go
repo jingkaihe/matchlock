@@ -195,10 +195,12 @@ func (ic *ImageConfig) ComposeCommand(userArgs []string) []string {
 	if ic == nil {
 		return userArgs
 	}
+	result := make([]string, len(ic.Entrypoint))
+	copy(result, ic.Entrypoint)
 	if len(userArgs) > 0 {
-		return append(ic.Entrypoint, userArgs...)
+		return append(result, userArgs...)
 	}
-	return append(ic.Entrypoint, ic.Cmd...)
+	return append(result, ic.Cmd...)
 }
 
 func ParseConfig(data []byte) (*Config, error) {

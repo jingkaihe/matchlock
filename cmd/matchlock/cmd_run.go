@@ -182,9 +182,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		imageCfg.Entrypoint = entrypoint
 	}
 
-	// Compose command from ENTRYPOINT+CMD when no user args are given
-	if len(args) == 0 && imageCfg != nil {
-		composed := imageCfg.ComposeCommand(nil)
+	// Compose command from image ENTRYPOINT/CMD and user args.
+	// Always route through ComposeCommand so --entrypoint is applied even when
+	// user provides args (args replace CMD but ENTRYPOINT is always prepended).
+	if imageCfg != nil {
+		composed := imageCfg.ComposeCommand(args)
 		if len(composed) > 0 {
 			command = api.ShellQuoteArgs(composed)
 		}
