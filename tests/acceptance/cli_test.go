@@ -157,12 +157,11 @@ func TestCLIRunMissingImage(t *testing.T) {
 }
 
 func TestCLIRunNoCommand(t *testing.T) {
-	_, stderr, exitCode := runCLI(t, "run", "--image", "alpine:latest")
-	if exitCode == 0 {
-		t.Errorf("expected non-zero exit code when command is missing and --rm=true")
-	}
-	if !strings.Contains(stderr, "command required") {
-		t.Errorf("stderr = %q, want to contain 'command required'", stderr)
+	// Alpine has CMD ["/bin/sh"], so running without user-provided args uses
+	// the image default command and should succeed (exit 0).
+	_, _, exitCode := runCLI(t, "run", "--image", "alpine:latest")
+	if exitCode != 0 {
+		t.Errorf("exit code = %d, want 0 (image CMD /bin/sh should be used)", exitCode)
 	}
 }
 

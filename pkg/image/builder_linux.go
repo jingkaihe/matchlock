@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/uuid"
 )
 
 // platformOptions returns remote options for linux (uses default platform detection)
@@ -42,11 +43,12 @@ func (b *Builder) createExt4(sourceDir, destPath string) error {
 
 	sizeMB := (totalSize / (1024 * 1024)) + 64
 
-	tmpPath := destPath + ".tmp"
+	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
 
 	cmd := exec.Command("dd", "if=/dev/zero", "of="+tmpPath, "bs=1M", fmt.Sprintf("count=%d", sizeMB), "conv=sparse")
 	cmd.Stderr = nil
 	if out, err := cmd.CombinedOutput(); err != nil {
+		os.Remove(tmpPath)
 		return fmt.Errorf("create sparse file: %w: %s", err, out)
 	}
 

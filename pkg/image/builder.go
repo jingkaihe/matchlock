@@ -108,6 +108,17 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 
+	if fi, err := os.Stat(rootfsPath); err == nil && fi.Size() > 0 {
+		ociConfig := extractOCIConfig(img)
+		return &BuildResult{
+			RootfsPath: rootfsPath,
+			Digest:     digest.String(),
+			Size:       fi.Size(),
+			Cached:     true,
+			OCI:        ociConfig,
+		}, nil
+	}
+
 	extractDir, err := os.MkdirTemp("", "matchlock-extract-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)

@@ -136,9 +136,30 @@ func (b *SandboxBuilder) WithEntrypoint(entrypoint ...string) *SandboxBuilder {
 	return b
 }
 
-// WithImageConfig sets the full image configuration.
+// WithImageConfig merges the given image configuration into any existing config.
+// Fields set in cfg override existing values; zero-value fields are left unchanged.
 func (b *SandboxBuilder) WithImageConfig(cfg *ImageConfig) *SandboxBuilder {
-	b.opts.ImageConfig = cfg
+	if cfg == nil {
+		return b
+	}
+	if b.opts.ImageConfig == nil {
+		b.opts.ImageConfig = &ImageConfig{}
+	}
+	if cfg.User != "" {
+		b.opts.ImageConfig.User = cfg.User
+	}
+	if cfg.WorkingDir != "" {
+		b.opts.ImageConfig.WorkingDir = cfg.WorkingDir
+	}
+	if cfg.Entrypoint != nil {
+		b.opts.ImageConfig.Entrypoint = cfg.Entrypoint
+	}
+	if cfg.Cmd != nil {
+		b.opts.ImageConfig.Cmd = cfg.Cmd
+	}
+	if cfg.Env != nil {
+		b.opts.ImageConfig.Env = cfg.Env
+	}
 	return b
 }
 
