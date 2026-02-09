@@ -1,10 +1,11 @@
 # Release Notes
 
-## Unreleased
+## 0.1.9
 
 ### Bug Fixes
 
 - **Fix concurrent sandbox launches failing with port conflict** — The transparent proxy (Linux) no longer binds to hardcoded ports 18080/18443/18081. Proxy listeners now use OS-assigned ephemeral ports (port 0), with actual ports read back and passed to nftables rules. This allows multiple matchlock instances to run simultaneously without `bind: address already in use` errors.
+- Fixing `matchlock image rm` as per https://github.com/jingkaihe/matchlock/issues/19
 
 ## 0.1.8
 
