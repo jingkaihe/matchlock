@@ -28,7 +28,7 @@ func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error { retu
 func (m *mockVM) ReadFile(context.Context, string) ([]byte, error)        { return nil, nil }
 func (m *mockVM) ListFiles(context.Context, string) ([]api.FileInfo, error) { return nil, nil }
 func (m *mockVM) Events() <-chan api.Event { return make(chan api.Event) }
-func (m *mockVM) Close() error             { return nil }
+func (m *mockVM) Close(context.Context) error { return nil }
 
 func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if m.execFunc != nil {

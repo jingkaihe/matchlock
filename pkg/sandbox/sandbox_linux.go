@@ -210,7 +210,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			CAPool:          caPool,
 		})
 		if err != nil {
-			machine.Close()
+			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to create transparent proxy: %w", err)
@@ -221,7 +221,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort, passthroughPort, config.Network.GetDNSServers())
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
-			machine.Close()
+			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to setup firewall rules: %w", err)
@@ -263,7 +263,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		if fwRules != nil {
 			fwRules.Cleanup()
 		}
-		machine.Close()
+		machine.Close(ctx)
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to start VFS server: %w", err)
@@ -348,7 +348,7 @@ func (s *Sandbox) Events() <-chan api.Event {
 }
 
 // Close shuts down the sandbox and releases all resources.
-func (s *Sandbox) Close() error {
+func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
 
 	if s.vfsStopFunc != nil {
@@ -375,7 +375,7 @@ func (s *Sandbox) Close() error {
 
 	close(s.events)
 	s.stateMgr.Unregister(s.id)
-	if err := s.machine.Close(); err != nil {
+	if err := s.machine.Close(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("machine close: %w", err))
 	}
 

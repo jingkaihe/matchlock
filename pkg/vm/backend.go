@@ -53,7 +53,7 @@ type Machine interface {
 	NetworkFD() (int, error)
 	VsockFD() (int, error)
 	PID() int
-	Close() error
+	Close(ctx context.Context) error
 	RootfsPath() string // Returns the path to the VM's rootfs (may be a temp copy)
 }
 

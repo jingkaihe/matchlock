@@ -426,7 +426,7 @@ func (m *DarwinMachine) RootfsPath() string {
 	return m.tempRootfs
 }
 
-func (m *DarwinMachine) Close() error {
+func (m *DarwinMachine) Close(ctx context.Context) error {
 	var errs []error
 
 	m.mu.Lock()
@@ -434,14 +434,9 @@ func (m *DarwinMachine) Close() error {
 	m.mu.Unlock()
 
 	if started {
-		// Try graceful shutdown with a short timeout before force-stopping.
-		// This gives the guest a brief chance to flush buffers and clean up,
-		// while the force-stop fallback in stop() ensures we don't block long.
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		if err := m.stop(ctx, false); err != nil {
 			errs = append(errs, fmt.Errorf("stop: %w", err))
 		}
-		cancel()
 	}
 
 	if m.vfsListener != nil {

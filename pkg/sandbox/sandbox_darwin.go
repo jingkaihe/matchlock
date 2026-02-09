@@ -189,7 +189,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if needsInterception {
 		networkFile := darwinMachine.NetworkFile()
 		if networkFile == nil {
-			machine.Close()
+			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to get network file")
@@ -206,7 +206,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			DNSServers: config.Network.GetDNSServers(),
 		})
 		if err != nil {
-			machine.Close()
+			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
 			return nil, fmt.Errorf("failed to create network stack: %w", err)
@@ -234,7 +234,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		if netStack != nil {
 			netStack.Close()
 		}
-		machine.Close()
+		machine.Close(ctx)
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to setup VFS listener: %w", err)
@@ -325,7 +325,7 @@ func (s *Sandbox) Events() <-chan api.Event {
 	return s.events
 }
 
-func (s *Sandbox) Close() error {
+func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
 
 	if s.vfsStopFunc != nil {
@@ -341,7 +341,7 @@ func (s *Sandbox) Close() error {
 
 	close(s.events)
 	s.stateMgr.Unregister(s.id)
-	if err := s.machine.Close(); err != nil {
+	if err := s.machine.Close(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("machine close: %w", err))
 	}
 

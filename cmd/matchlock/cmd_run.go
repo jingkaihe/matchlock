@@ -75,6 +75,7 @@ func init() {
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
 	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: workspace path)")
+	runCmd.Flags().Duration("graceful-shutdown", 0, "Graceful shutdown timeout before force-stopping the VM (default: immediate)")
 	runCmd.MarkFlagRequired("image")
 
 	viper.BindPFlag("run.image", runCmd.Flags().Lookup("image"))
@@ -119,6 +120,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
+
+	// Shutdown
+	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
 
 	command := api.ShellQuoteArgs(args)
 
@@ -206,7 +210,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := sb.Start(ctx); err != nil {
-		sb.Close()
+		sb.Close(ctx)
 		return fmt.Errorf("starting sandbox: %w", err)
 	}
 
@@ -225,10 +229,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
+	closeCtx := func() context.Context {
+		c, _ := context.WithTimeout(context.Background(), gracefulShutdown)
+		return c
+	}
+
 	if interactiveMode {
 		exitCode := runInteractive(ctx, sb, command, workdir)
 		if rm {
-			sb.Close()
+			sb.Close(closeCtx())
 		}
 		os.Exit(exitCode)
 	}
@@ -241,7 +250,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
 			if rm {
-				sb.Close()
+				sb.Close(closeCtx())
 			}
 			return fmt.Errorf("executing command: %w", err)
 		}
@@ -250,7 +259,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Stderr.Write(result.Stderr)
 
 		if rm {
-			sb.Close()
+			sb.Close(closeCtx())
 			os.Exit(result.ExitCode)
 		}
 	}
@@ -258,7 +267,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if !rm {
 		// Block until signal — keeps the sandbox alive for `matchlock exec`
 		<-ctx.Done()
-		sb.Close()
+		sb.Close(closeCtx())
 	}
 
 	return nil
