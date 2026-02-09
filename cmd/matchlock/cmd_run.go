@@ -229,15 +229,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
-	closeCtx := func() context.Context {
-		c, _ := context.WithTimeout(context.Background(), gracefulShutdown)
-		return c
+	closeCtx := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), gracefulShutdown)
 	}
 
 	if interactiveMode {
 		exitCode := runInteractive(ctx, sb, command, workdir)
 		if rm {
-			sb.Close(closeCtx())
+			c, cancel := closeCtx()
+			sb.Close(c)
+			cancel()
 		}
 		os.Exit(exitCode)
 	}
@@ -250,7 +251,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
 			if rm {
-				sb.Close(closeCtx())
+				c, cancel := closeCtx()
+				sb.Close(c)
+				cancel()
 			}
 			return fmt.Errorf("executing command: %w", err)
 		}
@@ -259,7 +262,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		os.Stderr.Write(result.Stderr)
 
 		if rm {
-			sb.Close(closeCtx())
+			c, cancel := closeCtx()
+			sb.Close(c)
+			cancel()
 			os.Exit(result.ExitCode)
 		}
 	}
@@ -267,7 +272,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if !rm {
 		// Block until signal — keeps the sandbox alive for `matchlock exec`
 		<-ctx.Done()
-		sb.Close(closeCtx())
+		c, cancel := closeCtx()
+		sb.Close(c)
+		cancel()
 	}
 
 	return nil
