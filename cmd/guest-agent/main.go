@@ -590,5 +590,3 @@ func NewVFSClient() (*VFSClient, error) {
 func (c *VFSClient) Close() error {
 	return syscall.Close(c.fd)
 }
-
-

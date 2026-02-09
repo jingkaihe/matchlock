@@ -48,10 +48,10 @@ type Client struct {
 	closed    bool
 
 	// Concurrent request handling
-	writeMu    sync.Mutex                  // serializes writes to stdin
-	pendingMu  sync.Mutex                  // protects pending map
-	pending    map[uint64]*pendingRequest   // in-flight requests by ID
-	readerOnce sync.Once                   // ensures reader goroutine starts once
+	writeMu    sync.Mutex                 // serializes writes to stdin
+	pendingMu  sync.Mutex                 // protects pending map
+	pending    map[uint64]*pendingRequest // in-flight requests by ID
+	readerOnce sync.Once                  // ensures reader goroutine starts once
 }
 
 // Config holds client configuration
@@ -133,12 +133,6 @@ func (c *Client) Close(timeout time.Duration) error {
 	}
 	c.closed = true
 	c.mu.Unlock()
-
-	if timeout == 0 {
-		c.stdin.Close()
-		c.cmd.Process.Kill()
-		return c.cmd.Wait()
-	}
 
 	params := map[string]interface{}{
 		"timeout_seconds": timeout.Seconds(),

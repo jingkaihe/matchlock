@@ -150,7 +150,6 @@ func (b *Builder) extractImage(img v1.Image, destDir string) error {
 	return nil
 }
 
-
 func (b *Builder) SaveTag(tag string, result *BuildResult) error {
 	meta := ImageMeta{
 		Digest: result.Digest,

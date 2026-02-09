@@ -51,11 +51,11 @@ const (
 	prCapBSetDrop = 24
 
 	// Only drop capabilities that enable the attack vector
-	capSysPtrace  = 19 // process_vm_readv/writev, ptrace
-	capSysAdmin   = 21 // mount namespace escape, bpf, etc.
-	capSysModule  = 16 // kernel module loading
-	capSysRawio   = 17 // raw I/O port access
-	capSysBoot    = 22 // kexec_load, reboot
+	capSysPtrace = 19 // process_vm_readv/writev, ptrace
+	capSysAdmin  = 21 // mount namespace escape, bpf, etc.
+	capSysModule = 16 // kernel module loading
+	capSysRawio  = 17 // raw I/O port access
+	capSysBoot   = 22 // kexec_load, reboot
 )
 
 type sockFprog struct {

@@ -208,4 +208,3 @@ func (c *Client) handleNotification(notif notification) {
 		}
 	}
 }
-

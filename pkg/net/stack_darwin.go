@@ -78,10 +78,10 @@ type socketPairEndpoint struct {
 	mtu      uint32
 	linkAddr tcpip.LinkAddress
 	// dispatcher is read atomically in the hot path; only written on Attach.
-	dispatcher atomic.Pointer[stack.NetworkDispatcher]
-	closed     atomic.Bool
-	closeCh    chan struct{}
-	mu         sync.Mutex // protects onCloseAction and linkAddr
+	dispatcher    atomic.Pointer[stack.NetworkDispatcher]
+	closed        atomic.Bool
+	closeCh       chan struct{}
+	mu            sync.Mutex // protects onCloseAction and linkAddr
 	onCloseAction func()
 }
 
@@ -262,14 +262,14 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 	// Tune TCP buffer sizes: raise max to allow auto-tuning up to 16MB
 	// for better throughput on high-bandwidth paths.
 	tcpSendBuf := tcpip.TCPSendBufferSizeRangeOption{
-		Min:     tcp.MinBufferSize,          // 4KB
-		Default: tcp.DefaultSendBufferSize,  // 1MB
-		Max:     16 << 20,                   // 16MB
+		Min:     tcp.MinBufferSize,         // 4KB
+		Default: tcp.DefaultSendBufferSize, // 1MB
+		Max:     16 << 20,                  // 16MB
 	}
 	tcpRecvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     tcp.MinBufferSize,             // 4KB
-		Default: tcp.DefaultReceiveBufferSize,  // 1MB
-		Max:     16 << 20,                      // 16MB
+		Min:     tcp.MinBufferSize,            // 4KB
+		Default: tcp.DefaultReceiveBufferSize, // 1MB
+		Max:     16 << 20,                     // 16MB
 	}
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSendBuf)
 	s.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRecvBuf)
@@ -487,4 +487,3 @@ func (ns *NetworkStack) Close() error {
 func (ns *NetworkStack) Stack() *stack.Stack {
 	return ns.stack
 }
-

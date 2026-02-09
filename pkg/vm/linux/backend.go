@@ -81,15 +81,14 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 }
 
 type LinuxMachine struct {
-	id           string
-	config       *vm.VMConfig
-	tapName      string
-	tapFD        int
-	macAddress   string
-	cmd          *exec.Cmd
-	pid          int
-	started      bool
-
+	id         string
+	config     *vm.VMConfig
+	tapName    string
+	tapFD      int
+	macAddress string
+	cmd        *exec.Cmd
+	pid        int
+	started    bool
 }
 
 func (m *LinuxMachine) Start(ctx context.Context) error {
@@ -283,9 +282,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 			KernelImagePath string `json:"kernel_image_path"`
 			BootArgs        string `json:"boot_args"`
 		} `json:"boot-source"`
-		Drives    []fcDrive `json:"drives"`
+		Drives        []fcDrive `json:"drives"`
 		MachineConfig struct {
-			VCPUCount int `json:"vcpu_count"`
+			VCPUCount  int `json:"vcpu_count"`
 			MemSizeMiB int `json:"mem_size_mib"`
 		} `json:"machine-config"`
 		NetworkInterfaces []struct {

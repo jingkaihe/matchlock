@@ -282,11 +282,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	}, nil
 }
 
-func (s *Sandbox) ID() string                         { return s.id }
-func (s *Sandbox) Config() *api.Config                { return s.config }
-func (s *Sandbox) Workspace() string                  { return s.workspace }
-func (s *Sandbox) Machine() vm.Machine                { return s.machine }
-func (s *Sandbox) Policy() *policy.Engine             { return s.policy }
+func (s *Sandbox) ID() string                 { return s.id }
+func (s *Sandbox) Config() *api.Config        { return s.config }
+func (s *Sandbox) Workspace() string          { return s.workspace }
+func (s *Sandbox) Machine() vm.Machine        { return s.machine }
+func (s *Sandbox) Policy() *policy.Engine     { return s.policy }
 func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 func (s *Sandbox) Start(ctx context.Context) error {

@@ -20,15 +20,15 @@ type mockVM struct {
 	execFunc func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
 }
 
-func (m *mockVM) ID() string              { return m.id }
-func (m *mockVM) Config() *api.Config     { return api.DefaultConfig() }
-func (m *mockVM) Start(context.Context) error { return nil }
-func (m *mockVM) Stop(context.Context) error  { return nil }
-func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error { return nil }
-func (m *mockVM) ReadFile(context.Context, string) ([]byte, error)        { return nil, nil }
+func (m *mockVM) ID() string                                                { return m.id }
+func (m *mockVM) Config() *api.Config                                       { return api.DefaultConfig() }
+func (m *mockVM) Start(context.Context) error                               { return nil }
+func (m *mockVM) Stop(context.Context) error                                { return nil }
+func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error   { return nil }
+func (m *mockVM) ReadFile(context.Context, string) ([]byte, error)          { return nil, nil }
 func (m *mockVM) ListFiles(context.Context, string) ([]api.FileInfo, error) { return nil, nil }
-func (m *mockVM) Events() <-chan api.Event { return make(chan api.Event) }
-func (m *mockVM) Close(context.Context) error { return nil }
+func (m *mockVM) Events() <-chan api.Event                                  { return make(chan api.Event) }
+func (m *mockVM) Close(context.Context) error                               { return nil }
 
 func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if m.execFunc != nil {

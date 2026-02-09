@@ -447,5 +447,3 @@ func copyRootfs(src, dst string) error {
 
 	return nil
 }
-
-
