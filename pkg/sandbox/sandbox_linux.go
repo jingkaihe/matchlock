@@ -192,9 +192,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	// Set up transparent proxy for HTTP/HTTPS interception
 	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0"
-	const httpPort = 18080
-	const httpsPort = 18443
-	const passthroughPort = 18081
 
 	var proxy *sandboxnet.TransparentProxy
 	var fwRules FirewallRules
@@ -202,9 +199,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if needsProxy {
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:        proxyBindAddr,
-			HTTPPort:        httpPort,
-			HTTPSPort:       httpsPort,
-			PassthroughPort: passthroughPort,
+			HTTPPort:        0,
+			HTTPSPort:       0,
+			PassthroughPort: 0,
 			Policy:          policyEngine,
 			Events:          events,
 			CAPool:          caPool,
@@ -218,7 +215,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 
 		proxy.Start()
 
-		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort, passthroughPort, config.Network.GetDNSServers())
+		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close(ctx)

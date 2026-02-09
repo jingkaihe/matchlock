@@ -42,7 +42,7 @@ type ProxyConfig struct {
 	BindAddr        string // Address to bind (e.g., "192.168.100.1")
 	HTTPPort        int    // Port for HTTP interception (e.g., 8080)
 	HTTPSPort       int    // Port for HTTPS interception (e.g., 8443)
-	PassthroughPort int    // Port for policy-gated TCP passthrough (non-80/443)
+	PassthroughPort int    // Port for policy-gated TCP passthrough (non-80/443). 0 = OS-assigned, negative = disabled
 	Policy          *policy.Engine
 	Events          chan api.Event
 	CAPool          *CAPool
@@ -64,7 +64,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 	}
 
 	var passthroughLn net.Listener
-	if cfg.PassthroughPort > 0 {
+	if cfg.PassthroughPort >= 0 {
 		ptAddr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.PassthroughPort)
 		passthroughLn, err = net.Listen("tcp", ptAddr)
 		if err != nil {
@@ -74,6 +74,13 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		}
 	}
 
+	actualHTTPPort := httpLn.Addr().(*net.TCPAddr).Port
+	actualHTTPSPort := httpsLn.Addr().(*net.TCPAddr).Port
+	actualPassthroughPort := 0
+	if passthroughLn != nil {
+		actualPassthroughPort = passthroughLn.Addr().(*net.TCPAddr).Port
+	}
+
 	tp := &TransparentProxy{
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
@@ -81,9 +88,9 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
 		policy:              cfg.Policy,
 		events:              cfg.Events,
-		httpPort:            cfg.HTTPPort,
-		httpsPort:           cfg.HTTPSPort,
-		passthroughPort:     cfg.PassthroughPort,
+		httpPort:            actualHTTPPort,
+		httpsPort:           actualHTTPSPort,
+		passthroughPort:     actualPassthroughPort,
 		bindAddr:            cfg.BindAddr,
 	}
 
