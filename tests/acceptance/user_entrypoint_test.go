@@ -146,8 +146,8 @@ func TestEntrypointOverride(t *testing.T) {
 func TestImageEnvPropagation(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithImageConfig(&sdk.ImageConfig{
 		Env: map[string]string{
-			"MY_TEST_VAR":  "hello-from-image",
-			"ANOTHER_VAR":  "world",
+			"MY_TEST_VAR": "hello-from-image",
+			"ANOTHER_VAR": "world",
 		},
 	})
 	client := launchWithBuilder(t, builder)

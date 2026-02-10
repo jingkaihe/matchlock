@@ -110,7 +110,7 @@ MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -v ./t
 
 [tasks.fmt]
 description = "Format code"
-run = "go fmt ./..."
+run = "gofmt -w ."
 
 [tasks.vet]
 description = "Run go vet"

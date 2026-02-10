@@ -31,7 +31,13 @@ jobs:
         run: mise run test
 
       - name: Fmt
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
 
       - name: Vet
         run: mise run vet
@@ -63,7 +69,13 @@ jobs:
         run: mise run cross-build:darwin
 
       - name: Fmt
-        run: test -z "$(gofmt -l .)"
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
 
       - name: Test
         run: mise run test
