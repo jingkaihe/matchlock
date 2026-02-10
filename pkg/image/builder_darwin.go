@@ -38,13 +38,10 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 		return fmt.Errorf("debugfs not found in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs")
 	}
 
-	// Calculate size
+	// Calculate size (use Lstat-based walk to avoid following symlinks)
 	var totalSize int64
-	filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil {
-			totalSize += info.Size()
-		}
-		return nil
+	lstatWalk(sourceDir, func(path string, info os.FileInfo) {
+		totalSize += info.Size()
 	})
 
 	sizeMB := (totalSize / (1024 * 1024)) + 64
@@ -67,11 +64,7 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	// Build debugfs commands to copy all files
 	var debugfsCommands strings.Builder
 
-	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
+	err = lstatWalkErr(sourceDir, func(path string, info os.FileInfo) error {
 		relPath, _ := filepath.Rel(sourceDir, path)
 		if relPath == "." {
 			return nil

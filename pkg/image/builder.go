@@ -166,6 +166,62 @@ type fileMeta struct {
 	mode os.FileMode
 }
 
+// ensureRealDir ensures that every component of path under root is a real
+// directory, not a symlink. If an intermediate component is a symlink it is
+// replaced with a real directory so that later file creation won't chase
+// symlink chains (which can cause ELOOP on images with deep/circular symlinks).
+func ensureRealDir(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	cur := root
+	for _, p := range parts {
+		cur = filepath.Join(cur, p)
+		fi, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(cur); err != nil {
+				return err
+			}
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+		} else if !fi.IsDir() {
+			if err := os.Remove(cur); err != nil {
+				return err
+			}
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// safeCreate creates a file at target ensuring no intermediate symlinks are
+// followed. It uses Lstat + O_NOFOLLOW-style semantics by removing any
+// existing symlink at the final component before creating the file.
+func safeCreate(root, target string, mode os.FileMode) (*os.File, error) {
+	if err := ensureRealDir(root, filepath.Dir(target)); err != nil {
+		return nil, err
+	}
+	fi, err := os.Lstat(target)
+	if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(target)
+	}
+	return os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+}
+
 func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMeta, error) {
 	reader := mutate.Extract(img)
 	defer reader.Close()
@@ -190,14 +246,11 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0755); err != nil {
+			if err := ensureRealDir(destDir, target); err != nil {
 				return nil, fmt.Errorf("mkdir %s: %w", clean, err)
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
-			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0777)
+			f, err := safeCreate(destDir, target, os.FileMode(hdr.Mode)&0777)
 			if err != nil {
 				return nil, fmt.Errorf("create %s: %w", clean, err)
 			}
@@ -207,7 +260,7 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			}
 			f.Close()
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
 				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
 			}
 			os.Remove(target)
@@ -216,7 +269,7 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			}
 		case tar.TypeLink:
 			linkTarget := filepath.Join(destDir, filepath.Clean(hdr.Linkname))
-			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
 				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
 			}
 			os.Remove(target)
@@ -274,6 +327,55 @@ func extractOCIConfig(img v1.Image) *OCIConfig {
 	}
 
 	return oci
+}
+
+// lstatWalk walks a directory tree using Lstat (not following symlinks) and
+// calls fn for every entry. Errors are silently ignored.
+func lstatWalk(root string, fn func(path string, info os.FileInfo)) {
+	_ = lstatWalkErr(root, func(path string, info os.FileInfo) error {
+		fn(path, info)
+		return nil
+	})
+}
+
+// lstatWalkErr walks a directory tree using Lstat so that symlinks are not
+// followed. This avoids ELOOP when the tree contains circular symlinks.
+func lstatWalkErr(root string, fn func(path string, info os.FileInfo) error) error {
+	return lstatWalkDir(root, fn)
+}
+
+func lstatWalkDir(dir string, fn func(string, os.FileInfo) error) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if err := fn(dir, info); err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		child := filepath.Join(dir, e.Name())
+		ci, err := os.Lstat(child)
+		if err != nil {
+			continue
+		}
+		if ci.IsDir() {
+			if err := lstatWalkDir(child, fn); err != nil {
+				return err
+			}
+		} else {
+			if err := fn(child, ci); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func sanitizeRef(ref string) string {
