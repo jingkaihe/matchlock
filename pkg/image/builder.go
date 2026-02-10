@@ -146,7 +146,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		Size:      fi.Size(),
 		CreatedAt: time.Now(),
 		Source:    "registry",
-		OCI:      ociConfig,
+		OCI:       ociConfig,
 	}
 	if metaBytes, err := json.MarshalIndent(imageMeta, "", "  "); err == nil {
 		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)

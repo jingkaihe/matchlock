@@ -1,8 +1,9 @@
 # Release Notes
 
-## Unreleased
+## 0.1.10
 
-Image extraction now uses pure Go instead of shelling out to `tar`**, preserving file ownership (uid/gid), permissions (including setuid/setgid/sticky bits) and symlinks when building ext4 rootfs images. This fixes symlink loop crashes (e.g. Playwright/Chromium images) by replacing symlink directories with real ones during extraction.
+* Image extraction now uses pure Go instead of shelling out to `tar`**, preserving file ownership (uid/gid), permissions (including setuid/setgid/sticky bits) and symlinks when building ext4 rootfs images. This fixes symlink loop crashes (e.g. Playwright/Chromium images) by replacing symlink directories with real ones during extraction.
+* Added example of browser usage using [playwright](https://playwright.dev/) driven by agent running in [mcp code mode](https://blog.cloudflare.com/code-mode/) to cover the use cases of https://github.com/jingkaihe/matchlock/issues/6
 
 ## 0.1.10
 

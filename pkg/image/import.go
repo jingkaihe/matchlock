@@ -60,7 +60,7 @@ func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*Bu
 	meta := ImageMeta{
 		Digest: digest.String(),
 		Source: "import",
-		OCI:   ociConfig,
+		OCI:    ociConfig,
 	}
 	if err := b.store.Save(tag, rootfsPath, meta); err != nil {
 		os.Remove(rootfsPath)
