@@ -25,7 +25,7 @@ type ImageMeta struct {
 	Size      int64      `json:"size"`
 	CreatedAt time.Time  `json:"created_at"`
 	Source    string     `json:"source,omitempty"`
-	OCI      *OCIConfig `json:"oci,omitempty"`
+	OCI       *OCIConfig `json:"oci,omitempty"`
 }
 
 type ImageInfo struct {

@@ -143,11 +143,11 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	}
 
 	return &DarwinMachine{
-		id:          config.ID,
-		config:      config,
-		vm:          vzVM,
-		socketPair:  socketPair,
-		tempRootfs:  tempRootfs,
+		id:         config.ID,
+		config:     config,
+		vm:         vzVM,
+		socketPair: socketPair,
+		tempRootfs: tempRootfs,
 	}, nil
 }
 
