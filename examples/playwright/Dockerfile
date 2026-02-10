@@ -26,11 +26,12 @@ RUN npm install -g @anthropic-ai/claude-code \
 # Config files + entrypoint
 USER root
 COPY claude-settings.json /home/agent/browser-use/.claude/settings.json
+COPY claude.json /home/agent/.claude.json
 COPY mcp-config.json /home/agent/browser-use/.mcp.json
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN mkdir -p /home/agent/.claude /workspace \
     && chmod +x /usr/local/bin/entrypoint.sh \
-    && chown -R agent:agent /home/agent/.claude /home/agent/browser-use /workspace
+    && chown -R agent:agent /home/agent/.claude /home/agent/.claude.json /home/agent/browser-use /workspace
 
 USER agent
 WORKDIR /home/agent/browser-use

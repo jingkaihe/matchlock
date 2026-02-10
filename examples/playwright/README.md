@@ -6,9 +6,22 @@ Run Claude Code with full browser automation inside a matchlock sandbox. Claude 
 
 - **Ubuntu 24.04** base with Chromium dependencies
 - **Claude Code** CLI with the Playwright MCP server pre-configured
-- **Headless Chromium** via `@playwright/mcp` (runs with `--no-sandbox` since the VM is the sandbox)
+- **Headless Chromium** via `@playwright/mcp`
 
 ## Build the Image
+
+### Using Docker
+
+Currently this is the fastest way of building the image:
+
+```bash
+docker build -t browser-use:latest examples/playwright
+docker save browser-use:latest | matchlock image import browser-use:latest
+```
+
+### Using Matchlock
+
+You can use `matchlock` if you don't have Docker installed
 
 ```bash
 # `--build-cache-size 30000` so that you can repeatly build reliably without running out of device space

@@ -1,0 +1,13 @@
+{
+  "projects": {
+    "/home/agent/browser-use": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": ["playwright"],
+      "hasTrustDialogAccepted": false
+    }
+  },
+  "bypassPermissionsModeAccepted": true
+}
