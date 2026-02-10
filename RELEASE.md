@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+Image extraction now uses pure Go instead of shelling out to `tar`**, preserving file ownership (uid/gid), permissions (including setuid/setgid/sticky bits) and symlinks when building ext4 rootfs images. This fixes symlink loop crashes (e.g. Playwright/Chromium images) by replacing symlink directories with real ones during extraction.
+
 ## 0.1.10
 
 - **User and entrypoint overrides** — Added `--user` (`-u`) flag to `run` and `exec` to run as a specific user (uid, uid:gid, or username), and `--entrypoint` flag to override the image's ENTRYPOINT. Commands are now composed from OCI image config (ENTRYPOINT + CMD) when no explicit command is given, matching Docker behavior.

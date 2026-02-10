@@ -65,6 +65,10 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 
 		ext4Path := "/" + relPath
 
+		if hasDebugfsUnsafeChars(ext4Path) {
+			return nil
+		}
+
 		if info.IsDir() {
 			debugfsCommands.WriteString(fmt.Sprintf("mkdir %s\n", ext4Path))
 		} else if info.Mode().IsRegular() {

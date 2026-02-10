@@ -146,7 +146,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		Size:      fi.Size(),
 		CreatedAt: time.Now(),
 		Source:    "registry",
-		OCI:      ociConfig,
+		OCI:       ociConfig,
 	}
 	if metaBytes, err := json.MarshalIndent(imageMeta, "", "  "); err == nil {
 		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)
@@ -263,7 +263,9 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
 				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
 			}
-			os.Remove(target)
+			if err := os.RemoveAll(target); err != nil {
+				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return nil, fmt.Errorf("symlink %s: %w", clean, err)
 			}
@@ -272,7 +274,9 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
 				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
 			}
-			os.Remove(target)
+			if err := os.RemoveAll(target); err != nil {
+				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+			}
 			if err := os.Link(linkTarget, target); err != nil {
 				return nil, fmt.Errorf("hardlink %s: %w", clean, err)
 			}
@@ -280,11 +284,17 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			continue
 		}
 
+		// Don't record metadata for hardlinks — they share the target's inode,
+		// so set_inode_field would overwrite the original file's permissions.
+		if hdr.Typeflag == tar.TypeLink {
+			continue
+		}
+
 		relPath := "/" + clean
 		meta[relPath] = fileMeta{
 			uid:  hdr.Uid,
 			gid:  hdr.Gid,
-			mode: os.FileMode(hdr.Mode) & os.ModePerm,
+			mode: os.FileMode(hdr.Mode) & 0o7777,
 		}
 	}
 
@@ -363,7 +373,7 @@ func lstatWalkDir(dir string, fn func(string, os.FileInfo) error) error {
 		child := filepath.Join(dir, e.Name())
 		ci, err := os.Lstat(child)
 		if err != nil {
-			continue
+			return err
 		}
 		if ci.IsDir() {
 			if err := lstatWalkDir(child, fn); err != nil {
@@ -376,6 +386,12 @@ func lstatWalkDir(dir string, fn func(string, os.FileInfo) error) error {
 		}
 	}
 	return nil
+}
+
+// hasDebugfsUnsafeChars returns true if the path contains characters that
+// would break debugfs command parsing (newlines, null bytes, or unbalanced quotes).
+func hasDebugfsUnsafeChars(path string) bool {
+	return strings.ContainsAny(path, "\n\r\x00")
 }
 
 func sanitizeRef(ref string) string {
