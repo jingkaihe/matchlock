@@ -269,6 +269,7 @@ func runSandboxLauncher() {
 func applySandboxSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
+		Setpgid:    true,
 		Pdeathsig:  syscall.SIGKILL,
 	}
 }

@@ -185,7 +185,7 @@ matchlock rpc
 - Ready signal service on vsock port 5002
 - Command execution service on vsock port 5000
 - Supports running commands as non-root users via `MATCHLOCK_USER` env var (resolves username/uid:gid from /etc/passwd, calls setuid/setgid before exec)
-- **Cancellation**: All exec modes (batch, stream, TTY) monitor the vsock connection for EOF. When the host closes the connection (due to context cancellation), the guest agent sends SIGKILL to the child process
+- **Cancellation**: All exec modes (batch, stream, TTY) monitor the vsock connection for EOF. When the host closes the connection (due to context cancellation), the guest agent sends SIGTERM, waits a grace period (`cancelGracePeriod = 5s`), then sends SIGKILL if the process is still running
 
 ### Guest FUSE Daemon (`cmd/guest-fused`)
 - Mounts VFS from host via vsock at configurable workspace (default: /workspace)

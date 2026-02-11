@@ -23,6 +23,8 @@ import (
 )
 
 const (
+	cancelGracePeriod = 5 * time.Second
+
 	AF_VSOCK        = 40
 	VMADDR_CID_HOST = 2
 
@@ -212,12 +214,18 @@ func handleExecBatch(fd int, data []byte) {
 	}
 
 	// Monitor the vsock connection: if the host closes it (cancellation),
-	// kill the child process so it doesn't keep running.
+	// gracefully terminate the child process (SIGTERM → grace period → SIGKILL).
+	// Uses process group kill (-pid) to reach all processes in the group,
+	// including PID 1 in a child PID namespace where individual SIGTERM is ignored.
 	go func() {
 		buf := make([]byte, 1)
 		syscall.Read(fd, buf) // blocks until EOF or error
 		if cmd.Process != nil {
-			cmd.Process.Signal(syscall.SIGKILL)
+			pid := cmd.Process.Pid
+			syscall.Kill(-pid, syscall.SIGTERM)
+			time.AfterFunc(cancelGracePeriod, func() {
+				syscall.Kill(-pid, syscall.SIGKILL)
+			})
 		}
 	}()
 
@@ -288,7 +296,9 @@ func handleExecStreamBatch(fd int, data []byte) {
 	}
 
 	// Monitor the vsock connection: if the host closes it (cancellation),
-	// kill the child process so it doesn't keep running.
+	// gracefully terminate the child process (SIGTERM → grace period → SIGKILL).
+	// Uses process group kill (-pid) to reach all processes in the group,
+	// including PID 1 in a child PID namespace where individual SIGTERM is ignored.
 	connClosed := make(chan struct{})
 	go func() {
 		defer close(connClosed)
@@ -297,7 +307,11 @@ func handleExecStreamBatch(fd int, data []byte) {
 		// will block until the host closes the connection.
 		syscall.Read(fd, buf)
 		if cmd.Process != nil {
-			cmd.Process.Signal(syscall.SIGKILL)
+			pid := cmd.Process.Pid
+			syscall.Kill(-pid, syscall.SIGTERM)
+			time.AfterFunc(cancelGracePeriod, func() {
+				syscall.Kill(-pid, syscall.SIGKILL)
+			})
 		}
 	}()
 

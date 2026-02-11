@@ -138,11 +138,27 @@ func (c *Client) Close(timeout time.Duration) error {
 	params := map[string]interface{}{
 		"timeout_seconds": timeout.Seconds(),
 	}
-	c.sendRequest("close", params)
-	c.stdin.Close()
 
 	done := make(chan error, 1)
 	go func() { done <- c.cmd.Wait() }()
+
+	if timeout == 0 {
+		// Fire-and-forget: send close, close stdin, kill immediately.
+		go func() {
+			c.sendRequest("close", params)
+		}()
+		c.stdin.Close()
+		c.cmd.Process.Kill()
+		<-done
+		return nil
+	}
+
+	// Send close RPC with a bounded context so it doesn't block forever
+	// (e.g. if the handler is draining in-flight cancelled requests).
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
+	c.sendRequestCtx(closeCtx, "close", params, nil)
+	closeCancel()
+	c.stdin.Close()
 
 	select {
 	case err := <-done:
