@@ -166,7 +166,7 @@ func TestImageFilePermissions(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result, err := client.Exec(context.Background(), "stat -c '%a' " + tc.path)
+		result, err := client.Exec(context.Background(), "stat -c '%a' "+tc.path)
 		if err != nil {
 			t.Fatalf("stat %s: %v", tc.path, err)
 		}

@@ -78,7 +78,7 @@ print()
 	}
 
 	// Streaming exec — prints plain text as it arrives
-	streamResult, err := client.ExecStream(context.Background(), 
+	streamResult, err := client.ExecStream(context.Background(),
 		"uv run /workspace/ask.py",
 		os.Stdout, os.Stderr,
 	)
