@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -41,6 +42,7 @@ const (
 	ErrCodeVMFailed       = -32000
 	ErrCodeExecFailed     = -32001
 	ErrCodeFileFailed     = -32002
+	ErrCodeCancelled      = -32003
 )
 
 // RPCError represents an error from the Matchlock RPC
@@ -81,16 +83,18 @@ type pendingResult struct {
 	err    error
 }
 
-// sendRequest sends a JSON-RPC request and returns the result.
+// sendRequest sends a JSON-RPC request without a cancellation context.
 // It is safe for concurrent use.
 func (c *Client) sendRequest(method string, params interface{}) (json.RawMessage, error) {
-	return c.sendRequestWithNotify(method, params, nil)
+	return c.sendRequestCtx(context.Background(), method, params, nil)
 }
 
-// sendRequestWithNotify sends a JSON-RPC request and returns the result.
+// sendRequestCtx sends a JSON-RPC request with context support.
+// If the context is cancelled while waiting, a "cancel" RPC is fired to
+// abort the server-side operation and ctx.Err() is returned.
 // If onNotification is non-nil, it is called for each streaming notification
 // matching this request's ID before the final response arrives.
-func (c *Client) sendRequestWithNotify(method string, params interface{}, onNotification func(string, json.RawMessage)) (json.RawMessage, error) {
+func (c *Client) sendRequestCtx(ctx context.Context, method string, params interface{}, onNotification func(string, json.RawMessage)) (json.RawMessage, error) {
 	c.readerOnce.Do(c.startReader)
 
 	id := c.requestID.Add(1)
@@ -133,8 +137,29 @@ func (c *Client) sendRequestWithNotify(method string, params interface{}, onNoti
 		return nil, fmt.Errorf("failed to write request: %w", writeErr)
 	}
 
-	result := <-pending.ch
-	return result.result, result.err
+	select {
+	case result := <-pending.ch:
+		return result.result, result.err
+	case <-ctx.Done():
+		c.sendCancelRequest(id)
+		return nil, ctx.Err()
+	}
+}
+
+// sendCancelRequest sends a fire-and-forget "cancel" RPC to abort an in-flight request.
+func (c *Client) sendCancelRequest(targetID uint64) {
+	cancelID := c.requestID.Add(1)
+	req := request{
+		JSONRPC: "2.0",
+		Method:  "cancel",
+		Params:  map[string]uint64{"id": targetID},
+		ID:      cancelID,
+	}
+	data, _ := json.Marshal(req)
+
+	c.writeMu.Lock()
+	fmt.Fprintln(c.stdin, string(data))
+	c.writeMu.Unlock()
 }
 
 // startReader launches the background goroutine that reads JSON-RPC responses

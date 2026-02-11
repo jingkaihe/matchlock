@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"bytes"
 	"os"
 	"strings"
@@ -44,7 +45,7 @@ func launchAlpine(t *testing.T) *sdk.Client {
 func TestExecSimpleCommand(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("echo hello")
+	result, err := client.Exec(context.Background(), "echo hello")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestExecNonZeroExit(t *testing.T) {
 
 	client := launchAlpine(t)
 
-	result, err := client.Exec("false")
+	result, err := client.Exec(context.Background(), "false")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestExecNonZeroExit(t *testing.T) {
 func TestExecFailedCommandStderr(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("cat /nonexistent_file_abc123")
+	result, err := client.Exec(context.Background(), "cat /nonexistent_file_abc123")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestExecFailedCommandStderr(t *testing.T) {
 func TestExecStderr(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("sh -c 'echo err >&2'")
+	result, err := client.Exec(context.Background(), "sh -c 'echo err >&2'")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestExecMultipleCommands(t *testing.T) {
 	client := launchAlpine(t)
 
 	for i, cmd := range []string{"echo one", "echo two", "echo three"} {
-		result, err := client.Exec(cmd)
+		result, err := client.Exec(context.Background(), cmd)
 		if err != nil {
 			t.Fatalf("Exec[%d]: %v", i, err)
 		}
@@ -112,7 +113,7 @@ func TestExecStream(t *testing.T) {
 	client := launchAlpine(t)
 
 	var stdout, stderr bytes.Buffer
-	result, err := client.ExecStream("echo streamed", &stdout, &stderr)
+	result, err := client.ExecStream(context.Background(), "echo streamed", &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("ExecStream: %v", err)
 	}
@@ -128,11 +129,11 @@ func TestWriteAndReadFile(t *testing.T) {
 	client := launchAlpine(t)
 
 	content := []byte("hello from acceptance test")
-	if err := client.WriteFile("/workspace/test.txt", content); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/test.txt", content); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := client.ReadFile("/workspace/test.txt")
+	got, err := client.ReadFile(context.Background(), "/workspace/test.txt")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -145,11 +146,11 @@ func TestWriteFileAndExec(t *testing.T) {
 	client := launchAlpine(t)
 
 	script := []byte("#!/bin/sh\necho script-output\n")
-	if err := client.WriteFileMode("/workspace/run.sh", script, 0755); err != nil {
+	if err := client.WriteFileMode(context.Background(), "/workspace/run.sh", script, 0755); err != nil {
 		t.Fatalf("WriteFileMode: %v", err)
 	}
 
-	result, err := client.Exec("sh /workspace/run.sh")
+	result, err := client.Exec(context.Background(), "sh /workspace/run.sh")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -161,14 +162,14 @@ func TestWriteFileAndExec(t *testing.T) {
 func TestListFiles(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile("/workspace/a.txt", []byte("a")); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/a.txt", []byte("a")); err != nil {
 		t.Fatalf("WriteFile a: %v", err)
 	}
-	if err := client.WriteFile("/workspace/b.txt", []byte("bb")); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/b.txt", []byte("bb")); err != nil {
 		t.Fatalf("WriteFile b: %v", err)
 	}
 
-	files, err := client.ListFiles("/workspace")
+	files, err := client.ListFiles(context.Background(), "/workspace")
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
 	}
@@ -185,12 +186,12 @@ func TestListFiles(t *testing.T) {
 func TestExecWithDir(t *testing.T) {
 	client := launchAlpine(t)
 
-	_, err := client.Exec("mkdir -p /tmp/testdir && echo hi > /tmp/testdir/hello.txt")
+	_, err := client.Exec(context.Background(), "mkdir -p /tmp/testdir && echo hi > /tmp/testdir/hello.txt")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	result, err := client.ExecWithDir("cat hello.txt", "/tmp/testdir")
+	result, err := client.ExecWithDir(context.Background(), "cat hello.txt", "/tmp/testdir")
 	if err != nil {
 		t.Fatalf("ExecWithDir: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestExecWithDir(t *testing.T) {
 func TestExecWithDirPwd(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.ExecWithDir("pwd", "/tmp")
+	result, err := client.ExecWithDir(context.Background(), "pwd", "/tmp")
 	if err != nil {
 		t.Fatalf("ExecWithDir: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestExecWithDirPwd(t *testing.T) {
 func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("pwd")
+	result, err := client.Exec(context.Background(), "pwd")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -226,12 +227,12 @@ func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
 func TestExecWithDirRelativeCommand(t *testing.T) {
 	client := launchAlpine(t)
 
-	_, err := client.Exec("mkdir -p /opt/myapp && echo '#!/bin/sh\necho running-from-myapp' > /opt/myapp/run.sh && chmod +x /opt/myapp/run.sh")
+	_, err := client.Exec(context.Background(), "mkdir -p /opt/myapp && echo '#!/bin/sh\necho running-from-myapp' > /opt/myapp/run.sh && chmod +x /opt/myapp/run.sh")
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	result, err := client.ExecWithDir("sh run.sh", "/opt/myapp")
+	result, err := client.ExecWithDir(context.Background(), "sh run.sh", "/opt/myapp")
 	if err != nil {
 		t.Fatalf("ExecWithDir: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestExecStreamWithDir(t *testing.T) {
 	client := launchAlpine(t)
 
 	var stdout, stderr bytes.Buffer
-	result, err := client.ExecStreamWithDir("pwd", "/var", &stdout, &stderr)
+	result, err := client.ExecStreamWithDir(context.Background(), "pwd", "/var", &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("ExecStreamWithDir: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestExecStreamWithDir(t *testing.T) {
 func TestGuestEnvironment(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("cat /etc/os-release")
+	result, err := client.Exec(context.Background(), "cat /etc/os-release")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -271,7 +272,7 @@ func TestGuestEnvironment(t *testing.T) {
 func TestLargeOutput(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("seq 1 1000")
+	result, err := client.Exec(context.Background(), "seq 1 1000")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -288,11 +289,11 @@ func TestLargeFileRoundtrip(t *testing.T) {
 	client := launchAlpine(t)
 
 	data := bytes.Repeat([]byte("abcdefghij"), 10000) // 100KB
-	if err := client.WriteFile("/workspace/large.bin", data); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/large.bin", data); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := client.ReadFile("/workspace/large.bin")
+	got, err := client.ReadFile(context.Background(), "/workspace/large.bin")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}

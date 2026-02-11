@@ -16,12 +16,13 @@
 //
 //	vmID, err := client.Launch(sandbox)
 //
-//	result, err := client.Exec("echo hello")
+//	result, err := client.Exec(ctx, "echo hello")
 //	fmt.Println(result.Stdout)
 package sdk
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -322,12 +323,14 @@ type ExecResult struct {
 }
 
 // Exec executes a command in the sandbox and returns the buffered result.
-func (c *Client) Exec(command string) (*ExecResult, error) {
-	return c.ExecWithDir(command, "")
+// The context controls the lifetime of the request — if cancelled, a cancel
+// RPC is sent to abort the in-flight execution.
+func (c *Client) Exec(ctx context.Context, command string) (*ExecResult, error) {
+	return c.ExecWithDir(ctx, command, "")
 }
 
-// ExecWithDir executes a command in the sandbox with a working directory
-func (c *Client) ExecWithDir(command, workingDir string) (*ExecResult, error) {
+// ExecWithDir executes a command in the sandbox with a working directory.
+func (c *Client) ExecWithDir(ctx context.Context, command, workingDir string) (*ExecResult, error) {
 	params := map[string]string{
 		"command": command,
 	}
@@ -335,7 +338,7 @@ func (c *Client) ExecWithDir(command, workingDir string) (*ExecResult, error) {
 		params["working_dir"] = workingDir
 	}
 
-	result, err := c.sendRequest("exec", params)
+	result, err := c.sendRequestCtx(ctx, "exec", params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -371,13 +374,13 @@ type ExecStreamResult struct {
 // ExecStream executes a command and streams stdout/stderr to the provided writers
 // in real-time. If stdout or stderr is nil, that stream is discarded.
 // The final ExecStreamResult contains only the exit code and duration.
-func (c *Client) ExecStream(command string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
-	return c.ExecStreamWithDir(command, "", stdout, stderr)
+func (c *Client) ExecStream(ctx context.Context, command string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
+	return c.ExecStreamWithDir(ctx, command, "", stdout, stderr)
 }
 
 // ExecStreamWithDir executes a command with a working directory and streams
 // stdout/stderr to the provided writers in real-time.
-func (c *Client) ExecStreamWithDir(command, workingDir string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
+func (c *Client) ExecStreamWithDir(ctx context.Context, command, workingDir string, stdout, stderr io.Writer) (*ExecStreamResult, error) {
 	params := map[string]string{
 		"command": command,
 	}
@@ -408,7 +411,7 @@ func (c *Client) ExecStreamWithDir(command, workingDir string, stdout, stderr io
 		}
 	}
 
-	result, err := c.sendRequestWithNotify("exec_stream", params, onNotification)
+	result, err := c.sendRequestCtx(ctx, "exec_stream", params, onNotification)
 	if err != nil {
 		return nil, err
 	}
@@ -427,30 +430,30 @@ func (c *Client) ExecStreamWithDir(command, workingDir string, stdout, stderr io
 	}, nil
 }
 
-// WriteFile writes content to a file in the sandbox
-func (c *Client) WriteFile(path string, content []byte) error {
-	return c.WriteFileMode(path, content, 0644)
+// WriteFile writes content to a file in the sandbox.
+func (c *Client) WriteFile(ctx context.Context, path string, content []byte) error {
+	return c.WriteFileMode(ctx, path, content, 0644)
 }
 
-// WriteFileMode writes content to a file with specific permissions
-func (c *Client) WriteFileMode(path string, content []byte, mode uint32) error {
+// WriteFileMode writes content to a file with specific permissions.
+func (c *Client) WriteFileMode(ctx context.Context, path string, content []byte, mode uint32) error {
 	params := map[string]interface{}{
 		"path":    path,
 		"content": base64.StdEncoding.EncodeToString(content),
 		"mode":    mode,
 	}
 
-	_, err := c.sendRequest("write_file", params)
+	_, err := c.sendRequestCtx(ctx, "write_file", params, nil)
 	return err
 }
 
-// ReadFile reads a file from the sandbox
-func (c *Client) ReadFile(path string) ([]byte, error) {
+// ReadFile reads a file from the sandbox.
+func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	params := map[string]string{
 		"path": path,
 	}
 
-	result, err := c.sendRequest("read_file", params)
+	result, err := c.sendRequestCtx(ctx, "read_file", params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -473,13 +476,13 @@ type FileInfo struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-// ListFiles lists files in a directory
-func (c *Client) ListFiles(path string) ([]FileInfo, error) {
+// ListFiles lists files in a directory.
+func (c *Client) ListFiles(ctx context.Context, path string) ([]FileInfo, error) {
 	params := map[string]string{
 		"path": path,
 	}
 
-	result, err := c.sendRequest("list_files", params)
+	result, err := c.sendRequestCtx(ctx, "list_files", params, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"bytes"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestUserSwitchByUsername(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("id -u")
+	result, err := client.Exec(context.Background(), "id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestUserSwitchByUID(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithUser("65534")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("id -u")
+	result, err := client.Exec(context.Background(), "id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestUserSwitchByUIDAndGID(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithUser("65534:65534")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("id -u && id -g")
+	result, err := client.Exec(context.Background(), "id -u && id -g")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestUserSwitchHomeDirIsSet(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("echo $HOME")
+	result, err := client.Exec(context.Background(), "echo $HOME")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("touch /root/test 2>&1; echo $?")
+	result, err := client.Exec(context.Background(), "touch /root/test 2>&1; echo $?")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
 func TestDefaultUserIsRoot(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("id -u")
+	result, err := client.Exec(context.Background(), "id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestEntrypointOverride(t *testing.T) {
 	builder := sdk.New("alpine:latest").WithEntrypoint("echo", "from-entrypoint")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("echo from-entrypoint")
+	result, err := client.Exec(context.Background(), "echo from-entrypoint")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestImageEnvPropagation(t *testing.T) {
 	})
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("echo $MY_TEST_VAR")
+	result, err := client.Exec(context.Background(), "echo $MY_TEST_VAR")
 	if err != nil {
 		t.Fatalf("Exec MY_TEST_VAR: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestImageEnvPropagation(t *testing.T) {
 		t.Errorf("MY_TEST_VAR = %q, want %q", got, "hello-from-image")
 	}
 
-	result, err = client.Exec("echo $ANOTHER_VAR")
+	result, err = client.Exec(context.Background(), "echo $ANOTHER_VAR")
 	if err != nil {
 		t.Fatalf("Exec ANOTHER_VAR: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestImageWorkingDir(t *testing.T) {
 	})
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("pwd")
+	result, err := client.Exec(context.Background(), "pwd")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestImageConfigUser(t *testing.T) {
 	})
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("id -u")
+	result, err := client.Exec(context.Background(), "id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 		WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("id -u")
+	result, err := client.Exec(context.Background(), "id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -224,16 +225,16 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 func TestChmodViaExec(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile("/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n")); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n")); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err := client.Exec("chmod +x /workspace/script.sh")
+	_, err := client.Exec(context.Background(), "chmod +x /workspace/script.sh")
 	if err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 
-	result, err := client.Exec("/workspace/script.sh")
+	result, err := client.Exec(context.Background(), "/workspace/script.sh")
 	if err != nil {
 		t.Fatalf("Exec script: %v", err)
 	}
@@ -245,16 +246,16 @@ func TestChmodViaExec(t *testing.T) {
 func TestChmodPreservesAfterStat(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile("/workspace/check.sh", []byte("#!/bin/sh\necho ok\n")); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/check.sh", []byte("#!/bin/sh\necho ok\n")); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, err := client.Exec("chmod 755 /workspace/check.sh")
+	_, err := client.Exec(context.Background(), "chmod 755 /workspace/check.sh")
 	if err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
 
-	result, err := client.Exec("stat -c '%a' /workspace/check.sh")
+	result, err := client.Exec(context.Background(), "stat -c '%a' /workspace/check.sh")
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestExecStreamWithImageConfig(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	var stdout, stderr bytes.Buffer
-	result, err := client.ExecStream("echo $STREAM_VAR", &stdout, &stderr)
+	result, err := client.ExecStream(context.Background(), "echo $STREAM_VAR", &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("ExecStream: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestUserWithCustomWorkdir(t *testing.T) {
 		})
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("pwd && id -u")
+	result, err := client.Exec(context.Background(), "pwd && id -u")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestPythonImageDefaultUser(t *testing.T) {
 	builder := sdk.New("python:3.12-alpine")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("python3 -c 'import os; print(os.getuid())'")
+	result, err := client.Exec(context.Background(), "python3 -c 'import os; print(os.getuid())'")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestPythonImageWithUserOverride(t *testing.T) {
 	builder := sdk.New("python:3.12-alpine").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("python3 -c 'import os; print(os.getuid())'")
+	result, err := client.Exec(context.Background(), "python3 -c 'import os; print(os.getuid())'")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestPythonImageEntrypointAndCmd(t *testing.T) {
 	builder := sdk.New("python:3.12-alpine")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("python3 --version")
+	result, err := client.Exec(context.Background(), "python3 --version")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestMultipleExecsWithUser(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	for i, cmd := range []string{"id -u", "id -g", "whoami"} {
-		result, err := client.Exec(cmd)
+		result, err := client.Exec(context.Background(), cmd)
 		if err != nil {
 			t.Fatalf("Exec[%d] %q: %v", i, cmd, err)
 		}

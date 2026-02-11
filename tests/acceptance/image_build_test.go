@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,7 @@ COPY hello.txt /hello.txt
 func TestImageSymlinksPreserved(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("readlink /bin/sh")
+	result, err := client.Exec(context.Background(), "readlink /bin/sh")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestImageSymlinksPreserved(t *testing.T) {
 func TestImageSymlinksInLib(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("ls -la / | grep '^l' | head -5")
+	result, err := client.Exec(context.Background(), "ls -la / | grep '^l' | head -5")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestPythonImageSymlinks(t *testing.T) {
 	builder := sdk.New("python:3.12-alpine")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("readlink /usr/local/bin/python3")
+	result, err := client.Exec(context.Background(), "readlink /usr/local/bin/python3")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestPythonImageSymlinks(t *testing.T) {
 func TestImageFileOwnershipRoot(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("stat -c '%u:%g' /etc/passwd")
+	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /etc/passwd")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestImageFileOwnershipRoot(t *testing.T) {
 func TestImageFileOwnershipNonRoot(t *testing.T) {
 	client := launchAlpine(t)
 
-	result, err := client.Exec("stat -c '%u:%g' /etc/shadow")
+	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /etc/shadow")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -140,7 +141,7 @@ func TestPythonImageOwnership(t *testing.T) {
 	builder := sdk.New("python:3.12-alpine")
 	client := launchWithBuilder(t, builder)
 
-	result, err := client.Exec("stat -c '%u:%g' /usr/local/bin/python3.12")
+	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /usr/local/bin/python3.12")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestImageFilePermissions(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result, err := client.Exec("stat -c '%a' " + tc.path)
+		result, err := client.Exec(context.Background(), "stat -c '%a' " + tc.path)
 		if err != nil {
 			t.Fatalf("stat %s: %v", tc.path, err)
 		}
@@ -184,7 +185,7 @@ func TestBusyboxSymlinksWork(t *testing.T) {
 	// Alpine's /bin/ls, /bin/cat etc. are symlinks to busybox.
 	// Verify the symlink chain resolves and commands execute correctly.
 	for _, cmd := range []string{"ls /", "cat /etc/hostname", "id -u"} {
-		result, err := client.Exec(cmd)
+		result, err := client.Exec(context.Background(), cmd)
 		if err != nil {
 			t.Fatalf("Exec %q: %v", cmd, err)
 		}

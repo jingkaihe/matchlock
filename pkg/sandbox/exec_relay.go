@@ -125,7 +125,17 @@ func (r *ExecRelay) handleExec(conn net.Conn, data []byte) {
 		opts.User = req.User
 	}
 
-	result, err := r.sb.Exec(context.Background(), req.Command, opts)
+	// Create a context that is cancelled when the relay connection closes,
+	// so that if the `matchlock exec` client disconnects, the command is killed.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		buf := make([]byte, 1)
+		conn.Read(buf) // blocks until EOF
+		cancel()
+	}()
+
+	result, err := r.sb.Exec(ctx, req.Command, opts)
 	if err != nil {
 		sendRelayResult(conn, &relayExecResult{ExitCode: 1, Error: err.Error()})
 		return
@@ -247,6 +257,7 @@ func sendRelayResult(conn net.Conn, result *relayExecResult) {
 }
 
 // ExecViaRelay connects to an exec relay socket and runs a command.
+// The context controls the lifetime — if cancelled, the connection is closed.
 func ExecViaRelay(ctx context.Context, socketPath, command, workingDir, user string) (*api.ExecResult, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -254,14 +265,31 @@ func ExecViaRelay(ctx context.Context, socketPath, command, workingDir, user str
 	}
 	defer conn.Close()
 
+	// Watch for context cancellation
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
+
 	req := relayExecRequest{Command: command, WorkingDir: workingDir, User: user}
 	reqData, _ := json.Marshal(req)
 	if err := sendRelayMsg(conn, relayMsgExec, reqData); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("send exec request: %w", err)
 	}
 
 	msgType, data, err := readRelayMsg(conn)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("read exec result: %w", err)
 	}
 

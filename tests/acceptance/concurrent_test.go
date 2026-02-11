@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -76,7 +77,7 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 	}
 
 	for i, client := range activeClients {
-		result, err := client.Exec("echo hello")
+		result, err := client.Exec(context.Background(), "echo hello")
 		if err != nil {
 			t.Errorf("sandbox %d: Exec: %v", i, err)
 			continue
@@ -146,7 +147,7 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 	mu.Unlock()
 
 	for i, client := range activeClients {
-		result, err := client.Exec("wget -q -O - https://httpbin.org/get 2>&1")
+		result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
 		if err != nil {
 			t.Errorf("sandbox %d: Exec: %v", i, err)
 			continue
@@ -213,7 +214,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 	}
 
 	for i, client := range clients {
-		result, err := client.Exec(`sh -c 'wget -q -O - --header "Authorization: Bearer $MY_KEY" https://httpbin.org/headers 2>&1'`)
+		result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $MY_KEY" https://httpbin.org/headers 2>&1'`)
 		if err != nil {
 			t.Errorf("sandbox %d: Exec: %v", i, err)
 			continue

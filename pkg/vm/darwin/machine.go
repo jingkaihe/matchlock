@@ -172,6 +172,18 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 	}
 	defer conn.Close()
 
+	// Watch for context cancellation and close the connection to unblock reads.
+	// Closing the connection causes the guest agent to see EOF and kill the child.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
+
 	req := vsock.ExecRequest{
 		Command: command,
 	}
@@ -200,15 +212,24 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 	header[4] = byte(len(reqData))
 
 	if _, err := conn.Write(header); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("failed to write header: %w", err)
 	}
 	if _, err := conn.Write(reqData); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
 	var stdout, stderr bytes.Buffer
 	for {
 		if _, err := readFull(conn, header); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, fmt.Errorf("failed to read response header: %w", err)
 		}
 
@@ -218,6 +239,9 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 		data := make([]byte, length)
 		if length > 0 {
 			if _, err := readFull(conn, data); err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				return nil, fmt.Errorf("failed to read response data: %w", err)
 			}
 		}

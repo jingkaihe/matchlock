@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestAllowlistBlocksHTTP(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1 || true")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1 || true")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestAllowlistPermitsHTTP(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestAllowlistBlocksHTTPS(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - https://httpbin.org/get 2>&1 || true")
+	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1 || true")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestAllowlistPermitsHTTPS(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - https://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestAllowlistGlobPattern(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestAllowlistMultipleHosts(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec httpbin.org: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestAllowlistMultipleHosts(t *testing.T) {
 		t.Errorf("expected httpbin.org to be allowed")
 	}
 
-	result2, err := client.Exec("wget -q -O - http://example.com/ 2>&1")
+	result2, err := client.Exec(context.Background(), "wget -q -O - http://example.com/ 2>&1")
 	if err != nil {
 		t.Fatalf("Exec example.com: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestNoAllowlistPermitsAll(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestSecretInjectedInHTTPSHeader(t *testing.T) {
 
 	// The guest sees a placeholder env var. Use it in a request header
 	// and verify the MITM proxy replaces it with the real value.
-	result, err := client.Exec(`sh -c 'wget -q -O - --header "Authorization: Bearer $MY_API_KEY" https://httpbin.org/headers 2>&1'`)
+	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $MY_API_KEY" https://httpbin.org/headers 2>&1'`)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestSecretInjectedInHTTPHeader(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec(`sh -c 'wget -q -O - --header "X-Api-Key: $HTTP_KEY" http://httpbin.org/headers 2>&1'`)
+	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "X-Api-Key: $HTTP_KEY" http://httpbin.org/headers 2>&1'`)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestSecretPlaceholderNotExposedInGuest(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	// The env var in the guest should be a placeholder, not the real value
-	result, err := client.Exec("sh -c 'echo $SECRET_VAR'")
+	result, err := client.Exec(context.Background(), "sh -c 'echo $SECRET_VAR'")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -238,7 +239,7 @@ func TestSecretBlockedOnUnauthorizedHost(t *testing.T) {
 
 	// Attempt to send the secret placeholder to httpbin.org (unauthorized for this secret).
 	// The policy engine should detect the placeholder and block the request.
-	result, err := client.Exec(`sh -c 'wget -q -O - --header "Authorization: Bearer $LEAK_KEY" http://httpbin.org/headers 2>&1 || true'`)
+	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $LEAK_KEY" http://httpbin.org/headers 2>&1 || true'`)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestMultipleSecretsMultipleHosts(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec(`sh -c 'wget -q -O - --header "X-Key-One: $KEY_ONE" --header "X-Key-Two: $KEY_TWO" https://httpbin.org/headers 2>&1'`)
+	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "X-Key-One: $KEY_ONE" --header "X-Key-Two: $KEY_TWO" https://httpbin.org/headers 2>&1'`)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestSecretInjectedInQueryParam(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	// Send secret as a query parameter — the MITM should replace the placeholder in the URL
-	result, err := client.Exec(`sh -c 'wget -q -O - "http://httpbin.org/get?api_key=$QP_KEY" 2>&1'`)
+	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - "http://httpbin.org/get?api_key=$QP_KEY" 2>&1'`)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestCustomDNSServersInResolvConf(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("cat /etc/resolv.conf")
+	result, err := client.Exec(context.Background(), "cat /etc/resolv.conf")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -329,7 +330,7 @@ func TestDefaultDNSServersInResolvConf(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("cat /etc/resolv.conf")
+	result, err := client.Exec(context.Background(), "cat /etc/resolv.conf")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestCustomDNSServersStillResolveDomains(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestPassthroughBlocksUnallowedHost(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -T 5 -O - http://httpbin.org/get 2>&1 || true")
+	result, err := client.Exec(context.Background(), "wget -q -T 5 -O - http://httpbin.org/get 2>&1 || true")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -385,7 +386,7 @@ func TestPassthroughAllowsPermittedHost(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("wget -q -O - https://httpbin.org/get 2>&1")
+	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -405,7 +406,7 @@ func TestUDPNonDNSBlocked(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("sh -c 'echo test | timeout 3 nc -u -w 1 8.8.8.8 9999 2>&1; echo exit_code=$?'")
+	result, err := client.Exec(context.Background(), "sh -c 'echo test | timeout 3 nc -u -w 1 8.8.8.8 9999 2>&1; echo exit_code=$?'")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -424,14 +425,14 @@ func TestDNSResolutionWorksWithInterception(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	result, err := client.Exec("nslookup httpbin.org 2>&1 || true")
+	result, err := client.Exec(context.Background(), "nslookup httpbin.org 2>&1 || true")
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 
 	combined := result.Stdout + result.Stderr
 	if strings.Contains(combined, "not found") {
-		result2, err := client.Exec("wget -q -O - http://httpbin.org/get 2>&1")
+		result2, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
 		if err != nil {
 			t.Fatalf("Exec: %v", err)
 		}

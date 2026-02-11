@@ -238,7 +238,18 @@ class Client:
         method: str,
         params: dict[str, Any] | None = None,
         on_notification: Callable[[str, dict[str, Any]], None] | None = None,
+        timeout: float | None = None,
     ) -> Any:
+        """Send a JSON-RPC request and wait for the result.
+
+        Args:
+            method: The RPC method name.
+            params: Optional parameters for the method.
+            on_notification: Callback for streaming notifications.
+            timeout: Optional timeout in seconds. If the request doesn't
+                complete within the timeout, a ``cancel`` RPC is sent and
+                :class:`TimeoutError` is raised.
+        """
         if self._process is None or self._process.poll() is not None:
             raise MatchlockError("Matchlock process not running")
 
@@ -264,7 +275,11 @@ class Client:
                 self._process.stdin.write(data)
                 self._process.stdin.flush()
 
-            pending.event.wait()
+            if not pending.event.wait(timeout=timeout):
+                self._send_cancel(req_id)
+                raise TimeoutError(
+                    f"request {method} (id={req_id}) timed out after {timeout}s"
+                )
 
             if pending.error is not None:
                 raise pending.error
@@ -273,6 +288,25 @@ class Client:
         finally:
             with self._pending_lock:
                 self._pending.pop(req_id, None)
+
+    def _send_cancel(self, target_id: int) -> None:
+        """Send a fire-and-forget cancel RPC for the given request ID."""
+        cancel_id = self._next_id()
+        request: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": "cancel",
+            "params": {"id": target_id},
+            "id": cancel_id,
+        }
+        data = json.dumps(request) + "\n"
+        try:
+            with self._write_lock:
+                assert self._process is not None
+                assert self._process.stdin is not None
+                self._process.stdin.write(data)
+                self._process.stdin.flush()
+        except Exception:
+            pass
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -333,12 +367,26 @@ class Client:
     def launch(self, sandbox: Sandbox) -> str:
         return self.create(sandbox.options())
 
-    def exec(self, command: str, working_dir: str = "") -> ExecResult:
+    def exec(
+        self,
+        command: str,
+        working_dir: str = "",
+        timeout: float | None = None,
+    ) -> ExecResult:
+        """Execute a command in the sandbox.
+
+        Args:
+            command: The command to execute.
+            working_dir: Optional working directory.
+            timeout: Optional timeout in seconds. If the command doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort the execution and :class:`TimeoutError` is raised.
+        """
         params: dict[str, str] = {"command": command}
         if working_dir:
             params["working_dir"] = working_dir
 
-        result = self._send_request("exec", params)
+        result = self._send_request("exec", params, timeout=timeout)
 
         return ExecResult(
             exit_code=result["exit_code"],
@@ -353,6 +401,7 @@ class Client:
         stdout: IO[str] | None = None,
         stderr: IO[str] | None = None,
         working_dir: str = "",
+        timeout: float | None = None,
     ) -> ExecStreamResult:
         """Execute a command and stream stdout/stderr in real-time.
 
@@ -361,6 +410,9 @@ class Client:
             stdout: File-like object to write stdout to (e.g., sys.stdout).
             stderr: File-like object to write stderr to (e.g., sys.stderr).
             working_dir: Optional working directory.
+            timeout: Optional timeout in seconds. If the command doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort the execution and :class:`TimeoutError` is raised.
 
         Returns:
             ExecStreamResult with exit code and duration (no stdout/stderr).
@@ -383,7 +435,7 @@ class Client:
                 stderr.flush()
 
         result = self._send_request(
-            "exec_stream", params, on_notification=on_notification
+            "exec_stream", params, on_notification=on_notification, timeout=timeout
         )
 
         return ExecStreamResult(
@@ -391,7 +443,21 @@ class Client:
             duration_ms=result["duration_ms"],
         )
 
-    def write_file(self, path: str, content: bytes | str, mode: int = 0o644) -> None:
+    def write_file(
+        self,
+        path: str,
+        content: bytes | str,
+        mode: int = 0o644,
+        timeout: float | None = None,
+    ) -> None:
+        """Write a file in the sandbox.
+
+        Args:
+            path: Guest path to write to.
+            content: File contents (bytes or str).
+            mode: File permission mode (default: 0644).
+            timeout: Optional timeout in seconds.
+        """
         if isinstance(content, str):
             content = content.encode("utf-8")
 
@@ -400,14 +466,26 @@ class Client:
             "content": base64.b64encode(content).decode("ascii"),
             "mode": mode,
         }
-        self._send_request("write_file", params)
+        self._send_request("write_file", params, timeout=timeout)
 
-    def read_file(self, path: str) -> bytes:
-        result = self._send_request("read_file", {"path": path})
+    def read_file(self, path: str, timeout: float | None = None) -> bytes:
+        """Read a file from the sandbox.
+
+        Args:
+            path: Guest path to read.
+            timeout: Optional timeout in seconds.
+        """
+        result = self._send_request("read_file", {"path": path}, timeout=timeout)
         return base64.b64decode(result["content"])
 
-    def list_files(self, path: str) -> list[FileInfo]:
-        result = self._send_request("list_files", {"path": path})
+    def list_files(self, path: str, timeout: float | None = None) -> list[FileInfo]:
+        """List files in a directory.
+
+        Args:
+            path: Guest directory path.
+            timeout: Optional timeout in seconds.
+        """
+        result = self._send_request("list_files", {"path": path}, timeout=timeout)
         return [
             FileInfo(
                 name=f["name"],

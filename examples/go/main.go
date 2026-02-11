@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -44,14 +45,14 @@ func run() error {
 	slog.Info("sandbox ready", "vm", vmID)
 
 	// Buffered exec — collects all output, returns when done
-	result, err := client.Exec("python3 --version")
+	result, err := client.Exec(context.Background(), "python3 --version")
 	if err != nil {
 		return fmt.Errorf("exec python3 --version: %w", err)
 	}
 	fmt.Print(result.Stdout)
 
 	// Install uv
-	if _, err := client.Exec("pip install --quiet uv"); err != nil {
+	if _, err := client.Exec(context.Background(), "pip install --quiet uv"); err != nil {
 		return fmt.Errorf("exec pip install uv: %w", err)
 	}
 
@@ -72,12 +73,12 @@ with client.messages.stream(
         print(text, end="", flush=True)
 print()
 `
-	if err := client.WriteFile("/workspace/ask.py", []byte(script)); err != nil {
+	if err := client.WriteFile(context.Background(), "/workspace/ask.py", []byte(script)); err != nil {
 		return fmt.Errorf("write_file: %w", err)
 	}
 
 	// Streaming exec — prints plain text as it arrives
-	streamResult, err := client.ExecStream(
+	streamResult, err := client.ExecStream(context.Background(), 
 		"uv run /workspace/ask.py",
 		os.Stdout, os.Stderr,
 	)

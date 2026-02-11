@@ -44,6 +44,7 @@ const (
 	ErrCodeVMFailed       = -32000
 	ErrCodeExecFailed     = -32001
 	ErrCodeFileFailed     = -32002
+	ErrCodeCancelled      = -32003
 )
 
 type VM interface {
@@ -62,15 +63,17 @@ type VM interface {
 type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
 
 type Handler struct {
-	factory VMFactory
-	vm      VM
-	vmMu    sync.RWMutex // protects vm field
-	events  chan api.Event
-	stdin   io.Reader
-	stdout  io.Writer
-	mu      sync.Mutex // protects stdout writes
-	closed  atomic.Bool
-	wg      sync.WaitGroup // tracks in-flight requests
+	factory   VMFactory
+	vm        VM
+	vmMu      sync.RWMutex // protects vm field
+	events    chan api.Event
+	stdin     io.Reader
+	stdout    io.Writer
+	mu        sync.Mutex // protects stdout writes
+	closed    atomic.Bool
+	wg        sync.WaitGroup // tracks in-flight requests
+	cancelsMu sync.Mutex
+	cancels   map[uint64]context.CancelFunc // per-request cancel funcs
 }
 
 func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
@@ -79,6 +82,7 @@ func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 		events:  make(chan api.Event, 100),
 		stdin:   stdin,
 		stdout:  stdout,
+		cancels: make(map[uint64]context.CancelFunc),
 	}
 }
 
@@ -104,6 +108,15 @@ func (h *Handler) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Handle cancel requests immediately (no goroutine, no wg)
+		if req.Method == "cancel" {
+			resp := h.handleCancel(&req)
+			if resp != nil {
+				h.sendResponse(resp)
+			}
+			continue
+		}
+
 		// Create and close run synchronously to avoid races
 		if req.Method == "create" || req.Method == "close" {
 			h.wg.Wait()
@@ -117,7 +130,23 @@ func (h *Handler) Run(ctx context.Context) error {
 		h.wg.Add(1)
 		go func(r Request) {
 			defer h.wg.Done()
-			resp := h.handleRequest(ctx, &r)
+
+			reqCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			if r.ID != nil {
+				h.cancelsMu.Lock()
+				h.cancels[*r.ID] = cancel
+				h.cancelsMu.Unlock()
+
+				defer func() {
+					h.cancelsMu.Lock()
+					delete(h.cancels, *r.ID)
+					h.cancelsMu.Unlock()
+				}()
+			}
+
+			resp := h.handleRequest(reqCtx, &r)
 			if resp != nil {
 				h.sendResponse(resp)
 			}
@@ -251,9 +280,13 @@ func (h *Handler) handleExec(ctx context.Context, req *Request) *Response {
 
 	result, err := vm.Exec(ctx, params.Command, opts)
 	if err != nil {
+		code := ErrCodeExecFailed
+		if ctx.Err() != nil {
+			code = ErrCodeCancelled
+		}
 		return &Response{
 			JSONRPC: "2.0",
-			Error:   &Error{Code: ErrCodeExecFailed, Message: err.Error()},
+			Error:   &Error{Code: code, Message: err.Error()},
 			ID:      req.ID,
 		}
 	}
@@ -317,9 +350,13 @@ func (h *Handler) handleExecStream(ctx context.Context, req *Request) *Response 
 
 	result, err := vm.Exec(ctx, params.Command, opts)
 	if err != nil {
+		code := ErrCodeExecFailed
+		if ctx.Err() != nil {
+			code = ErrCodeCancelled
+		}
 		return &Response{
 			JSONRPC: "2.0",
-			Error:   &Error{Code: ErrCodeExecFailed, Message: err.Error()},
+			Error:   &Error{Code: code, Message: err.Error()},
 			ID:      req.ID,
 		}
 	}
@@ -528,6 +565,35 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	return &Response{
 		JSONRPC: "2.0",
 		Result:  map[string]interface{}{},
+		ID:      req.ID,
+	}
+}
+
+func (h *Handler) handleCancel(req *Request) *Response {
+	var params struct {
+		ID uint64 `json:"id"`
+	}
+	if req.Params != nil {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+				ID:      req.ID,
+			}
+		}
+	}
+
+	h.cancelsMu.Lock()
+	cancel, ok := h.cancels[params.ID]
+	h.cancelsMu.Unlock()
+
+	if ok {
+		cancel()
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result:  map[string]interface{}{"cancelled": ok},
 		ID:      req.ID,
 	}
 }

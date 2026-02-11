@@ -182,10 +182,8 @@ func handleExecBatch(fd int, data []byte) {
 		return
 	}
 
-	// Wipe the raw request data from memory now that it's been deserialized
 	wipeBytes(data)
 
-	// Execute command
 	var stdout, stderr bytes.Buffer
 	cmd := exec.Command("sh", "-c", req.Command)
 	cmd.Stdout = &stdout
@@ -204,15 +202,26 @@ func handleExecBatch(fd int, data []byte) {
 	}
 
 	applyUserEnv(cmd, req.User)
-
-	// Apply sandbox isolation: PID namespace + seccomp + cap drop via re-exec
 	applySandboxSysProcAttr(cmd)
 	wrapCommandForSandbox(cmd)
-
-	// Wipe the request's env map from memory before running
 	wipeMap(req.Env)
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		sendExecResponse(fd, &ExecResponse{ExitCode: 1, Error: err.Error()})
+		return
+	}
+
+	// Monitor the vsock connection: if the host closes it (cancellation),
+	// kill the child process so it doesn't keep running.
+	go func() {
+		buf := make([]byte, 1)
+		syscall.Read(fd, buf) // blocks until EOF or error
+		if cmd.Process != nil {
+			cmd.Process.Signal(syscall.SIGKILL)
+		}
+	}()
+
+	err := cmd.Wait()
 
 	resp := &ExecResponse{
 		Stdout: stdout.Bytes(),
@@ -277,6 +286,20 @@ func handleExecStreamBatch(fd int, data []byte) {
 		sendExecResponse(fd, &ExecResponse{ExitCode: 1, Error: err.Error()})
 		return
 	}
+
+	// Monitor the vsock connection: if the host closes it (cancellation),
+	// kill the child process so it doesn't keep running.
+	connClosed := make(chan struct{})
+	go func() {
+		defer close(connClosed)
+		buf := make([]byte, 1)
+		// This fd is write-only from guest side during streaming, so Read
+		// will block until the host closes the connection.
+		syscall.Read(fd, buf)
+		if cmd.Process != nil {
+			cmd.Process.Signal(syscall.SIGKILL)
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(2)

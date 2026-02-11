@@ -185,6 +185,7 @@ matchlock rpc
 - Ready signal service on vsock port 5002
 - Command execution service on vsock port 5000
 - Supports running commands as non-root users via `MATCHLOCK_USER` env var (resolves username/uid:gid from /etc/passwd, calls setuid/setgid before exec)
+- **Cancellation**: All exec modes (batch, stream, TTY) monitor the vsock connection for EOF. When the host closes the connection (due to context cancellation), the guest agent sends SIGKILL to the child process
 
 ### Guest FUSE Daemon (`cmd/guest-fused`)
 - Mounts VFS from host via vsock at configurable workspace (default: /workspace)
@@ -296,9 +297,10 @@ Firecracker exposes vsock via Unix domain sockets with two connection patterns:
 - `write_file`: Write file to sandbox
 - `read_file`: Read file from sandbox
 - `list_files`: List directory contents
+- `cancel`: Cancel an in-flight request by ID. Params: `{"id": <request_id>}`. Triggers context cancellation on the server, which closes the vsock connection to the guest, causing the guest agent to SIGKILL the child process.
 - `close`: Shutdown VM
 
-The RPC handler dispatches `exec`, `exec_stream`, file, and list operations concurrently. `create` and `close` are serialized (drain in-flight requests first).
+The RPC handler dispatches `exec`, `exec_stream`, file, and list operations concurrently with per-request `context.WithCancel`. `create` and `close` are serialized (drain in-flight requests first). `cancel` is handled synchronously on the main goroutine.
 
 ### exec_stream protocol
 
