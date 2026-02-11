@@ -143,8 +143,8 @@ func (c *Client) Close(timeout time.Duration) error {
 	go func() { done <- c.cmd.Wait() }()
 
 	if timeout == 0 {
-		// Kill immediately — no point sending a close RPC since we're
-		// about to kill the process anyway.
+		// Close is required for explicit tidying up (e.g. tap device on Linux)
+		c.sendRequest("close", params)
 		c.stdin.Close()
 		c.cmd.Process.Kill()
 		<-done
