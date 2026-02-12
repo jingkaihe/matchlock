@@ -234,10 +234,10 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 
 	go func() {
 		defer stdinWriter.Close()
-		defer cancel()
 		for {
 			msgType, msgData, err := readRelayMsg(conn)
 			if err != nil {
+				cancel()
 				return
 			}
 			if msgType == relayMsgStdin {
