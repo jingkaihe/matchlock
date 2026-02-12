@@ -1,10 +1,12 @@
 # Release Notes
 
-## Unreleased
+## 0.1.12
 
 * Added end-to-end context cancellation support across the entire matchlock stack.
-* Add init=/init kernel arg for Linux backend and prevent /sbin/init overwrites for systemd compatibility
+* Added init=/init kernel arg for Linux backend and prevent /sbin/init overwrites for systemd compatibility
+* Intoroduced standalone `-i` pipe mode to allow stdio based communication with the Agent running inside the sandbox
 * Added examples of launching docker container inside the sandbox
+* Added examples of launching agent from local ACP client over ACP protocol
 
 ## 0.1.11
 

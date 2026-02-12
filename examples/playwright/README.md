@@ -42,8 +42,6 @@ Drop into an interactive Kodelet session (via Toad TUI) with the Playwright MCP 
 matchlock run --image browser-use:latest \
   --cpus 2 --memory 4096 \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
-  --allow-host api.anthropic.com \
-  --allow-host "*.anthropic.com" \
   --allow-host "*" \
   -it
 ```
@@ -60,8 +58,6 @@ Give Kodelet a task directly:
 matchlock run --image browser-use:latest \
   --cpus 2 --memory 4096 \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
-  --allow-host api.anthropic.com \
-  --allow-host "*.anthropic.com" \
   --allow-host "*" \
   -it \
   -- "Go to news.ycombinator.com and tell me the top 5 stories, using mcp tool to do it"

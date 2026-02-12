@@ -164,6 +164,14 @@ func (m *DarwinMachine) Wait(ctx context.Context) error {
 }
 
 func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	if opts != nil && opts.Stdin != nil {
+		conn, err := m.dialVsock(VsockPortExec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to exec service: %w", err)
+		}
+		return vsock.ExecPipe(ctx, conn, command, opts)
+	}
+
 	start := time.Now()
 
 	conn, err := m.dialVsock(VsockPortExec)
@@ -221,7 +229,7 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 
 	var stdout, stderr bytes.Buffer
 	for {
-		if _, err := readFull(conn, header); err != nil {
+		if _, err := vsock.ReadFull(conn, header); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -233,7 +241,7 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 
 		data := make([]byte, length)
 		if length > 0 {
-			if _, err := readFull(conn, data); err != nil {
+			if _, err := vsock.ReadFull(conn, data); err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
@@ -286,18 +294,6 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 	}
 }
 
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		if err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
 func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
@@ -338,7 +334,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 	go func() {
 		header := make([]byte, 5)
 		for {
-			if _, err := readFull(conn, header); err != nil {
+			if _, err := vsock.ReadFull(conn, header); err != nil {
 				errCh <- err
 				return
 			}
@@ -348,7 +344,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 
 			data := make([]byte, length)
 			if length > 0 {
-				if _, err := readFull(conn, data); err != nil {
+				if _, err := vsock.ReadFull(conn, data); err != nil {
 					errCh <- err
 					return
 				}
@@ -373,7 +369,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				sendVsockMessage(conn, vsock.MsgTypeStdin, buf[:n])
+				vsock.SendMessage(conn, vsock.MsgTypeStdin, buf[:n])
 			}
 			if err != nil {
 				return
@@ -386,7 +382,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 			data := make([]byte, 4)
 			binary.BigEndian.PutUint16(data[0:2], size[0])
 			binary.BigEndian.PutUint16(data[2:4], size[1])
-			sendVsockMessage(conn, vsock.MsgTypeResize, data)
+			vsock.SendMessage(conn, vsock.MsgTypeResize, data)
 		}
 	}()
 
@@ -396,24 +392,9 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 	case err := <-errCh:
 		return 1, err
 	case <-ctx.Done():
-		sendVsockMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
+		vsock.SendMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
 		return 1, ctx.Err()
 	}
-}
-
-func sendVsockMessage(conn net.Conn, msgType uint8, data []byte) error {
-	header := make([]byte, 5)
-	header[0] = msgType
-	binary.BigEndian.PutUint32(header[1:], uint32(len(data)))
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
-	if len(data) > 0 {
-		if _, err := conn.Write(data); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (m *DarwinMachine) NetworkFD() (int, error) {

@@ -118,6 +118,9 @@ matchlock exec vm-abc12345 -it sh
 # Interactive mode (like docker -it)
 matchlock run --image alpine:latest -it sh
 
+# Pipe mode — connect stdin without PTY (for JSON-RPC, ACP, etc.)
+matchlock run --image alpine:latest -i -- cat
+
 # With network allowlist
 matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python agent.py
 
@@ -218,7 +221,7 @@ matchlock rpc
 ### Exec Relay (`pkg/sandbox/exec_relay.go`)
 - Unix socket server (`~/.matchlock/vms/{id}/exec.sock`) enabling cross-process exec
 - The `run --rm=false` host process serves the relay; `matchlock exec` connects to it
-- Supports both non-interactive and interactive (TTY) exec
+- Supports non-interactive, pipe (`-i`), and interactive TTY (`-it`) exec modes
 - Works cross-platform (Linux + macOS) without direct vsock access from external processes
 
 ### Policy Engine (`pkg/policy`)

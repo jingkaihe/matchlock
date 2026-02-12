@@ -295,6 +295,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Stdout: os.Stdout,
 			Stderr: os.Stderr,
 		}
+		if interactive {
+			opts.Stdin = os.Stdin
+		}
 		if workdir != "" {
 			opts.WorkingDir = workdir
 		}

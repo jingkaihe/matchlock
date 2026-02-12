@@ -43,6 +43,7 @@ const (
 	MsgTypeExecTTY    uint8 = 9
 	MsgTypeExit       uint8 = 10
 	MsgTypeExecStream uint8 = 11
+	MsgTypeExecPipe   uint8 = 12
 )
 
 type sockaddrVM struct {
@@ -204,6 +205,8 @@ func handleExec(fd int) {
 	case MsgTypeExecStream:
 		handleExecStreamBatch(fd, data)
 		syscall.Close(fd)
+	case MsgTypeExecPipe:
+		handleExecPipe(fd, data)
 	case MsgTypeExecTTY:
 		handleExecTTY(fd, data)
 	default:
@@ -364,6 +367,165 @@ func handleExecStreamBatch(fd int, data []byte) {
 	}
 
 	sendExecResponse(fd, resp)
+}
+
+// handleExecPipe is like handleExecStreamBatch but also accepts MsgTypeStdin
+// frames from the host and pipes them into cmd.Stdin. This enables bidirectional
+// stdio communication without a PTY — suitable for JSON-RPC and similar protocols.
+func handleExecPipe(fd int, data []byte) {
+	var req ExecRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to decode exec request: %v\n", err)))
+		sendExitCode(fd, 1)
+		syscall.Close(fd)
+		return
+	}
+
+	wipeBytes(data)
+
+	cmd := exec.Command("sh", "-c", req.Command)
+
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stdin pipe: %v\n", err)))
+		sendExitCode(fd, 1)
+		syscall.Close(fd)
+		return
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stdout pipe: %v\n", err)))
+		sendExitCode(fd, 1)
+		syscall.Close(fd)
+		return
+	}
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stderr pipe: %v\n", err)))
+		sendExitCode(fd, 1)
+		syscall.Close(fd)
+		return
+	}
+
+	if req.WorkingDir != "" {
+		cmd.Dir = req.WorkingDir
+	}
+
+	if len(req.Env) > 0 {
+		env := os.Environ()
+		for k, v := range req.Env {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+		cmd.Env = env
+	}
+
+	applyUserEnv(cmd, req.User)
+	applySandboxSysProcAttrBatch(cmd)
+	wrapCommandForSandbox(cmd)
+	wipeMap(req.Env)
+
+	if err := cmd.Start(); err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to start command: %v\n", err)))
+		sendExitCode(fd, 1)
+		syscall.Close(fd)
+		return
+	}
+
+	// waitDone is closed after cmd.Wait() returns. Goroutines must not send
+	// signals to cmd.Process after this because the PID may be recycled.
+	waitDone := make(chan struct{})
+
+	// Read MsgTypeStdin from host and write to cmd stdin.
+	// On EOF or error from the vsock (host closed connection due to context
+	// cancellation), close the stdin pipe and SIGTERM→SIGKILL the child process.
+	// This replaces monitorVsockCancel for pipe mode since the stdin goroutine
+	// already owns the read side of the vsock fd.
+	go func() {
+		for {
+			msgType, msgData, err := readMessage(fd)
+			if err != nil {
+				stdinPipe.Close()
+				// Host closed connection — gracefully terminate the child
+				select {
+				case <-waitDone:
+					return
+				default:
+				}
+				pid := cmd.Process.Pid
+				syscall.Kill(-pid, syscall.SIGTERM)
+				timer := time.AfterFunc(cancelGracePeriod, func() {
+					select {
+					case <-waitDone:
+						return
+					default:
+					}
+					syscall.Kill(-pid, syscall.SIGKILL)
+				})
+				go func() {
+					<-waitDone
+					timer.Stop()
+				}()
+				return
+			}
+			switch msgType {
+			case MsgTypeStdin:
+				if len(msgData) == 0 {
+					stdinPipe.Close()
+					return
+				}
+				stdinPipe.Write(msgData)
+			case MsgTypeSignal:
+				if len(msgData) >= 1 && cmd.Process != nil {
+					syscall.Kill(-cmd.Process.Pid, syscall.Signal(msgData[0]))
+				}
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stdoutPipe.Read(buf)
+			if n > 0 {
+				sendMessage(fd, MsgTypeStdout, buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		buf := make([]byte, 4096)
+		for {
+			n, err := stderrPipe.Read(buf)
+			if n > 0 {
+				sendMessage(fd, MsgTypeStderr, buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	cmd.Wait()
+	close(waitDone)
+
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	sendExitCode(fd, exitCode)
+
+	// Small delay to ensure exit code message is flushed before closing fd
+	time.Sleep(100 * time.Millisecond)
+	syscall.Close(fd)
 }
 
 func handleExecTTY(fd int, data []byte) {

@@ -380,7 +380,17 @@ func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecO
 // execVsock executes a command via vsock.
 // When opts.Stdout/Stderr are set, uses streaming mode (MsgTypeExecStream) and
 // forwards output chunks to the writers in real-time.
+// When opts.Stdin is set, uses pipe mode (MsgTypeExecPipe) which additionally
+// forwards stdin to the guest process without allocating a PTY.
 func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	if opts != nil && opts.Stdin != nil {
+		conn, err := m.dialVsock(VsockPortExec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to exec service: %w", err)
+		}
+		return vsock.ExecPipe(ctx, conn, command, opts)
+	}
+
 	start := time.Now()
 
 	conn, err := m.dialVsock(VsockPortExec)
@@ -438,7 +448,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 	var stdout, stderr bytes.Buffer
 	for {
-		if _, err := readFull(conn, header); err != nil {
+		if _, err := vsock.ReadFull(conn, header); err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -450,7 +460,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 		data := make([]byte, length)
 		if length > 0 {
-			if _, err := readFull(conn, data); err != nil {
+			if _, err := vsock.ReadFull(conn, data); err != nil {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
@@ -503,18 +513,6 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 	}
 }
 
-func readFull(conn net.Conn, buf []byte) (int, error) {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		if err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
 // ExecInteractive executes a command with PTY support for interactive sessions
 func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	if m.config.VsockCID == 0 || m.config.VsockPath == "" {
@@ -563,7 +561,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 	go func() {
 		header := make([]byte, 5)
 		for {
-			if _, err := readFull(conn, header); err != nil {
+			if _, err := vsock.ReadFull(conn, header); err != nil {
 				errCh <- err
 				return
 			}
@@ -573,7 +571,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 
 			data := make([]byte, length)
 			if length > 0 {
-				if _, err := readFull(conn, data); err != nil {
+				if _, err := vsock.ReadFull(conn, data); err != nil {
 					errCh <- err
 					return
 				}
@@ -599,7 +597,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				sendVsockMessage(conn, vsock.MsgTypeStdin, buf[:n])
+				vsock.SendMessage(conn, vsock.MsgTypeStdin, buf[:n])
 			}
 			if err != nil {
 				return
@@ -613,7 +611,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 			data := make([]byte, 4)
 			binary.BigEndian.PutUint16(data[0:2], size[0]) // rows
 			binary.BigEndian.PutUint16(data[2:4], size[1]) // cols
-			sendVsockMessage(conn, vsock.MsgTypeResize, data)
+			vsock.SendMessage(conn, vsock.MsgTypeResize, data)
 		}
 	}()
 
@@ -623,24 +621,9 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 	case err := <-errCh:
 		return 1, err
 	case <-ctx.Done():
-		sendVsockMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
+		vsock.SendMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
 		return 1, ctx.Err()
 	}
-}
-
-func sendVsockMessage(conn net.Conn, msgType uint8, data []byte) error {
-	header := make([]byte, 5)
-	header[0] = msgType
-	binary.BigEndian.PutUint32(header[1:], uint32(len(data)))
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
-	if len(data) > 0 {
-		if _, err := conn.Write(data); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (m *LinuxMachine) NetworkFD() (int, error) {

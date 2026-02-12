@@ -227,6 +227,7 @@ const (
 	MsgTypeExecTTY    uint8 = 9  // TTY: exec with PTY
 	MsgTypeExit       uint8 = 10 // TTY: process exited
 	MsgTypeExecStream uint8 = 11 // Streaming batch: stdout/stderr sent as chunks, then ExecResult
+	MsgTypeExecPipe   uint8 = 12 // Pipe mode: like ExecStream but also accepts MsgTypeStdin, sends MsgTypeExit
 )
 
 // ExecRequest is sent from host to guest to execute a command

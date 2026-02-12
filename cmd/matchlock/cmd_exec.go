@@ -71,6 +71,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return runExecInteractive(ctx, execSocketPath, command, workdir, user)
 	}
 
+	if interactive {
+		return runExecPipe(ctx, execSocketPath, command, workdir, user)
+	}
+
 	result, err := sandbox.ExecViaRelay(ctx, execSocketPath, command, workdir, user)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
@@ -79,6 +83,15 @@ func runExec(cmd *cobra.Command, args []string) error {
 	os.Stdout.Write(result.Stdout)
 	os.Stderr.Write(result.Stderr)
 	os.Exit(result.ExitCode)
+	return nil
+}
+
+func runExecPipe(ctx context.Context, execSocketPath, command, workdir, user string) error {
+	exitCode, err := sandbox.ExecPipeViaRelay(ctx, execSocketPath, command, workdir, user, os.Stdin, os.Stdout, os.Stderr)
+	if err != nil {
+		return fmt.Errorf("pipe exec failed: %w", err)
+	}
+	os.Exit(exitCode)
 	return nil
 }
 
