@@ -79,7 +79,7 @@ This opens a Streamlit chat UI in your browser. The first message boots the sand
 You can also chat with the sandboxed agent directly from your terminal using [toad](https://github.com/jingkaihe/toad), without the Streamlit app:
 
 ```bash
-toad acp 'matchlock run --image acp:latest --secret ANTHROPIC_API_KEY@api.anthropic.com --allow-host "*" -i --'
+toad acp --serve --host 0.0.0.0 'matchlock run --image acp:latest --secret ANTHROPIC_API_KEY@api.anthropic.com -i --'
 ```
 
 ```mermaid
