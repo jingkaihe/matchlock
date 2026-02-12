@@ -227,8 +227,14 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 	opts.Stdout = &relayWriter{conn: conn, msgType: relayMsgStdout}
 	opts.Stderr = &relayWriter{conn: conn, msgType: relayMsgStderr}
 
+	// Cancel the context when the relay client disconnects (read error/EOF
+	// from the stdin reader goroutine) so the VM-side process is killed.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	go func() {
 		defer stdinWriter.Close()
+		defer cancel()
 		for {
 			msgType, msgData, err := readRelayMsg(conn)
 			if err != nil {
@@ -242,9 +248,6 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 			}
 		}
 	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	result, err := r.sb.Exec(ctx, req.Command, opts)
 

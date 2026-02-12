@@ -294,8 +294,6 @@ func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.Exec
 	}
 }
 
-
-
 func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
@@ -398,8 +396,6 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 		return 1, ctx.Err()
 	}
 }
-
-
 
 func (m *DarwinMachine) NetworkFD() (int, error) {
 	return m.socketPair.HostFD(), nil

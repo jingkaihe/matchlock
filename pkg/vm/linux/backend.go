@@ -513,8 +513,6 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 	}
 }
 
-
-
 // ExecInteractive executes a command with PTY support for interactive sessions
 func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	if m.config.VsockCID == 0 || m.config.VsockPath == "" {

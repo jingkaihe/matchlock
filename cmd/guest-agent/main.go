@@ -375,6 +375,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 func handleExecPipe(fd int, data []byte) {
 	var req ExecRequest
 	if err := json.Unmarshal(data, &req); err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to decode exec request: %v\n", err)))
 		sendExitCode(fd, 1)
 		syscall.Close(fd)
 		return
@@ -386,18 +387,21 @@ func handleExecPipe(fd int, data []byte) {
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stdin pipe: %v\n", err)))
 		sendExitCode(fd, 1)
 		syscall.Close(fd)
 		return
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stdout pipe: %v\n", err)))
 		sendExitCode(fd, 1)
 		syscall.Close(fd)
 		return
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to create stderr pipe: %v\n", err)))
 		sendExitCode(fd, 1)
 		syscall.Close(fd)
 		return
@@ -421,19 +425,46 @@ func handleExecPipe(fd int, data []byte) {
 	wipeMap(req.Env)
 
 	if err := cmd.Start(); err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("failed to start command: %v\n", err)))
 		sendExitCode(fd, 1)
 		syscall.Close(fd)
 		return
 	}
 
+	// waitDone is closed after cmd.Wait() returns. Goroutines must not send
+	// signals to cmd.Process after this because the PID may be recycled.
+	waitDone := make(chan struct{})
+
 	// Read MsgTypeStdin from host and write to cmd stdin.
-	// On EOF or error from the vsock, close the stdin pipe so the child
-	// sees EOF on its stdin.
+	// On EOF or error from the vsock (host closed connection due to context
+	// cancellation), close the stdin pipe and SIGTERM→SIGKILL the child process.
+	// This replaces monitorVsockCancel for pipe mode since the stdin goroutine
+	// already owns the read side of the vsock fd.
 	go func() {
 		for {
 			msgType, msgData, err := readMessage(fd)
 			if err != nil {
 				stdinPipe.Close()
+				// Host closed connection — gracefully terminate the child
+				select {
+				case <-waitDone:
+					return
+				default:
+				}
+				pid := cmd.Process.Pid
+				syscall.Kill(-pid, syscall.SIGTERM)
+				timer := time.AfterFunc(cancelGracePeriod, func() {
+					select {
+					case <-waitDone:
+						return
+					default:
+					}
+					syscall.Kill(-pid, syscall.SIGKILL)
+				})
+				go func() {
+					<-waitDone
+					timer.Stop()
+				}()
 				return
 			}
 			switch msgType {
@@ -484,6 +515,7 @@ func handleExecPipe(fd int, data []byte) {
 
 	wg.Wait()
 	cmd.Wait()
+	close(waitDone)
 
 	exitCode := 0
 	if cmd.ProcessState != nil {
@@ -491,6 +523,7 @@ func handleExecPipe(fd int, data []byte) {
 	}
 	sendExitCode(fd, exitCode)
 
+	// Small delay to ensure exit code message is flushed before closing fd
 	time.Sleep(100 * time.Millisecond)
 	syscall.Close(fd)
 }

@@ -144,8 +144,16 @@ class _PersistentACP:
             return False
         if self._process.returncode is not None:
             return False
-        if self._conn._conn._closed:  # type: ignore[attr-defined]
-            return False
+        try:
+            if self._conn.is_closed():
+                return False
+        except AttributeError:
+            # Fallback for ACP library versions without is_closed()
+            try:
+                if self._conn._conn._closed:  # type: ignore[attr-defined]
+                    return False
+            except AttributeError:
+                pass
         return True
 
     @property

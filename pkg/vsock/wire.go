@@ -1,3 +1,13 @@
+// wire.go provides net.Conn-based helpers for the vsock framed message protocol.
+//
+// The vsock package has two message I/O layers:
+//   - vsock.go: WriteMessage/ReadMessage operating on *Conn (raw AF_VSOCK fd wrapper)
+//   - wire.go: SendMessage/ReadFull operating on net.Conn (standard Go interface)
+//
+// Both exist because *Conn does not satisfy net.Conn (its SetDeadline methods
+// accept interface{} instead of time.Time). The net.Conn variants in this file
+// are used by the VM backends (Darwin uses Virtualization.framework's net.Conn,
+// Linux uses UDS-forwarded net.Conn) and by ExecPipe.
 package vsock
 
 import (
@@ -80,6 +90,14 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
+	done := make(chan *api.ExecResult, 1)
+	errCh := make(chan error, 1)
+
+	// connClosed is closed when the response reader finishes (exit received
+	// or read error). The stdin goroutine checks this to avoid writing to an
+	// already-closed connection.
+	connClosed := make(chan struct{})
+
 	// Forward stdin to guest
 	if opts != nil && opts.Stdin != nil {
 		go func() {
@@ -87,9 +105,21 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 			for {
 				n, readErr := opts.Stdin.Read(buf)
 				if n > 0 {
-					SendMessage(conn, MsgTypeStdin, buf[:n])
+					select {
+					case <-connClosed:
+						return
+					default:
+					}
+					if sendErr := SendMessage(conn, MsgTypeStdin, buf[:n]); sendErr != nil {
+						return
+					}
 				}
 				if readErr != nil {
+					select {
+					case <-connClosed:
+						return
+					default:
+					}
 					SendMessage(conn, MsgTypeStdin, nil)
 					return
 				}
@@ -97,10 +127,8 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 		}()
 	}
 
-	done := make(chan *api.ExecResult, 1)
-	errCh := make(chan error, 1)
-
 	go func() {
+		defer close(connClosed)
 		hdr := make([]byte, 5)
 		for {
 			if _, err := ReadFull(conn, hdr); err != nil {
@@ -160,4 +188,3 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 		return nil, ctx.Err()
 	}
 }
-
