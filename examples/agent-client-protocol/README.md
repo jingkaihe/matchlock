@@ -82,4 +82,29 @@ You can also chat with the sandboxed agent directly from your terminal using [to
 toad acp 'matchlock run --image acp:latest --secret ANTHROPIC_API_KEY@api.anthropic.com --allow-host "*" -i --'
 ```
 
-This is architecturally identical to the Streamlit example — `toad acp` runs on the host, spawns the matchlock subprocess, and speaks ACP over its stdin/stdout. The difference is you get a terminal TUI instead of a web UI.
+```mermaid
+flowchart TD
+    Terminal["🖥️ Terminal"]
+
+    subgraph Host ["Host Machine"]
+        direction TB
+        Toad["toad acp · TUI"]
+        subgraph Matchlock ["matchlock run -i"]
+            MITM["MITM Proxy"]
+        end
+    end
+
+    subgraph VM ["Matchlock Micro-VM · Ubuntu 24.04"]
+        Kodelet["kodelet acp"]
+    end
+
+    Cloud["☁️ LLM API"]
+
+    Terminal --> Toad
+    Toad -- stdin/stdout --> Matchlock
+    Matchlock -- vsock --> Kodelet
+    Kodelet -- HTTPS --> MITM
+    MITM -- "HTTPS + real API key" --> Cloud
+```
+
+Architecturally identical to the Streamlit example — `toad acp` runs on the host, spawns the matchlock subprocess, and speaks ACP over its stdin/stdout. The difference is you get a terminal TUI instead of a web UI.
