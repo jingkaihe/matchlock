@@ -73,3 +73,13 @@ uv run examples/agent-client-protocol/main.py
 ```
 
 This opens a Streamlit chat UI in your browser. The first message boots the sandbox (takes a few seconds), then subsequent messages reuse the same VM session.
+
+## Bonus: Interactive TUI Mode
+
+You can also chat with the sandboxed agent directly from your terminal using [toad](https://github.com/jingkaihe/toad), without the Streamlit app:
+
+```bash
+toad acp 'matchlock run --image acp:latest --secret ANTHROPIC_API_KEY@api.anthropic.com --allow-host "*" -i --'
+```
+
+This is architecturally identical to the Streamlit example — `toad acp` runs on the host, spawns the matchlock subprocess, and speaks ACP over its stdin/stdout. The difference is you get a terminal TUI instead of a web UI.
