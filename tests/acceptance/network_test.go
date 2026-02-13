@@ -17,6 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestAllowlistBlocksHTTP(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("example.com")
 
@@ -30,6 +31,7 @@ func TestAllowlistBlocksHTTP(t *testing.T) {
 }
 
 func TestAllowlistPermitsHTTP(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org")
 
@@ -43,6 +45,7 @@ func TestAllowlistPermitsHTTP(t *testing.T) {
 }
 
 func TestAllowlistBlocksHTTPS(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("example.com")
 
@@ -56,6 +59,7 @@ func TestAllowlistBlocksHTTPS(t *testing.T) {
 }
 
 func TestAllowlistPermitsHTTPS(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org")
 
@@ -69,6 +73,7 @@ func TestAllowlistPermitsHTTPS(t *testing.T) {
 }
 
 func TestAllowlistGlobPattern(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("*.org")
 
@@ -82,6 +87,7 @@ func TestAllowlistGlobPattern(t *testing.T) {
 }
 
 func TestAllowlistMultipleHosts(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org", "example.com")
 
@@ -97,6 +103,7 @@ func TestAllowlistMultipleHosts(t *testing.T) {
 }
 
 func TestNoAllowlistPermitsAll(t *testing.T) {
+	t.Parallel()
 	// No AllowHost -> all hosts are allowed (empty allowlist = permit all)
 	sandbox := sdk.New("alpine:latest").
 		BlockPrivateIPs() // enable interception without restricting hosts
@@ -114,6 +121,7 @@ func TestNoAllowlistPermitsAll(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSecretInjectedInHTTPSHeader(t *testing.T) {
+	t.Parallel()
 	secretValue := "sk-test-secret-value-12345"
 
 	sandbox := sdk.New("alpine:latest").
@@ -131,6 +139,7 @@ func TestSecretInjectedInHTTPSHeader(t *testing.T) {
 }
 
 func TestSecretInjectedInHTTPHeader(t *testing.T) {
+	t.Parallel()
 	secretValue := "sk-test-http-secret-67890"
 
 	sandbox := sdk.New("alpine:latest").
@@ -146,6 +155,7 @@ func TestSecretInjectedInHTTPHeader(t *testing.T) {
 }
 
 func TestSecretPlaceholderNotExposedInGuest(t *testing.T) {
+	t.Parallel()
 	secretValue := "sk-real-secret-never-seen"
 
 	sandbox := sdk.New("alpine:latest").
@@ -164,6 +174,7 @@ func TestSecretPlaceholderNotExposedInGuest(t *testing.T) {
 }
 
 func TestSecretBlockedOnUnauthorizedHost(t *testing.T) {
+	t.Parallel()
 	secretValue := "sk-secret-should-not-leak"
 
 	sandbox := sdk.New("alpine:latest").
@@ -185,6 +196,7 @@ func TestSecretBlockedOnUnauthorizedHost(t *testing.T) {
 }
 
 func TestMultipleSecretsMultipleHosts(t *testing.T) {
+	t.Parallel()
 	secret1 := "sk-first-secret-aaa"
 	secret2 := "sk-second-secret-bbb"
 
@@ -203,6 +215,7 @@ func TestMultipleSecretsMultipleHosts(t *testing.T) {
 }
 
 func TestSecretInjectedInQueryParam(t *testing.T) {
+	t.Parallel()
 	secretValue := "sk-query-param-secret"
 
 	sandbox := sdk.New("alpine:latest").
@@ -223,6 +236,7 @@ func TestSecretInjectedInQueryParam(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCustomDNSServersInResolvConf(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		BlockPrivateIPs().
 		WithDNSServers("1.1.1.1", "1.0.0.1")
@@ -238,6 +252,7 @@ func TestCustomDNSServersInResolvConf(t *testing.T) {
 }
 
 func TestDefaultDNSServersInResolvConf(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		BlockPrivateIPs()
 
@@ -251,6 +266,7 @@ func TestDefaultDNSServersInResolvConf(t *testing.T) {
 }
 
 func TestCustomDNSServersStillResolveDomains(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org").
 		WithDNSServers("1.1.1.1")
@@ -268,6 +284,7 @@ func TestCustomDNSServersStillResolveDomains(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPassthroughBlocksUnallowedHost(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("example.com")
 
@@ -280,6 +297,7 @@ func TestPassthroughBlocksUnallowedHost(t *testing.T) {
 }
 
 func TestPassthroughAllowsPermittedHost(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org")
 
@@ -296,6 +314,7 @@ func TestPassthroughAllowsPermittedHost(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestUDPNonDNSBlocked(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org")
 
@@ -313,6 +332,7 @@ func TestUDPNonDNSBlocked(t *testing.T) {
 }
 
 func TestDNSResolutionWorksWithInterception(t *testing.T) {
+	t.Parallel()
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("httpbin.org")
 

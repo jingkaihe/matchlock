@@ -13,6 +13,7 @@ import (
 )
 
 func TestWriteAndReadFile(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	content := []byte("hello from acceptance test")
@@ -25,6 +26,7 @@ func TestWriteAndReadFile(t *testing.T) {
 }
 
 func TestWriteFileAndExec(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	script := []byte("#!/bin/sh\necho script-output\n")
@@ -37,6 +39,7 @@ func TestWriteFileAndExec(t *testing.T) {
 }
 
 func TestListFiles(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	err := client.WriteFile(context.Background(), "/workspace/a.txt", []byte("a"))
@@ -55,6 +58,7 @@ func TestListFiles(t *testing.T) {
 }
 
 func TestLargeFileRoundtrip(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	data := bytes.Repeat([]byte("abcdefghij"), 10000) // 100KB
@@ -67,6 +71,7 @@ func TestLargeFileRoundtrip(t *testing.T) {
 }
 
 func TestChmodViaExec(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	err := client.WriteFile(context.Background(), "/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n"))
@@ -81,6 +86,7 @@ func TestChmodViaExec(t *testing.T) {
 }
 
 func TestChmodPreservesAfterStat(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	err := client.WriteFile(context.Background(), "/workspace/check.sh", []byte("#!/bin/sh\necho ok\n"))

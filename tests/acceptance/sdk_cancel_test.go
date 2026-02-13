@@ -14,6 +14,7 @@ import (
 )
 
 func TestExecCancelKillsProcess(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	// Start a long-running sleep, then cancel it after 1s.
@@ -30,6 +31,7 @@ func TestExecCancelKillsProcess(t *testing.T) {
 }
 
 func TestExecStreamCancelKillsProcess(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -47,6 +49,7 @@ func TestExecStreamCancelKillsProcess(t *testing.T) {
 }
 
 func TestExecCancelProcessActuallyDies(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	// Write a script that creates a marker file, sleeps, then removes it.
@@ -75,6 +78,7 @@ func TestExecCancelProcessActuallyDies(t *testing.T) {
 }
 
 func TestExecCancelGracefulShutdown(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	// Prove the guest agent sends SIGTERM before SIGKILL by observing timing.
@@ -101,6 +105,7 @@ func TestExecCancelGracefulShutdown(t *testing.T) {
 }
 
 func TestExecManualCancelViaContext(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	ctx, cancel := context.WithCancel(context.Background())

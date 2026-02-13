@@ -13,6 +13,7 @@ import (
 )
 
 func TestExecSimpleCommand(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "echo hello")
@@ -22,6 +23,7 @@ func TestExecSimpleCommand(t *testing.T) {
 }
 
 func TestExecNonZeroExit(t *testing.T) {
+	t.Parallel()
 	t.Skip("known bug: guest agent does not propagate non-zero exit codes")
 
 	client := launchAlpine(t)
@@ -32,6 +34,7 @@ func TestExecNonZeroExit(t *testing.T) {
 }
 
 func TestExecFailedCommandStderr(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "cat /nonexistent_file_abc123")
@@ -40,6 +43,7 @@ func TestExecFailedCommandStderr(t *testing.T) {
 }
 
 func TestExecStderr(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "sh -c 'echo err >&2'")
@@ -48,6 +52,7 @@ func TestExecStderr(t *testing.T) {
 }
 
 func TestExecMultipleCommands(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	for i, cmd := range []string{"echo one", "echo two", "echo three"} {
@@ -58,6 +63,7 @@ func TestExecMultipleCommands(t *testing.T) {
 }
 
 func TestExecStream(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	var stdout, stderr bytes.Buffer
@@ -68,6 +74,7 @@ func TestExecStream(t *testing.T) {
 }
 
 func TestExecWithDir(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	_, err := client.Exec(context.Background(), "mkdir -p /tmp/testdir && echo hi > /tmp/testdir/hello.txt")
@@ -79,6 +86,7 @@ func TestExecWithDir(t *testing.T) {
 }
 
 func TestExecWithDirPwd(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.ExecWithDir(context.Background(), "pwd", "/tmp")
@@ -87,6 +95,7 @@ func TestExecWithDirPwd(t *testing.T) {
 }
 
 func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "pwd")
@@ -95,6 +104,7 @@ func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
 }
 
 func TestExecWithDirRelativeCommand(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	_, err := client.Exec(context.Background(), "mkdir -p /opt/myapp && echo '#!/bin/sh\necho running-from-myapp' > /opt/myapp/run.sh && chmod +x /opt/myapp/run.sh")
@@ -106,6 +116,7 @@ func TestExecWithDirRelativeCommand(t *testing.T) {
 }
 
 func TestExecStreamWithDir(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	var stdout, stderr bytes.Buffer
@@ -116,6 +127,7 @@ func TestExecStreamWithDir(t *testing.T) {
 }
 
 func TestGuestEnvironment(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "cat /etc/os-release")
@@ -124,6 +136,7 @@ func TestGuestEnvironment(t *testing.T) {
 }
 
 func TestLargeOutput(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "seq 1 1000")

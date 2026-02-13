@@ -101,7 +101,8 @@ description = "Run acceptance tests (requires VM support — cannot run in CI)"
 run = """
 #!/usr/bin/env bash
 set -e
-MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -v ./tests/acceptance/
+PARALLEL="${MATCHLOCK_ACCEPTANCE_PARALLEL:-4}"
+MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -parallel "$PARALLEL" -v ./tests/acceptance/
 """
 
 # =============================================================================

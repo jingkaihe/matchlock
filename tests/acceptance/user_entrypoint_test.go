@@ -16,6 +16,7 @@ import (
 // --- User switching tests ---
 
 func TestUserSwitchByUsername(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
@@ -25,6 +26,7 @@ func TestUserSwitchByUsername(t *testing.T) {
 }
 
 func TestUserSwitchByUID(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("65534")
 	client := launchWithBuilder(t, builder)
 
@@ -34,6 +36,7 @@ func TestUserSwitchByUID(t *testing.T) {
 }
 
 func TestUserSwitchByUIDAndGID(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("65534:65534")
 	client := launchWithBuilder(t, builder)
 
@@ -46,6 +49,7 @@ func TestUserSwitchByUIDAndGID(t *testing.T) {
 }
 
 func TestUserSwitchHomeDirIsSet(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
@@ -57,6 +61,7 @@ func TestUserSwitchHomeDirIsSet(t *testing.T) {
 }
 
 func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
@@ -71,6 +76,7 @@ func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
 }
 
 func TestDefaultUserIsRoot(t *testing.T) {
+	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "id -u")
@@ -81,6 +87,7 @@ func TestDefaultUserIsRoot(t *testing.T) {
 // --- Entrypoint / CMD tests ---
 
 func TestEntrypointOverride(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithEntrypoint("echo", "from-entrypoint")
 	client := launchWithBuilder(t, builder)
 
@@ -92,6 +99,7 @@ func TestEntrypointOverride(t *testing.T) {
 // --- Image ENV propagation tests ---
 
 func TestImageEnvPropagation(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithImageConfig(&sdk.ImageConfig{
 		Env: map[string]string{
 			"MY_TEST_VAR": "hello-from-image",
@@ -110,6 +118,7 @@ func TestImageEnvPropagation(t *testing.T) {
 }
 
 func TestImageWorkingDir(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithImageConfig(&sdk.ImageConfig{
 		WorkingDir: "/tmp",
 	})
@@ -123,6 +132,7 @@ func TestImageWorkingDir(t *testing.T) {
 // --- Image USER from OCI config tests ---
 
 func TestImageConfigUser(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithImageConfig(&sdk.ImageConfig{
 		User: "nobody",
 	})
@@ -134,6 +144,7 @@ func TestImageConfigUser(t *testing.T) {
 }
 
 func TestImageConfigUserWithBuilderOverride(t *testing.T) {
+	t.Parallel()
 	// WithUser should override ImageConfig.User
 	builder := sdk.New("alpine:latest").
 		WithImageConfig(&sdk.ImageConfig{User: "daemon"}).
@@ -148,6 +159,7 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 // --- Streaming with user tests ---
 
 func TestExecStreamWithImageConfig(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithImageConfig(&sdk.ImageConfig{
 		Env: map[string]string{"STREAM_VAR": "streamed-env"},
 	})
@@ -163,6 +175,7 @@ func TestExecStreamWithImageConfig(t *testing.T) {
 // --- Combined user + workdir tests ---
 
 func TestUserWithCustomWorkdir(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").
 		WithUser("nobody").
 		WithImageConfig(&sdk.ImageConfig{
@@ -181,6 +194,7 @@ func TestUserWithCustomWorkdir(t *testing.T) {
 // --- Python image with real OCI USER ---
 
 func TestPythonImageDefaultUser(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("python:3.12-alpine")
 	client := launchWithBuilder(t, builder)
 
@@ -191,6 +205,7 @@ func TestPythonImageDefaultUser(t *testing.T) {
 }
 
 func TestPythonImageWithUserOverride(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("python:3.12-alpine").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
@@ -200,6 +215,7 @@ func TestPythonImageWithUserOverride(t *testing.T) {
 }
 
 func TestPythonImageEntrypointAndCmd(t *testing.T) {
+	t.Parallel()
 	// python:3.12-alpine has ENTRYPOINT ["python3"] and CMD ["python3"]
 	// Verify we can run python commands
 	builder := sdk.New("python:3.12-alpine")
@@ -213,6 +229,7 @@ func TestPythonImageEntrypointAndCmd(t *testing.T) {
 // --- Multiple execs with user ---
 
 func TestMultipleExecsWithUser(t *testing.T) {
+	t.Parallel()
 	builder := sdk.New("alpine:latest").WithUser("nobody")
 	client := launchWithBuilder(t, builder)
 
