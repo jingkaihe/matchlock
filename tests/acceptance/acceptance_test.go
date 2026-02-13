@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func matchlockConfig(t *testing.T) sdk.Config {
@@ -26,9 +28,7 @@ func matchlockConfig(t *testing.T) sdk.Config {
 func launchAlpine(t *testing.T) *sdk.Client {
 	t.Helper()
 	client, err := sdk.NewClient(matchlockConfig(t))
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	require.NoError(t, err, "NewClient")
 
 	t.Cleanup(func() {
 		client.Close(0)
@@ -37,9 +37,7 @@ func launchAlpine(t *testing.T) *sdk.Client {
 
 	sandbox := sdk.New("alpine:latest")
 	_, err = client.Launch(sandbox)
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
+	require.NoError(t, err, "Launch")
 
 	return client
 }
@@ -48,15 +46,9 @@ func TestExecSimpleCommand(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "echo hello")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "hello" {
-		t.Errorf("stdout = %q, want %q", got, "hello")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "hello", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecNonZeroExit(t *testing.T) {
@@ -65,36 +57,24 @@ func TestExecNonZeroExit(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "false")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode == 0 {
-		t.Errorf("exit code = 0, want non-zero")
-	}
+	require.NoError(t, err, "Exec")
+	assert.NotEqual(t, 0, result.ExitCode, "exit code should be non-zero")
 }
 
 func TestExecFailedCommandStderr(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "cat /nonexistent_file_abc123")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.Contains(result.Stderr, "No such file or directory") {
-		t.Errorf("stderr = %q, want to contain 'No such file or directory'", result.Stderr)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Contains(t, result.Stderr, "No such file or directory")
 }
 
 func TestExecStderr(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "sh -c 'echo err >&2'")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.Contains(result.Stderr, "err") {
-		t.Errorf("stderr = %q, want to contain %q", result.Stderr, "err")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Contains(t, result.Stderr, "err")
 }
 
 func TestExecMultipleCommands(t *testing.T) {
@@ -102,12 +82,8 @@ func TestExecMultipleCommands(t *testing.T) {
 
 	for i, cmd := range []string{"echo one", "echo two", "echo three"} {
 		result, err := client.Exec(context.Background(), cmd)
-		if err != nil {
-			t.Fatalf("Exec[%d]: %v", i, err)
-		}
-		if result.ExitCode != 0 {
-			t.Errorf("Exec[%d] exit code = %d, want 0", i, result.ExitCode)
-		}
+		require.NoErrorf(t, err, "Exec[%d]", i)
+		assert.Equalf(t, 0, result.ExitCode, "Exec[%d] exit code", i)
 	}
 }
 
@@ -116,131 +92,89 @@ func TestExecStream(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	result, err := client.ExecStream(context.Background(), "echo streamed", &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("ExecStream: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-	if got := strings.TrimSpace(stdout.String()); got != "streamed" {
-		t.Errorf("stdout = %q, want %q", got, "streamed")
-	}
+	require.NoError(t, err, "ExecStream")
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "streamed", strings.TrimSpace(stdout.String()))
 }
 
 func TestWriteAndReadFile(t *testing.T) {
 	client := launchAlpine(t)
 
 	content := []byte("hello from acceptance test")
-	if err := client.WriteFile(context.Background(), "/workspace/test.txt", content); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	err := client.WriteFile(context.Background(), "/workspace/test.txt", content)
+	require.NoError(t, err, "WriteFile")
 
 	got, err := client.ReadFile(context.Background(), "/workspace/test.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("ReadFile = %q, want %q", got, content)
-	}
+	require.NoError(t, err, "ReadFile")
+	assert.Equal(t, content, got)
 }
 
 func TestWriteFileAndExec(t *testing.T) {
 	client := launchAlpine(t)
 
 	script := []byte("#!/bin/sh\necho script-output\n")
-	if err := client.WriteFileMode(context.Background(), "/workspace/run.sh", script, 0755); err != nil {
-		t.Fatalf("WriteFileMode: %v", err)
-	}
+	err := client.WriteFileMode(context.Background(), "/workspace/run.sh", script, 0755)
+	require.NoError(t, err, "WriteFileMode")
 
 	result, err := client.Exec(context.Background(), "sh /workspace/run.sh")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "script-output" {
-		t.Errorf("stdout = %q, want %q", got, "script-output")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "script-output", strings.TrimSpace(result.Stdout))
 }
 
 func TestListFiles(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile(context.Background(), "/workspace/a.txt", []byte("a")); err != nil {
-		t.Fatalf("WriteFile a: %v", err)
-	}
-	if err := client.WriteFile(context.Background(), "/workspace/b.txt", []byte("bb")); err != nil {
-		t.Fatalf("WriteFile b: %v", err)
-	}
+	err := client.WriteFile(context.Background(), "/workspace/a.txt", []byte("a"))
+	require.NoError(t, err, "WriteFile a")
+	err = client.WriteFile(context.Background(), "/workspace/b.txt", []byte("bb"))
+	require.NoError(t, err, "WriteFile b")
 
 	files, err := client.ListFiles(context.Background(), "/workspace")
-	if err != nil {
-		t.Fatalf("ListFiles: %v", err)
-	}
+	require.NoError(t, err, "ListFiles")
 
 	names := make(map[string]bool)
 	for _, f := range files {
 		names[f.Name] = true
 	}
-	if !names["a.txt"] || !names["b.txt"] {
-		t.Errorf("ListFiles = %v, want a.txt and b.txt present", names)
-	}
+	assert.True(t, names["a.txt"] && names["b.txt"], "ListFiles = %v, want a.txt and b.txt present", names)
 }
 
 func TestExecWithDir(t *testing.T) {
 	client := launchAlpine(t)
 
 	_, err := client.Exec(context.Background(), "mkdir -p /tmp/testdir && echo hi > /tmp/testdir/hello.txt")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, err, "setup")
 
 	result, err := client.ExecWithDir(context.Background(), "cat hello.txt", "/tmp/testdir")
-	if err != nil {
-		t.Fatalf("ExecWithDir: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "hi" {
-		t.Errorf("stdout = %q, want %q", got, "hi")
-	}
+	require.NoError(t, err, "ExecWithDir")
+	assert.Equal(t, "hi", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecWithDirPwd(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.ExecWithDir(context.Background(), "pwd", "/tmp")
-	if err != nil {
-		t.Fatalf("ExecWithDir: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "/tmp" {
-		t.Errorf("pwd = %q, want %q", got, "/tmp")
-	}
+	require.NoError(t, err, "ExecWithDir")
+	assert.Equal(t, "/tmp", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "pwd")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "/workspace" {
-		t.Errorf("default pwd = %q, want %q", got, "/workspace")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "/workspace", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecWithDirRelativeCommand(t *testing.T) {
 	client := launchAlpine(t)
 
 	_, err := client.Exec(context.Background(), "mkdir -p /opt/myapp && echo '#!/bin/sh\necho running-from-myapp' > /opt/myapp/run.sh && chmod +x /opt/myapp/run.sh")
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, err, "setup")
 
 	result, err := client.ExecWithDir(context.Background(), "sh run.sh", "/opt/myapp")
-	if err != nil {
-		t.Fatalf("ExecWithDir: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "running-from-myapp" {
-		t.Errorf("stdout = %q, want %q", got, "running-from-myapp")
-	}
+	require.NoError(t, err, "ExecWithDir")
+	assert.Equal(t, "running-from-myapp", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecStreamWithDir(t *testing.T) {
@@ -248,60 +182,39 @@ func TestExecStreamWithDir(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	result, err := client.ExecStreamWithDir(context.Background(), "pwd", "/var", &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("ExecStreamWithDir: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-	if got := strings.TrimSpace(stdout.String()); got != "/var" {
-		t.Errorf("pwd = %q, want %q", got, "/var")
-	}
+	require.NoError(t, err, "ExecStreamWithDir")
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "/var", strings.TrimSpace(stdout.String()))
 }
 
 func TestGuestEnvironment(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "cat /etc/os-release")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.Contains(result.Stdout, "Alpine") {
-		t.Errorf("expected Alpine in os-release, got: %s", result.Stdout)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Contains(t, result.Stdout, "Alpine")
 }
 
 func TestLargeOutput(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "seq 1 1000")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, 0, result.ExitCode)
 	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
-	if len(lines) != 1000 {
-		t.Errorf("got %d lines, want 1000", len(lines))
-	}
+	assert.Len(t, lines, 1000)
 }
 
 func TestLargeFileRoundtrip(t *testing.T) {
 	client := launchAlpine(t)
 
 	data := bytes.Repeat([]byte("abcdefghij"), 10000) // 100KB
-	if err := client.WriteFile(context.Background(), "/workspace/large.bin", data); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	err := client.WriteFile(context.Background(), "/workspace/large.bin", data)
+	require.NoError(t, err, "WriteFile")
 
 	got, err := client.ReadFile(context.Background(), "/workspace/large.bin")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Errorf("ReadFile size = %d, want %d", len(got), len(data))
-	}
+	require.NoError(t, err, "ReadFile")
+	assert.Equal(t, data, got)
 }
 
 func TestExecCancelKillsProcess(t *testing.T) {
@@ -315,15 +228,9 @@ func TestExecCancelKillsProcess(t *testing.T) {
 	_, err := client.Exec(ctx, "sleep 60")
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected error from cancelled exec, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got: %v", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("cancel took %v, expected < 5s", elapsed)
-	}
+	require.Error(t, err, "expected error from cancelled exec")
+	require.True(t, errors.Is(err, context.DeadlineExceeded), "expected DeadlineExceeded, got: %v", err)
+	assert.Less(t, elapsed, 5*time.Second, "cancel took too long")
 }
 
 func TestExecStreamCancelKillsProcess(t *testing.T) {
@@ -337,15 +244,9 @@ func TestExecStreamCancelKillsProcess(t *testing.T) {
 	_, err := client.ExecStream(ctx, "sleep 60", &stdout, &stderr)
 	elapsed := time.Since(start)
 
-	if err == nil {
-		t.Fatal("expected error from cancelled exec_stream, got nil")
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected DeadlineExceeded, got: %v", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("cancel took %v, expected < 5s", elapsed)
-	}
+	require.Error(t, err, "expected error from cancelled exec_stream")
+	require.True(t, errors.Is(err, context.DeadlineExceeded), "expected DeadlineExceeded, got: %v", err)
+	assert.Less(t, elapsed, 5*time.Second, "cancel took too long")
 }
 
 func TestExecCancelProcessActuallyDies(t *testing.T) {
@@ -365,23 +266,15 @@ func TestExecCancelProcessActuallyDies(t *testing.T) {
 
 	// The marker file should still exist (sleep was killed before rm ran).
 	result, err := client.Exec(context.Background(), "test -f /tmp/cancel-marker && echo exists")
-	if err != nil {
-		t.Fatalf("check marker: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "exists" {
-		t.Errorf("marker file missing — cancelled process was not killed")
-	}
+	require.NoError(t, err, "check marker")
+	assert.Equal(t, "exists", strings.TrimSpace(result.Stdout), "marker file missing — cancelled process was not killed")
 
 	// The sleep process should no longer be running.
 	// Use pgrep with -x for exact match on "sleep" to avoid matching the
 	// sh -c wrapper that contains "sleep" in its command line.
 	result, err = client.Exec(context.Background(), "pgrep -x sleep || echo gone")
-	if err != nil {
-		t.Fatalf("check process: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "gone" {
-		t.Errorf("sleep process still running after cancel: %s", result.Stdout)
-	}
+	require.NoError(t, err, "check process")
+	assert.Equal(t, "gone", strings.TrimSpace(result.Stdout), "sleep process still running after cancel: %s", result.Stdout)
 }
 
 func TestExecCancelGracefulShutdown(t *testing.T) {
@@ -406,12 +299,8 @@ func TestExecCancelGracefulShutdown(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	result, err := client.Exec(context.Background(), "pgrep -x sleep || echo gone")
-	if err != nil {
-		t.Fatalf("check process: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "gone" {
-		t.Errorf("sleep still running 1s after cancel — SIGTERM may not be reaching child processes: %s", result.Stdout)
-	}
+	require.NoError(t, err, "check process")
+	assert.Equal(t, "gone", strings.TrimSpace(result.Stdout), "sleep still running 1s after cancel — SIGTERM may not be reaching child processes: %s", result.Stdout)
 }
 
 func TestExecManualCancelViaContext(t *testing.T) {
@@ -428,10 +317,6 @@ func TestExecManualCancelViaContext(t *testing.T) {
 	_, err := client.Exec(ctx, "sleep 60")
 	elapsed := time.Since(start)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got: %v", err)
-	}
-	if elapsed > 5*time.Second {
-		t.Errorf("cancel took %v, expected < 5s", elapsed)
-	}
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, elapsed, 5*time.Second, "cancel took too long")
 }

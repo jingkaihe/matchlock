@@ -3,6 +3,9 @@ package vfs
 import (
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadonlyProvider_Read(t *testing.T) {
@@ -14,16 +17,12 @@ func TestReadonlyProvider_Read(t *testing.T) {
 	ro := NewReadonlyProvider(base)
 
 	rh, err := ro.Open("/file.txt", os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer rh.Close()
 
 	buf := make([]byte, 100)
 	n, _ := rh.Read(buf)
-	if string(buf[:n]) != "content" {
-		t.Errorf("Expected 'content', got %q", string(buf[:n]))
-	}
+	assert.Equal(t, "content", string(buf[:n]))
 }
 
 func TestReadonlyProvider_WriteBlocked(t *testing.T) {
@@ -31,33 +30,23 @@ func TestReadonlyProvider_WriteBlocked(t *testing.T) {
 	ro := NewReadonlyProvider(base)
 
 	_, err := ro.Create("/newfile.txt", 0644)
-	if err == nil {
-		t.Error("Create should fail on readonly provider")
-	}
+	require.Error(t, err, "Create should fail on readonly provider")
 
 	err = ro.Mkdir("/newdir", 0755)
-	if err == nil {
-		t.Error("Mkdir should fail on readonly provider")
-	}
+	require.Error(t, err, "Mkdir should fail on readonly provider")
 
 	err = ro.Remove("/anything")
-	if err == nil {
-		t.Error("Remove should fail on readonly provider")
-	}
+	require.Error(t, err, "Remove should fail on readonly provider")
 
 	err = ro.Rename("/old", "/new")
-	if err == nil {
-		t.Error("Rename should fail on readonly provider")
-	}
+	require.Error(t, err, "Rename should fail on readonly provider")
 }
 
 func TestReadonlyProvider_Readonly(t *testing.T) {
 	base := NewMemoryProvider()
 	ro := NewReadonlyProvider(base)
 
-	if !ro.Readonly() {
-		t.Error("ReadonlyProvider should be readonly")
-	}
+	assert.True(t, ro.Readonly())
 }
 
 func TestReadonlyProvider_Stat(t *testing.T) {
@@ -67,12 +56,8 @@ func TestReadonlyProvider_Stat(t *testing.T) {
 	ro := NewReadonlyProvider(base)
 
 	info, err := ro.Stat("/dir")
-	if err != nil {
-		t.Fatalf("Stat failed: %v", err)
-	}
-	if !info.IsDir() {
-		t.Error("Expected directory")
-	}
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
 }
 
 func TestReadonlyProvider_ReadDir(t *testing.T) {
@@ -84,10 +69,6 @@ func TestReadonlyProvider_ReadDir(t *testing.T) {
 	ro := NewReadonlyProvider(base)
 
 	entries, err := ro.ReadDir("/dir")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("Expected 1 entry, got %d", len(entries))
-	}
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
 }

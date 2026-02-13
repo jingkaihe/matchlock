@@ -13,6 +13,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // buildTestTarball creates a Docker-save-format tarball containing a single-layer
@@ -46,27 +48,19 @@ func buildTestTarball(t *testing.T, files map[string]string) string {
 	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(layerData)), nil
 	})
-	if err != nil {
-		t.Fatalf("tarball.LayerFromOpener: %v", err)
-	}
+	require.NoError(t, err, "tarball.LayerFromOpener")
 
 	img, err := mutate.AppendLayers(empty.Image, layer)
-	if err != nil {
-		t.Fatalf("mutate.AppendLayers: %v", err)
-	}
+	require.NoError(t, err, "mutate.AppendLayers")
 
 	tmpTar, err := os.CreateTemp("", "test-image-*.tar")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { os.Remove(tmpTar.Name()) })
 
 	tag, _ := name.NewTag("test/image:latest")
-	if err := tarball.Write(tag, img, tmpTar); err != nil {
-		tmpTar.Close()
-		t.Fatalf("tarball.Write: %v", err)
-	}
+	err = tarball.Write(tag, img, tmpTar)
 	tmpTar.Close()
+	require.NoError(t, err, "tarball.Write")
 	return tmpTar.Name()
 }
 
@@ -99,32 +93,19 @@ func TestImportRoundTrip(t *testing.T) {
 	builder.store = NewStore(storeDir)
 
 	f, err := os.Open(tarPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer f.Close()
 
 	result, err := builder.Import(context.Background(), f, "myapp:v1")
-	if err != nil {
-		t.Fatalf("Import: %v", err)
-	}
+	require.NoError(t, err, "Import")
 
-	if result.RootfsPath == "" {
-		t.Fatal("RootfsPath is empty")
-	}
-	if !result.Cached {
-		t.Error("expected Cached=true from store")
-	}
-	if result.Digest == "" {
-		t.Error("Digest is empty")
-	}
-	if result.Size <= 0 {
-		t.Errorf("Size = %d, want > 0", result.Size)
-	}
+	require.NotEmpty(t, result.RootfsPath)
+	assert.True(t, result.Cached, "expected Cached=true from store")
+	assert.NotEmpty(t, result.Digest)
+	assert.Greater(t, result.Size, int64(0))
 
-	if _, err := os.Stat(result.RootfsPath); err != nil {
-		t.Fatalf("rootfs not found: %v", err)
-	}
+	_, err = os.Stat(result.RootfsPath)
+	require.NoError(t, err, "rootfs not found")
 }
 
 func TestImportStoresMetadata(t *testing.T) {
@@ -142,28 +123,16 @@ func TestImportStoresMetadata(t *testing.T) {
 	defer f.Close()
 
 	_, err := builder.Import(context.Background(), f, "imported:v2")
-	if err != nil {
-		t.Fatalf("Import: %v", err)
-	}
+	require.NoError(t, err, "Import")
 
 	storeResult, err := builder.store.Get("imported:v2")
-	if err != nil {
-		t.Fatalf("store.Get: %v", err)
-	}
-	if storeResult.Digest == "" {
-		t.Error("stored Digest is empty")
-	}
+	require.NoError(t, err, "store.Get")
+	assert.NotEmpty(t, storeResult.Digest)
 
 	images, err := builder.store.List()
-	if err != nil {
-		t.Fatalf("store.List: %v", err)
-	}
-	if len(images) != 1 {
-		t.Fatalf("store has %d images, want 1", len(images))
-	}
-	if images[0].Meta.Source != "import" {
-		t.Errorf("Source = %q, want %q", images[0].Meta.Source, "import")
-	}
+	require.NoError(t, err, "store.List")
+	require.Len(t, images, 1)
+	assert.Equal(t, "import", images[0].Meta.Source)
 }
 
 func TestImportOverwritesExisting(t *testing.T) {
@@ -177,26 +146,18 @@ func TestImportOverwritesExisting(t *testing.T) {
 	f1, _ := os.Open(tarPath1)
 	result1, err := builder.Import(context.Background(), f1, "app:latest")
 	f1.Close()
-	if err != nil {
-		t.Fatalf("Import v1: %v", err)
-	}
+	require.NoError(t, err, "Import v1")
 
 	tarPath2 := buildTestTarball(t, map[string]string{"v2.txt": "version2"})
 	f2, _ := os.Open(tarPath2)
 	result2, err := builder.Import(context.Background(), f2, "app:latest")
 	f2.Close()
-	if err != nil {
-		t.Fatalf("Import v2: %v", err)
-	}
+	require.NoError(t, err, "Import v2")
 
-	if result1.Digest == result2.Digest {
-		t.Error("expected different digests for different images")
-	}
+	assert.NotEqual(t, result1.Digest, result2.Digest, "expected different digests for different images")
 
 	images, _ := builder.store.List()
-	if len(images) != 1 {
-		t.Errorf("store has %d images, want 1 (overwritten)", len(images))
-	}
+	assert.Len(t, images, 1, "store should have 1 image (overwritten)")
 }
 
 func TestImportInvalidTarball(t *testing.T) {
@@ -206,9 +167,7 @@ func TestImportInvalidTarball(t *testing.T) {
 	builder.store = NewStore(t.TempDir())
 
 	_, err := builder.Import(context.Background(), strings.NewReader("not a tarball"), "bad:image")
-	if err == nil {
-		t.Fatal("expected error for invalid tarball, got nil")
-	}
+	require.Error(t, err, "expected error for invalid tarball")
 }
 
 func TestImportEmptyReader(t *testing.T) {
@@ -218,7 +177,5 @@ func TestImportEmptyReader(t *testing.T) {
 	builder.store = NewStore(t.TempDir())
 
 	_, err := builder.Import(context.Background(), strings.NewReader(""), "empty:image")
-	if err == nil {
-		t.Fatal("expected error for empty reader, got nil")
-	}
+	require.Error(t, err, "expected error for empty reader")
 }

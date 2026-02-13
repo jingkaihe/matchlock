@@ -3,6 +3,9 @@ package vfs
 import (
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOverlayProvider_ReadFromLower(t *testing.T) {
@@ -16,16 +19,12 @@ func TestOverlayProvider_ReadFromLower(t *testing.T) {
 	overlay := NewOverlayProvider(upper, lower)
 
 	h, err := overlay.Open("/file.txt", os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer h.Close()
 
 	buf := make([]byte, 100)
 	n, _ := h.Read(buf)
-	if string(buf[:n]) != "lower content" {
-		t.Errorf("Expected 'lower content', got %q", string(buf[:n]))
-	}
+	assert.Equal(t, "lower content", string(buf[:n]))
 }
 
 func TestOverlayProvider_WriteToUpper(t *testing.T) {
@@ -35,21 +34,15 @@ func TestOverlayProvider_WriteToUpper(t *testing.T) {
 	overlay := NewOverlayProvider(upper, lower)
 
 	h, err := overlay.Create("/new.txt", 0644)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
+	require.NoError(t, err)
 	h.Write([]byte("upper content"))
 	h.Close()
 
 	_, err = upper.Stat("/new.txt")
-	if err != nil {
-		t.Error("File should exist in upper layer")
-	}
+	require.NoError(t, err, "File should exist in upper layer")
 
 	_, err = lower.Stat("/new.txt")
-	if err == nil {
-		t.Error("File should not exist in lower layer")
-	}
+	require.Error(t, err, "File should not exist in lower layer")
 }
 
 func TestOverlayProvider_UpperShadowsLower(t *testing.T) {
@@ -71,9 +64,7 @@ func TestOverlayProvider_UpperShadowsLower(t *testing.T) {
 
 	buf := make([]byte, 100)
 	n, _ := h.Read(buf)
-	if string(buf[:n]) != "upper" {
-		t.Errorf("Expected 'upper', got %q", string(buf[:n]))
-	}
+	assert.Equal(t, "upper", string(buf[:n]))
 }
 
 func TestOverlayProvider_ReadDirMerged(t *testing.T) {
@@ -91,18 +82,15 @@ func TestOverlayProvider_ReadDirMerged(t *testing.T) {
 	overlay := NewOverlayProvider(upper, lower)
 
 	entries, err := overlay.ReadDir("/dir")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	names := make(map[string]bool)
 	for _, e := range entries {
 		names[e.Name()] = true
 	}
 
-	if !names["lower.txt"] || !names["upper.txt"] {
-		t.Error("Should see files from both layers")
-	}
+	assert.True(t, names["lower.txt"], "should see lower.txt")
+	assert.True(t, names["upper.txt"], "should see upper.txt")
 }
 
 func TestOverlayProvider_Mkdir(t *testing.T) {
@@ -111,14 +99,10 @@ func TestOverlayProvider_Mkdir(t *testing.T) {
 
 	overlay := NewOverlayProvider(upper, lower)
 
-	if err := overlay.Mkdir("/newdir", 0755); err != nil {
-		t.Fatalf("Mkdir failed: %v", err)
-	}
+	require.NoError(t, overlay.Mkdir("/newdir", 0755))
 
 	_, err := upper.Stat("/newdir")
-	if err != nil {
-		t.Error("Directory should exist in upper layer")
-	}
+	require.NoError(t, err, "Directory should exist in upper layer")
 }
 
 func TestOverlayProvider_NotReadonly(t *testing.T) {
@@ -126,7 +110,5 @@ func TestOverlayProvider_NotReadonly(t *testing.T) {
 	upper := NewMemoryProvider()
 	overlay := NewOverlayProvider(upper, lower)
 
-	if overlay.Readonly() {
-		t.Error("OverlayProvider should not be readonly")
-	}
+	assert.False(t, overlay.Readonly())
 }

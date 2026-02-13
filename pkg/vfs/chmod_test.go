@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMemoryProvider_Chmod_File(t *testing.T) {
@@ -11,28 +14,20 @@ func TestMemoryProvider_Chmod_File(t *testing.T) {
 	h, _ := mp.Create("/file.txt", 0644)
 	h.Close()
 
-	if err := mp.Chmod("/file.txt", 0755); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, mp.Chmod("/file.txt", 0755))
 
 	info, _ := mp.Stat("/file.txt")
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("mode = %o, want 0755", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }
 
 func TestMemoryProvider_Chmod_Dir(t *testing.T) {
 	mp := NewMemoryProvider()
 	mp.Mkdir("/dir", 0755)
 
-	if err := mp.Chmod("/dir", 0700); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, mp.Chmod("/dir", 0700))
 
 	info, _ := mp.Stat("/dir")
-	if info.Mode().Perm() != 0700 {
-		t.Errorf("mode = %o, want 0700", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
 func TestMemoryProvider_Chmod_DirDefaultMode(t *testing.T) {
@@ -40,17 +35,13 @@ func TestMemoryProvider_Chmod_DirDefaultMode(t *testing.T) {
 	mp.Mkdir("/dir", 0755)
 
 	info, _ := mp.Stat("/dir")
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("default mode = %o, want 0755", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }
 
 func TestMemoryProvider_Chmod_NonExistent(t *testing.T) {
 	mp := NewMemoryProvider()
 	err := mp.Chmod("/nope", 0644)
-	if err == nil {
-		t.Error("should fail for non-existent path")
-	}
+	require.Error(t, err)
 }
 
 func TestMemoryProvider_Chmod_PreservesAfterRename(t *testing.T) {
@@ -62,9 +53,7 @@ func TestMemoryProvider_Chmod_PreservesAfterRename(t *testing.T) {
 	mp.Rename("/src", "/renamed")
 
 	info, _ := mp.Stat("/renamed")
-	if info.Mode().Perm() != 0700 {
-		t.Errorf("mode after rename = %o, want 0700", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
 func TestMemoryProvider_Mkdir_StoresMode(t *testing.T) {
@@ -72,9 +61,7 @@ func TestMemoryProvider_Mkdir_StoresMode(t *testing.T) {
 	mp.Mkdir("/dir", 0700)
 
 	info, _ := mp.Stat("/dir")
-	if info.Mode().Perm() != 0700 {
-		t.Errorf("mode = %o, want 0700", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
 func TestOverlayProvider_Chmod_UpperFile(t *testing.T) {
@@ -84,14 +71,10 @@ func TestOverlayProvider_Chmod_UpperFile(t *testing.T) {
 	h.Close()
 
 	overlay := NewOverlayProvider(upper, lower)
-	if err := overlay.Chmod("/file.txt", 0755); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, overlay.Chmod("/file.txt", 0755))
 
 	info, _ := upper.Stat("/file.txt")
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("mode = %o, want 0755", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }
 
 func TestOverlayProvider_Chmod_CopiesUpFromLower(t *testing.T) {
@@ -103,18 +86,12 @@ func TestOverlayProvider_Chmod_CopiesUpFromLower(t *testing.T) {
 	h.Close()
 
 	overlay := NewOverlayProvider(upper, lower)
-	if err := overlay.Chmod("/file.txt", 0755); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, overlay.Chmod("/file.txt", 0755))
 
 	// File should now exist in upper with new mode
 	info, err := upper.Stat("/file.txt")
-	if err != nil {
-		t.Fatalf("file should exist in upper after copy-up: %v", err)
-	}
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("mode = %o, want 0755", info.Mode().Perm())
-	}
+	require.NoError(t, err, "file should exist in upper after copy-up")
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }
 
 func TestOverlayProvider_Chmod_NonExistent(t *testing.T) {
@@ -123,9 +100,7 @@ func TestOverlayProvider_Chmod_NonExistent(t *testing.T) {
 	overlay := NewOverlayProvider(upper, lower)
 
 	err := overlay.Chmod("/nope", 0644)
-	if err == nil {
-		t.Error("should fail for non-existent path")
-	}
+	require.Error(t, err)
 }
 
 func TestRealFSProvider_Chmod(t *testing.T) {
@@ -133,19 +108,13 @@ func TestRealFSProvider_Chmod(t *testing.T) {
 	p := NewRealFSProvider(dir)
 
 	f, err := os.Create(filepath.Join(dir, "file.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	f.Close()
 
-	if err := p.Chmod("/file.txt", 0700); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, p.Chmod("/file.txt", 0700))
 
 	info, _ := p.Stat("/file.txt")
-	if info.Mode().Perm() != 0700 {
-		t.Errorf("mode = %o, want 0700", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
 func TestRealFSProvider_Chmod_Dir(t *testing.T) {
@@ -154,14 +123,10 @@ func TestRealFSProvider_Chmod_Dir(t *testing.T) {
 
 	os.Mkdir(filepath.Join(dir, "subdir"), 0755)
 
-	if err := p.Chmod("/subdir", 0700); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, p.Chmod("/subdir", 0700))
 
 	info, _ := p.Stat("/subdir")
-	if info.Mode().Perm() != 0700 {
-		t.Errorf("mode = %o, want 0700", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
 func TestRealFSProvider_Chmod_NonExistent(t *testing.T) {
@@ -169,9 +134,7 @@ func TestRealFSProvider_Chmod_NonExistent(t *testing.T) {
 	p := NewRealFSProvider(dir)
 
 	err := p.Chmod("/nope", 0644)
-	if err == nil {
-		t.Error("should fail for non-existent path")
-	}
+	require.Error(t, err)
 }
 
 func TestReadonlyProvider_Chmod_Blocked(t *testing.T) {
@@ -181,9 +144,7 @@ func TestReadonlyProvider_Chmod_Blocked(t *testing.T) {
 
 	ro := NewReadonlyProvider(base)
 	err := ro.Chmod("/file.txt", 0755)
-	if err == nil {
-		t.Error("Chmod should fail on readonly provider")
-	}
+	require.Error(t, err)
 }
 
 func TestRouterProvider_Chmod(t *testing.T) {
@@ -193,12 +154,8 @@ func TestRouterProvider_Chmod(t *testing.T) {
 
 	router := NewMountRouter(map[string]Provider{"/mnt": mp})
 
-	if err := router.Chmod("/mnt/file.txt", 0755); err != nil {
-		t.Fatalf("Chmod failed: %v", err)
-	}
+	require.NoError(t, router.Chmod("/mnt/file.txt", 0755))
 
 	info, _ := mp.Stat("/file.txt")
-	if info.Mode().Perm() != 0755 {
-		t.Errorf("mode = %o, want 0755", info.Mode().Perm())
-	}
+	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
 }

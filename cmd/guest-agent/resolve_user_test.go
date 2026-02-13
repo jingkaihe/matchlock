@@ -6,6 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const testPasswd = `root:x:0:0:root:/root:/bin/bash
@@ -27,9 +30,7 @@ docker:x:999:testuser
 func writeTempFile(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 	return path
 }
 
@@ -52,18 +53,10 @@ func TestLookupPasswdByName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			uid, gid, dir, ok := lookupPasswdByNameFrom(tt.name, passwd)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if uid != tt.wantUID {
-				t.Errorf("uid = %d, want %d", uid, tt.wantUID)
-			}
-			if gid != tt.wantGID {
-				t.Errorf("gid = %d, want %d", gid, tt.wantGID)
-			}
-			if dir != tt.wantDir {
-				t.Errorf("dir = %q, want %q", dir, tt.wantDir)
-			}
+			require.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantUID, uid)
+			assert.Equal(t, tt.wantGID, gid)
+			assert.Equal(t, tt.wantDir, dir)
 		})
 	}
 }
@@ -71,16 +64,12 @@ func TestLookupPasswdByName(t *testing.T) {
 func TestLookupPasswdByName_SkipsComments(t *testing.T) {
 	passwd := writeTempFile(t, "passwd", "# root:x:0:0:root:/root:/bin/bash\n")
 	_, _, _, ok := lookupPasswdByNameFrom("root", passwd)
-	if ok {
-		t.Error("should not match commented-out line")
-	}
+	assert.False(t, ok, "should not match commented-out line")
 }
 
 func TestLookupPasswdByName_MissingFile(t *testing.T) {
 	_, _, _, ok := lookupPasswdByNameFrom("root", "/nonexistent/passwd")
-	if ok {
-		t.Error("should return false for missing file")
-	}
+	assert.False(t, ok, "should return false for missing file")
 }
 
 func TestLookupPasswdByUID(t *testing.T) {
@@ -101,15 +90,9 @@ func TestLookupPasswdByUID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run("", func(t *testing.T) {
 			gid, shell, dir := lookupPasswdByUIDFrom(tt.uid, passwd)
-			if gid != tt.wantGID {
-				t.Errorf("gid = %d, want %d", gid, tt.wantGID)
-			}
-			if dir != tt.wantDir {
-				t.Errorf("dir = %q, want %q", dir, tt.wantDir)
-			}
-			if shell != tt.wantSh {
-				t.Errorf("shell = %q, want %q", shell, tt.wantSh)
-			}
+			assert.Equal(t, tt.wantGID, gid)
+			assert.Equal(t, tt.wantDir, dir)
+			assert.Equal(t, tt.wantSh, shell)
 		})
 	}
 }
@@ -117,40 +100,24 @@ func TestLookupPasswdByUID(t *testing.T) {
 func TestLookupPasswdByUID_NotFound_DefaultsGIDToUID(t *testing.T) {
 	passwd := writeTempFile(t, "passwd", testPasswd)
 	gid, shell, dir := lookupPasswdByUIDFrom(9999, passwd)
-	if gid != 9999 {
-		t.Errorf("gid should default to uid 9999, got %d", gid)
-	}
-	if shell != "" {
-		t.Errorf("shell should be empty, got %q", shell)
-	}
-	if dir != "" {
-		t.Errorf("dir should be empty, got %q", dir)
-	}
+	assert.Equal(t, 9999, gid, "gid should default to uid 9999")
+	assert.Empty(t, shell)
+	assert.Empty(t, dir)
 }
 
 func TestLookupPasswdByUID_SkipsComments(t *testing.T) {
 	passwd := writeTempFile(t, "passwd", "# commented:x:1000:1000:Commented:/home/c:/bin/sh\nreal:x:1000:1000:Real:/home/real:/bin/bash\n")
 	gid, shell, dir := lookupPasswdByUIDFrom(1000, passwd)
-	if dir != "/home/real" {
-		t.Errorf("dir = %q, want /home/real (should skip commented line)", dir)
-	}
-	if gid != 1000 {
-		t.Errorf("gid = %d, want 1000", gid)
-	}
-	if shell != "/bin/bash" {
-		t.Errorf("shell = %q, want /bin/bash", shell)
-	}
+	assert.Equal(t, "/home/real", dir, "should skip commented line")
+	assert.Equal(t, 1000, gid)
+	assert.Equal(t, "/bin/bash", shell)
 }
 
 func TestResolveGID_Numeric(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 	gid, err := resolveGIDFrom("42", group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gid != 42 {
-		t.Errorf("gid = %d, want 42", gid)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 42, gid)
 }
 
 func TestResolveGID_ByName(t *testing.T) {
@@ -170,11 +137,11 @@ func TestResolveGID_ByName(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gid, err := resolveGIDFrom(tt.name, group)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
-			}
-			if !tt.wantErr && gid != tt.wantGID {
-				t.Errorf("gid = %d, want %d", gid, tt.wantGID)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantGID, gid)
 			}
 		})
 	}
@@ -183,9 +150,7 @@ func TestResolveGID_ByName(t *testing.T) {
 func TestResolveGID_SkipsComments(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 	_, err := resolveGIDFrom("comment", group)
-	if err == nil {
-		t.Error("should not match comment line")
-	}
+	assert.Error(t, err, "should not match comment line")
 }
 
 func TestResolveUser_ByUsername(t *testing.T) {
@@ -193,12 +158,10 @@ func TestResolveUser_ByUsername(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	uid, gid, dir, err := resolveUserFrom("testuser", passwd, group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid != 1000 || gid != 1000 || dir != "/home/testuser" {
-		t.Errorf("got uid=%d gid=%d dir=%q, want 1000/1000//home/testuser", uid, gid, dir)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1000, uid)
+	assert.Equal(t, 1000, gid)
+	assert.Equal(t, "/home/testuser", dir)
 }
 
 func TestResolveUser_ByNumericUID(t *testing.T) {
@@ -206,12 +169,10 @@ func TestResolveUser_ByNumericUID(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	uid, gid, dir, err := resolveUserFrom("1000", passwd, group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid != 1000 || gid != 1000 || dir != "/home/testuser" {
-		t.Errorf("got uid=%d gid=%d dir=%q", uid, gid, dir)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1000, uid)
+	assert.Equal(t, 1000, gid)
+	assert.Equal(t, "/home/testuser", dir)
 }
 
 func TestResolveUser_ByNumericUID_NotInPasswd(t *testing.T) {
@@ -219,18 +180,10 @@ func TestResolveUser_ByNumericUID_NotInPasswd(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	uid, gid, dir, err := resolveUserFrom("9999", passwd, group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid != 9999 {
-		t.Errorf("uid = %d, want 9999", uid)
-	}
-	if gid != 9999 {
-		t.Errorf("gid should default to uid (9999), got %d", gid)
-	}
-	if dir != "" {
-		t.Errorf("dir should be empty, got %q", dir)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 9999, uid)
+	assert.Equal(t, 9999, gid, "gid should default to uid")
+	assert.Empty(t, dir)
 }
 
 func TestResolveUser_UIDColonGID_Numeric(t *testing.T) {
@@ -238,12 +191,9 @@ func TestResolveUser_UIDColonGID_Numeric(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	uid, gid, _, err := resolveUserFrom("1000:65534", passwd, group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid != 1000 || gid != 65534 {
-		t.Errorf("got uid=%d gid=%d, want 1000/65534", uid, gid)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1000, uid)
+	assert.Equal(t, 65534, gid)
 }
 
 func TestResolveUser_UIDColonGID_ByNames(t *testing.T) {
@@ -251,12 +201,9 @@ func TestResolveUser_UIDColonGID_ByNames(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	uid, gid, _, err := resolveUserFrom("testuser:docker", passwd, group)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if uid != 1000 || gid != 999 {
-		t.Errorf("got uid=%d gid=%d, want 1000/999", uid, gid)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1000, uid)
+	assert.Equal(t, 999, gid)
 }
 
 func TestResolveUser_NotFound(t *testing.T) {
@@ -264,9 +211,7 @@ func TestResolveUser_NotFound(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	_, _, _, err := resolveUserFrom("nonexistent", passwd, group)
-	if err == nil {
-		t.Error("should fail for unknown username")
-	}
+	assert.Error(t, err, "should fail for unknown username")
 }
 
 func TestResolveUser_BadGIDInColonFormat(t *testing.T) {
@@ -274,9 +219,7 @@ func TestResolveUser_BadGIDInColonFormat(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	_, _, _, err := resolveUserFrom("1000:badgroup", passwd, group)
-	if err == nil {
-		t.Error("should fail for unknown group name")
-	}
+	assert.Error(t, err, "should fail for unknown group name")
 }
 
 func TestResolveUser_BadUIDInColonFormat(t *testing.T) {
@@ -284,7 +227,5 @@ func TestResolveUser_BadUIDInColonFormat(t *testing.T) {
 	group := writeTempFile(t, "group", testGroup)
 
 	_, _, _, err := resolveUserFrom("baduser:1000", passwd, group)
-	if err == nil {
-		t.Error("should fail for unknown user name in uid:gid format")
-	}
+	assert.Error(t, err, "should fail for unknown user name in uid:gid format")
 }

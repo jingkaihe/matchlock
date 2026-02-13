@@ -2,24 +2,26 @@ package api
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestComposeCommand_NilImageConfig(t *testing.T) {
 	var ic *ImageConfig
 	got := ic.ComposeCommand([]string{"echo", "hello"})
-	assertSliceEqual(t, got, []string{"echo", "hello"})
+	assert.Equal(t, []string{"echo", "hello"}, got)
 }
 
 func TestComposeCommand_EntrypointOnly(t *testing.T) {
 	ic := &ImageConfig{Entrypoint: []string{"python3"}}
 	got := ic.ComposeCommand(nil)
-	assertSliceEqual(t, got, []string{"python3"})
+	assert.Equal(t, []string{"python3"}, got)
 }
 
 func TestComposeCommand_CmdOnly(t *testing.T) {
 	ic := &ImageConfig{Cmd: []string{"sh"}}
 	got := ic.ComposeCommand(nil)
-	assertSliceEqual(t, got, []string{"sh"})
+	assert.Equal(t, []string{"sh"}, got)
 }
 
 func TestComposeCommand_EntrypointAndCmd(t *testing.T) {
@@ -28,7 +30,7 @@ func TestComposeCommand_EntrypointAndCmd(t *testing.T) {
 		Cmd:        []string{"-c", "print('hi')"},
 	}
 	got := ic.ComposeCommand(nil)
-	assertSliceEqual(t, got, []string{"python3", "-c", "print('hi')"})
+	assert.Equal(t, []string{"python3", "-c", "print('hi')"}, got)
 }
 
 func TestComposeCommand_UserArgsReplaceCmd(t *testing.T) {
@@ -37,19 +39,19 @@ func TestComposeCommand_UserArgsReplaceCmd(t *testing.T) {
 		Cmd:        []string{"-c", "print('hi')"},
 	}
 	got := ic.ComposeCommand([]string{"script.py"})
-	assertSliceEqual(t, got, []string{"python3", "script.py"})
+	assert.Equal(t, []string{"python3", "script.py"}, got)
 }
 
 func TestComposeCommand_UserArgsNoCmdNoEntrypoint(t *testing.T) {
 	ic := &ImageConfig{}
 	got := ic.ComposeCommand([]string{"echo", "hello"})
-	assertSliceEqual(t, got, []string{"echo", "hello"})
+	assert.Equal(t, []string{"echo", "hello"}, got)
 }
 
 func TestComposeCommand_EmptyEntrypointAndCmd(t *testing.T) {
 	ic := &ImageConfig{}
 	got := ic.ComposeCommand(nil)
-	assertSliceEqual(t, got, nil)
+	assert.Nil(t, got)
 }
 
 func TestComposeCommand_NoMutation(t *testing.T) {
@@ -61,8 +63,8 @@ func TestComposeCommand_NoMutation(t *testing.T) {
 	_ = ic.ComposeCommand([]string{"script.py"})
 	_ = ic.ComposeCommand([]string{"other.py"})
 
-	assertSliceEqual(t, ic.Entrypoint, []string{"python3"})
-	assertSliceEqual(t, ic.Cmd, []string{"-c", "print('hi')"})
+	assert.Equal(t, []string{"python3"}, ic.Entrypoint)
+	assert.Equal(t, []string{"-c", "print('hi')"}, ic.Cmd)
 }
 
 func TestComposeCommand_RepeatedCallsConsistent(t *testing.T) {
@@ -73,18 +75,6 @@ func TestComposeCommand_RepeatedCallsConsistent(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		got := ic.ComposeCommand(nil)
-		assertSliceEqual(t, got, []string{"python3", "app.py"})
-	}
-}
-
-func assertSliceEqual(t *testing.T, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), want, len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
-		}
+		assert.Equal(t, []string{"python3", "app.py"}, got)
 	}
 }

@@ -2,14 +2,15 @@ package sdk
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
 	b := New("alpine:latest")
 	opts := b.Options()
-	if opts.Image != "alpine:latest" {
-		t.Fatalf("expected image alpine:latest, got %s", opts.Image)
-	}
+	require.Equal(t, "alpine:latest", opts.Image)
 }
 
 func TestBuilderResources(t *testing.T) {
@@ -20,18 +21,10 @@ func TestBuilderResources(t *testing.T) {
 		WithTimeout(600).
 		Options()
 
-	if opts.CPUs != 4 {
-		t.Fatalf("expected 4 CPUs, got %d", opts.CPUs)
-	}
-	if opts.MemoryMB != 2048 {
-		t.Fatalf("expected 2048 MB memory, got %d", opts.MemoryMB)
-	}
-	if opts.DiskSizeMB != 10240 {
-		t.Fatalf("expected 10240 MB disk, got %d", opts.DiskSizeMB)
-	}
-	if opts.TimeoutSeconds != 600 {
-		t.Fatalf("expected 600s timeout, got %d", opts.TimeoutSeconds)
-	}
+	require.Equal(t, 4, opts.CPUs)
+	require.Equal(t, 2048, opts.MemoryMB)
+	require.Equal(t, 10240, opts.DiskSizeMB)
+	require.Equal(t, 600, opts.TimeoutSeconds)
 }
 
 func TestBuilderAllowHost(t *testing.T) {
@@ -41,14 +34,7 @@ func TestBuilderAllowHost(t *testing.T) {
 		Options()
 
 	expected := []string{"api.openai.com", "dl-cdn.alpinelinux.org", "*.github.com"}
-	if len(opts.AllowedHosts) != len(expected) {
-		t.Fatalf("expected %d hosts, got %d", len(expected), len(opts.AllowedHosts))
-	}
-	for i, h := range expected {
-		if opts.AllowedHosts[i] != h {
-			t.Fatalf("expected host %s at index %d, got %s", h, i, opts.AllowedHosts[i])
-		}
-	}
+	require.Equal(t, expected, opts.AllowedHosts)
 }
 
 func TestBuilderAddSecret(t *testing.T) {
@@ -57,33 +43,28 @@ func TestBuilderAddSecret(t *testing.T) {
 		AddSecret("TOKEN", "tok-456", "*.example.com", "api.example.com").
 		Options()
 
-	if len(opts.Secrets) != 2 {
-		t.Fatalf("expected 2 secrets, got %d", len(opts.Secrets))
-	}
+	require.Len(t, opts.Secrets, 2)
 
 	s := opts.Secrets[0]
-	if s.Name != "API_KEY" || s.Value != "sk-123" || len(s.Hosts) != 1 || s.Hosts[0] != "api.openai.com" {
-		t.Fatalf("unexpected first secret: %+v", s)
-	}
+	assert.Equal(t, "API_KEY", s.Name)
+	assert.Equal(t, "sk-123", s.Value)
+	require.Len(t, s.Hosts, 1)
+	assert.Equal(t, "api.openai.com", s.Hosts[0])
 
 	s = opts.Secrets[1]
-	if s.Name != "TOKEN" || s.Value != "tok-456" || len(s.Hosts) != 2 {
-		t.Fatalf("unexpected second secret: %+v", s)
-	}
+	assert.Equal(t, "TOKEN", s.Name)
+	assert.Equal(t, "tok-456", s.Value)
+	require.Len(t, s.Hosts, 2)
 }
 
 func TestBuilderBlockPrivateIPs(t *testing.T) {
 	opts := New("alpine:latest").BlockPrivateIPs().Options()
-	if !opts.BlockPrivateIPs {
-		t.Fatal("expected BlockPrivateIPs to be true")
-	}
+	require.True(t, opts.BlockPrivateIPs)
 }
 
 func TestBuilderWorkspace(t *testing.T) {
 	opts := New("alpine:latest").WithWorkspace("/home/user/code").Options()
-	if opts.Workspace != "/home/user/code" {
-		t.Fatalf("expected workspace /home/user/code, got %s", opts.Workspace)
-	}
+	require.Equal(t, "/home/user/code", opts.Workspace)
 }
 
 func TestBuilderDNSServers(t *testing.T) {
@@ -91,12 +72,7 @@ func TestBuilderDNSServers(t *testing.T) {
 		WithDNSServers("1.1.1.1", "1.0.0.1").
 		Options()
 
-	if len(opts.DNSServers) != 2 {
-		t.Fatalf("expected 2 DNS servers, got %d", len(opts.DNSServers))
-	}
-	if opts.DNSServers[0] != "1.1.1.1" || opts.DNSServers[1] != "1.0.0.1" {
-		t.Fatalf("unexpected DNS servers: %v", opts.DNSServers)
-	}
+	require.Equal(t, []string{"1.1.1.1", "1.0.0.1"}, opts.DNSServers)
 }
 
 func TestBuilderDNSServersChained(t *testing.T) {
@@ -105,19 +81,12 @@ func TestBuilderDNSServersChained(t *testing.T) {
 		WithDNSServers("8.8.8.8").
 		Options()
 
-	if len(opts.DNSServers) != 2 {
-		t.Fatalf("expected 2 DNS servers after chaining, got %d", len(opts.DNSServers))
-	}
-	if opts.DNSServers[0] != "1.1.1.1" || opts.DNSServers[1] != "8.8.8.8" {
-		t.Fatalf("unexpected DNS servers: %v", opts.DNSServers)
-	}
+	require.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, opts.DNSServers)
 }
 
 func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	opts := New("alpine:latest").Options()
-	if len(opts.DNSServers) != 0 {
-		t.Fatalf("expected no DNS servers by default, got %v", opts.DNSServers)
-	}
+	require.Empty(t, opts.DNSServers)
 }
 
 func TestBuilderMounts(t *testing.T) {
@@ -128,29 +97,24 @@ func TestBuilderMounts(t *testing.T) {
 		MountOverlay("/workspace", "/host/workspace").
 		Options()
 
-	if len(opts.Mounts) != 4 {
-		t.Fatalf("expected 4 mounts, got %d", len(opts.Mounts))
-	}
+	require.Len(t, opts.Mounts, 4)
 
 	m := opts.Mounts["/data"]
-	if m.Type != "real_fs" || m.HostPath != "/host/data" || m.Readonly {
-		t.Fatalf("unexpected /data mount: %+v", m)
-	}
+	assert.Equal(t, "real_fs", m.Type)
+	assert.Equal(t, "/host/data", m.HostPath)
+	assert.False(t, m.Readonly)
 
 	m = opts.Mounts["/config"]
-	if m.Type != "real_fs" || m.HostPath != "/host/config" || !m.Readonly {
-		t.Fatalf("unexpected /config mount: %+v", m)
-	}
+	assert.Equal(t, "real_fs", m.Type)
+	assert.Equal(t, "/host/config", m.HostPath)
+	assert.True(t, m.Readonly)
 
 	m = opts.Mounts["/tmp/scratch"]
-	if m.Type != "memory" {
-		t.Fatalf("unexpected /tmp/scratch mount: %+v", m)
-	}
+	assert.Equal(t, "memory", m.Type)
 
 	m = opts.Mounts["/workspace"]
-	if m.Type != "overlay" || m.HostPath != "/host/workspace" {
-		t.Fatalf("unexpected /workspace mount: %+v", m)
-	}
+	assert.Equal(t, "overlay", m.Type)
+	assert.Equal(t, "/host/workspace", m.HostPath)
 }
 
 func TestBuilderFullChain(t *testing.T) {
@@ -165,31 +129,13 @@ func TestBuilderFullChain(t *testing.T) {
 		WithTimeout(120).
 		Options()
 
-	if opts.Image != "python:3.12-alpine" {
-		t.Fatalf("wrong image: %s", opts.Image)
-	}
-	if opts.CPUs != 2 {
-		t.Fatal("wrong cpus")
-	}
-	if opts.MemoryMB != 1024 {
-		t.Fatal("wrong memory")
-	}
-	if len(opts.AllowedHosts) != 2 {
-		t.Fatal("wrong hosts count")
-	}
-	if len(opts.Secrets) != 1 {
-		t.Fatal("wrong secrets count")
-	}
-	if !opts.BlockPrivateIPs {
-		t.Fatal("block private IPs not set")
-	}
-	if opts.Workspace != "/code" {
-		t.Fatal("wrong workspace")
-	}
-	if len(opts.Mounts) != 1 {
-		t.Fatal("wrong mounts count")
-	}
-	if opts.TimeoutSeconds != 120 {
-		t.Fatal("wrong timeout")
-	}
+	require.Equal(t, "python:3.12-alpine", opts.Image)
+	require.Equal(t, 2, opts.CPUs)
+	require.Equal(t, 1024, opts.MemoryMB)
+	require.Len(t, opts.AllowedHosts, 2)
+	require.Len(t, opts.Secrets, 1)
+	require.True(t, opts.BlockPrivateIPs)
+	require.Equal(t, "/code", opts.Workspace)
+	require.Len(t, opts.Mounts, 1)
+	require.Equal(t, 120, opts.TimeoutSeconds)
 }

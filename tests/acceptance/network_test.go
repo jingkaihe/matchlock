@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // launchAlpineWithNetwork creates a sandbox with network policy configured.
 func launchAlpineWithNetwork(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	t.Helper()
 	client, err := sdk.NewClient(matchlockConfig(t))
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	require.NoError(t, err, "NewClient")
 
 	t.Cleanup(func() {
 		client.Close(0)
@@ -24,9 +24,7 @@ func launchAlpineWithNetwork(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Cli
 	})
 
 	_, err = client.Launch(builder)
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
+	require.NoError(t, err, "Launch")
 
 	return client
 }
@@ -42,14 +40,10 @@ func TestAllowlistBlocksHTTP(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1 || true")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if strings.Contains(combined, `"url"`) {
-		t.Errorf("expected request to httpbin.org to be blocked, but it succeeded: %s", combined)
-	}
+	assert.NotContains(t, combined, `"url"`, "expected request to httpbin.org to be blocked")
 }
 
 func TestAllowlistPermitsHTTP(t *testing.T) {
@@ -59,14 +53,10 @@ func TestAllowlistPermitsHTTP(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if !strings.Contains(combined, `"url"`) {
-		t.Errorf("expected request to httpbin.org to succeed, got: %s", combined)
-	}
+	assert.Contains(t, combined, `"url"`, "expected request to httpbin.org to succeed")
 }
 
 func TestAllowlistBlocksHTTPS(t *testing.T) {
@@ -76,14 +66,10 @@ func TestAllowlistBlocksHTTPS(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1 || true")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if strings.Contains(combined, `"url"`) {
-		t.Errorf("expected HTTPS request to httpbin.org to be blocked, but it succeeded: %s", combined)
-	}
+	assert.NotContains(t, combined, `"url"`, "expected HTTPS request to httpbin.org to be blocked")
 }
 
 func TestAllowlistPermitsHTTPS(t *testing.T) {
@@ -93,14 +79,10 @@ func TestAllowlistPermitsHTTPS(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if !strings.Contains(combined, `"url"`) {
-		t.Errorf("expected HTTPS request to httpbin.org to succeed, got: %s", combined)
-	}
+	assert.Contains(t, combined, `"url"`, "expected HTTPS request to httpbin.org to succeed")
 }
 
 func TestAllowlistGlobPattern(t *testing.T) {
@@ -110,14 +92,10 @@ func TestAllowlistGlobPattern(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if !strings.Contains(combined, `"url"`) {
-		t.Errorf("expected glob *.org to allow httpbin.org, got: %s", combined)
-	}
+	assert.Contains(t, combined, `"url"`, "expected glob *.org to allow httpbin.org")
 }
 
 func TestAllowlistMultipleHosts(t *testing.T) {
@@ -127,20 +105,12 @@ func TestAllowlistMultipleHosts(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec httpbin.org: %v", err)
-	}
-	if !strings.Contains(result.Stdout+result.Stderr, `"url"`) {
-		t.Errorf("expected httpbin.org to be allowed")
-	}
+	require.NoError(t, err, "Exec httpbin.org")
+	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected httpbin.org to be allowed")
 
 	result2, err := client.Exec(context.Background(), "wget -q -O - http://example.com/ 2>&1")
-	if err != nil {
-		t.Fatalf("Exec example.com: %v", err)
-	}
-	if !strings.Contains(result2.Stdout+result2.Stderr, "Example Domain") {
-		t.Errorf("expected example.com to be allowed, got: %s", result2.Stdout+result2.Stderr)
-	}
+	require.NoError(t, err, "Exec example.com")
+	assert.Contains(t, result2.Stdout+result2.Stderr, "Example Domain", "expected example.com to be allowed")
 }
 
 func TestNoAllowlistPermitsAll(t *testing.T) {
@@ -151,13 +121,9 @@ func TestNoAllowlistPermitsAll(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout+result.Stderr, `"url"`) {
-		t.Errorf("expected open allowlist to permit httpbin.org, got: %s", result.Stdout+result.Stderr)
-	}
+	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected open allowlist to permit httpbin.org")
 }
 
 // ---------------------------------------------------------------------------
@@ -176,13 +142,9 @@ func TestSecretInjectedInHTTPSHeader(t *testing.T) {
 	// The guest sees a placeholder env var. Use it in a request header
 	// and verify the MITM proxy replaces it with the real value.
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $MY_API_KEY" https://httpbin.org/headers 2>&1'`)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, secretValue) {
-		t.Errorf("expected secret value to be injected in HTTPS header, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, secretValue, "expected secret value to be injected in HTTPS header")
 }
 
 func TestSecretInjectedInHTTPHeader(t *testing.T) {
@@ -195,13 +157,9 @@ func TestSecretInjectedInHTTPHeader(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "X-Api-Key: $HTTP_KEY" http://httpbin.org/headers 2>&1'`)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, secretValue) {
-		t.Errorf("expected secret value to be injected in HTTP header, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, secretValue, "expected secret value to be injected in HTTP header")
 }
 
 func TestSecretPlaceholderNotExposedInGuest(t *testing.T) {
@@ -215,17 +173,11 @@ func TestSecretPlaceholderNotExposedInGuest(t *testing.T) {
 
 	// The env var in the guest should be a placeholder, not the real value
 	result, err := client.Exec(context.Background(), "sh -c 'echo $SECRET_VAR'")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	envVal := strings.TrimSpace(result.Stdout)
-	if envVal == secretValue {
-		t.Errorf("guest should see placeholder, not real secret value")
-	}
-	if !strings.HasPrefix(envVal, "SANDBOX_SECRET_") {
-		t.Errorf("expected placeholder starting with SANDBOX_SECRET_, got: %q", envVal)
-	}
+	assert.NotEqual(t, secretValue, envVal, "guest should see placeholder, not real secret value")
+	assert.True(t, strings.HasPrefix(envVal, "SANDBOX_SECRET_"), "expected placeholder starting with SANDBOX_SECRET_, got: %q", envVal)
 }
 
 func TestSecretBlockedOnUnauthorizedHost(t *testing.T) {
@@ -240,16 +192,12 @@ func TestSecretBlockedOnUnauthorizedHost(t *testing.T) {
 	// Attempt to send the secret placeholder to httpbin.org (unauthorized for this secret).
 	// The policy engine should detect the placeholder and block the request.
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $LEAK_KEY" http://httpbin.org/headers 2>&1 || true'`)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
-	if strings.Contains(combined, secretValue) {
-		t.Errorf("secret value was leaked to unauthorized host httpbin.org: %s", combined)
-	}
-	if strings.Contains(combined, `"headers"`) && strings.Contains(combined, `Authorization`) {
-		t.Errorf("request with secret placeholder to unauthorized host should have been blocked: %s", combined)
+	assert.NotContains(t, combined, secretValue, "secret value was leaked to unauthorized host httpbin.org")
+	if strings.Contains(combined, `"headers"`) {
+		assert.NotContains(t, combined, `Authorization`, "request with secret placeholder to unauthorized host should have been blocked")
 	}
 }
 
@@ -265,16 +213,10 @@ func TestMultipleSecretsMultipleHosts(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "X-Key-One: $KEY_ONE" --header "X-Key-Two: $KEY_TWO" https://httpbin.org/headers 2>&1'`)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, secret1) {
-		t.Errorf("expected first secret to be injected, got: %s", result.Stdout)
-	}
-	if !strings.Contains(result.Stdout, secret2) {
-		t.Errorf("expected second secret to be injected, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, secret1, "expected first secret to be injected")
+	assert.Contains(t, result.Stdout, secret2, "expected second secret to be injected")
 }
 
 func TestSecretInjectedInQueryParam(t *testing.T) {
@@ -288,13 +230,9 @@ func TestSecretInjectedInQueryParam(t *testing.T) {
 
 	// Send secret as a query parameter — the MITM should replace the placeholder in the URL
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - "http://httpbin.org/get?api_key=$QP_KEY" 2>&1'`)
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, secretValue) {
-		t.Errorf("expected secret in query param to be replaced, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, secretValue, "expected secret in query param to be replaced")
 }
 
 // ---------------------------------------------------------------------------
@@ -309,19 +247,11 @@ func TestCustomDNSServersInResolvConf(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "cat /etc/resolv.conf")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, "1.1.1.1") {
-		t.Errorf("resolv.conf should contain 1.1.1.1, got: %s", result.Stdout)
-	}
-	if !strings.Contains(result.Stdout, "1.0.0.1") {
-		t.Errorf("resolv.conf should contain 1.0.0.1, got: %s", result.Stdout)
-	}
-	if strings.Contains(result.Stdout, "8.8.8.8") {
-		t.Errorf("resolv.conf should NOT contain default 8.8.8.8 when custom DNS is set, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, "1.1.1.1")
+	assert.Contains(t, result.Stdout, "1.0.0.1")
+	assert.NotContains(t, result.Stdout, "8.8.8.8", "resolv.conf should NOT contain default 8.8.8.8 when custom DNS is set")
 }
 
 func TestDefaultDNSServersInResolvConf(t *testing.T) {
@@ -331,16 +261,10 @@ func TestDefaultDNSServersInResolvConf(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "cat /etc/resolv.conf")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout, "8.8.8.8") {
-		t.Errorf("default resolv.conf should contain 8.8.8.8, got: %s", result.Stdout)
-	}
-	if !strings.Contains(result.Stdout, "8.8.4.4") {
-		t.Errorf("default resolv.conf should contain 8.8.4.4, got: %s", result.Stdout)
-	}
+	assert.Contains(t, result.Stdout, "8.8.8.8")
+	assert.Contains(t, result.Stdout, "8.8.4.4")
 }
 
 func TestCustomDNSServersStillResolveDomains(t *testing.T) {
@@ -351,13 +275,9 @@ func TestCustomDNSServersStillResolveDomains(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout+result.Stderr, `"url"`) {
-		t.Errorf("expected DNS resolution and HTTP request to succeed with custom DNS, got: %s", result.Stdout+result.Stderr)
-	}
+	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected DNS resolution and HTTP request to succeed with custom DNS")
 }
 
 // ---------------------------------------------------------------------------
@@ -371,13 +291,9 @@ func TestPassthroughBlocksUnallowedHost(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -T 5 -O - http://httpbin.org/get 2>&1 || true")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if strings.Contains(result.Stdout+result.Stderr, `"url"`) {
-		t.Errorf("expected request to blocked host to fail, got: %s", result.Stdout+result.Stderr)
-	}
+	assert.NotContains(t, result.Stdout+result.Stderr, `"url"`, "expected request to blocked host to fail")
 }
 
 func TestPassthroughAllowsPermittedHost(t *testing.T) {
@@ -387,13 +303,9 @@ func TestPassthroughAllowsPermittedHost(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
-	if !strings.Contains(result.Stdout+result.Stderr, `"url"`) {
-		t.Errorf("expected request to allowed host to succeed, got: %s", result.Stdout+result.Stderr)
-	}
+	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected request to allowed host to succeed")
 }
 
 // ---------------------------------------------------------------------------
@@ -407,9 +319,7 @@ func TestUDPNonDNSBlocked(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "sh -c 'echo test | timeout 3 nc -u -w 1 8.8.8.8 9999 2>&1; echo exit_code=$?'")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
 	if strings.Contains(combined, "not found") {
@@ -426,23 +336,16 @@ func TestDNSResolutionWorksWithInterception(t *testing.T) {
 	client := launchAlpineWithNetwork(t, sandbox)
 
 	result, err := client.Exec(context.Background(), "nslookup httpbin.org 2>&1 || true")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr
 	if strings.Contains(combined, "not found") {
 		result2, err := client.Exec(context.Background(), "wget -q -O - http://httpbin.org/get 2>&1")
-		if err != nil {
-			t.Fatalf("Exec: %v", err)
-		}
-		if !strings.Contains(result2.Stdout+result2.Stderr, `"url"`) {
-			t.Errorf("expected DNS resolution to work for allowed host, got: %s", result2.Stdout+result2.Stderr)
-		}
+		require.NoError(t, err, "Exec")
+		assert.Contains(t, result2.Stdout+result2.Stderr, `"url"`, "expected DNS resolution to work for allowed host")
 		return
 	}
 
-	if strings.Contains(combined, "SERVFAIL") || strings.Contains(combined, "can't resolve") {
-		t.Errorf("expected DNS resolution to work, got: %s", combined)
-	}
+	assert.False(t, strings.Contains(combined, "SERVFAIL") || strings.Contains(combined, "can't resolve"),
+		"expected DNS resolution to work, got: %s", combined)
 }

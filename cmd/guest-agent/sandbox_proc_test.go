@@ -5,6 +5,9 @@ package main
 import (
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildSeccompFilter(t *testing.T) {
@@ -13,50 +16,38 @@ func TestBuildSeccompFilter(t *testing.T) {
 	// 3 header instructions + N blocked syscalls + 2 return instructions
 	blocked, _ := blockedSyscalls()
 	expectedLen := 3 + len(blocked) + 2
-	if len(filter) != expectedLen {
-		t.Errorf("expected %d instructions, got %d", expectedLen, len(filter))
-	}
+	assert.Len(t, filter, expectedLen)
 
 	// First instruction: load architecture (offset 4 in seccomp_data)
-	if filter[0].Code != bpfLD|bpfW|bpfABS || filter[0].K != 4 {
-		t.Errorf("first instruction should load arch at offset 4, got code=0x%x k=%d", filter[0].Code, filter[0].K)
-	}
+	assert.Equal(t, bpfLD|bpfW|bpfABS, filter[0].Code, "first instruction should load arch")
+	assert.Equal(t, uint32(4), filter[0].K, "first instruction offset should be 4")
 
 	// Second instruction: check architecture
-	if filter[1].Code != bpfJMP|bpfJEQ|bpfK {
-		t.Errorf("second instruction should be arch check jump, got code=0x%x", filter[1].Code)
-	}
+	assert.Equal(t, bpfJMP|bpfJEQ|bpfK, filter[1].Code, "second instruction should be arch check jump")
 
 	// Third instruction: load syscall number (offset 0)
-	if filter[2].Code != bpfLD|bpfW|bpfABS || filter[2].K != 0 {
-		t.Errorf("third instruction should load syscall nr at offset 0, got code=0x%x k=%d", filter[2].Code, filter[2].K)
-	}
+	assert.Equal(t, bpfLD|bpfW|bpfABS, filter[2].Code, "third instruction should load syscall nr")
+	assert.Equal(t, uint32(0), filter[2].K, "third instruction offset should be 0")
 
 	// Second-to-last: ALLOW
 	allowIdx := len(filter) - 2
-	if filter[allowIdx].Code != bpfRET|bpfK || filter[allowIdx].K != seccompRetAllow {
-		t.Errorf("second-to-last should be RET ALLOW, got code=0x%x k=0x%x", filter[allowIdx].Code, filter[allowIdx].K)
-	}
+	assert.Equal(t, bpfRET|bpfK, filter[allowIdx].Code, "second-to-last should be RET")
+	assert.Equal(t, seccompRetAllow, filter[allowIdx].K, "second-to-last should be ALLOW")
 
 	// Last: ERRNO(EPERM)
 	lastIdx := len(filter) - 1
-	if filter[lastIdx].Code != bpfRET|bpfK || filter[lastIdx].K != seccompRetErrno|errnoEPERM {
-		t.Errorf("last should be RET ERRNO(EPERM), got code=0x%x k=0x%x", filter[lastIdx].Code, filter[lastIdx].K)
-	}
+	assert.Equal(t, bpfRET|bpfK, filter[lastIdx].Code, "last should be RET")
+	assert.Equal(t, seccompRetErrno|errnoEPERM, filter[lastIdx].K, "last should be ERRNO(EPERM)")
 }
 
 func TestBlockedSyscalls(t *testing.T) {
 	blocked, auditArch := blockedSyscalls()
 
-	if len(blocked) != 5 {
-		t.Errorf("expected 5 blocked syscalls, got %d", len(blocked))
-	}
+	require.Len(t, blocked, 5)
 
 	switch runtime.GOARCH {
 	case "amd64":
-		if auditArch != auditArchX86_64 {
-			t.Errorf("expected x86_64 audit arch, got 0x%x", auditArch)
-		}
+		assert.Equal(t, auditArchX86_64, auditArch)
 		expected := []uint32{
 			sysProcessVMReadvAmd64,
 			sysProcessVMWritevAmd64,
@@ -65,14 +56,10 @@ func TestBlockedSyscalls(t *testing.T) {
 			sysKexecFileLoadAmd64,
 		}
 		for i, nr := range expected {
-			if blocked[i] != nr {
-				t.Errorf("blocked[%d] = %d, want %d", i, blocked[i], nr)
-			}
+			assert.Equal(t, nr, blocked[i], "blocked[%d]", i)
 		}
 	case "arm64":
-		if auditArch != auditArchAARCH64 {
-			t.Errorf("expected aarch64 audit arch, got 0x%x", auditArch)
-		}
+		assert.Equal(t, auditArchAARCH64, auditArch)
 	}
 }
 
@@ -80,9 +67,7 @@ func TestWipeBytes(t *testing.T) {
 	data := []byte("secret-api-key-value")
 	wipeBytes(data)
 	for i, b := range data {
-		if b != 0 {
-			t.Errorf("byte %d not wiped: got %d", i, b)
-		}
+		assert.Equal(t, byte(0), b, "byte %d not wiped", i)
 	}
 }
 
@@ -92,18 +77,12 @@ func TestWipeMap(t *testing.T) {
 		"OTHER_KEY":         "other-value",
 	}
 	wipeMap(m)
-	if len(m) != 0 {
-		t.Errorf("map should be empty after wipe, got %d entries", len(m))
-	}
+	assert.Empty(t, m)
 }
 
 func TestIsSandboxLauncher(t *testing.T) {
-	if isSandboxLauncher() {
-		t.Error("should not be sandbox launcher by default")
-	}
+	assert.False(t, isSandboxLauncher(), "should not be sandbox launcher by default")
 
 	t.Setenv(sandboxLauncherEnvKey, "1")
-	if !isSandboxLauncher() {
-		t.Error("should be sandbox launcher when env var is set")
-	}
+	assert.True(t, isSandboxLauncher(), "should be sandbox launcher when env var is set")
 }

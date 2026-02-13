@@ -4,13 +4,13 @@ import (
 	"testing"
 
 	shellquote "github.com/kballard/go-shellquote"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestShellQuoteArgsSimple(t *testing.T) {
 	got := ShellQuoteArgs([]string{"echo", "hello"})
-	if got != "echo hello" {
-		t.Errorf("got %q, want %q", got, "echo hello")
-	}
+	assert.Equal(t, "echo hello", got)
 }
 
 func TestShellQuoteArgsWithSpaces(t *testing.T) {
@@ -20,16 +20,12 @@ func TestShellQuoteArgsWithSpaces(t *testing.T) {
 
 func TestShellQuoteArgsEmpty(t *testing.T) {
 	got := ShellQuoteArgs(nil)
-	if got != "" {
-		t.Errorf("got %q, want empty string", got)
-	}
+	assert.Equal(t, "", got)
 }
 
 func TestShellQuoteArgsSingleArg(t *testing.T) {
 	got := ShellQuoteArgs([]string{"ls"})
-	if got != "ls" {
-		t.Errorf("got %q, want %q", got, "ls")
-	}
+	assert.Equal(t, "ls", got)
 }
 
 func TestShellQuoteArgsSpecialChars(t *testing.T) {
@@ -60,15 +56,6 @@ func TestShellQuoteArgsBackslash(t *testing.T) {
 func assertRoundTrips(t *testing.T, quoted string, want []string) {
 	t.Helper()
 	got, err := shellquote.Split(quoted)
-	if err != nil {
-		t.Fatalf("Split(%q): %v", quoted, err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("Split(%q) = %v (len %d), want %v (len %d)", quoted, got, len(got), want, len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("Split(%q)[%d] = %q, want %q", quoted, i, got[i], want[i])
-		}
-	}
+	require.NoError(t, err, "Split(%q)", quoted)
+	assert.Equal(t, want, got, "Split(%q)", quoted)
 }

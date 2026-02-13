@@ -3,7 +3,6 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/vm"
+	"github.com/stretchr/testify/require"
 )
 
 type fakeMachine struct {
@@ -102,9 +102,7 @@ func TestExecRelayPipeStdinEOFDoesNotCancel(t *testing.T) {
 	defer clientConn.Close()
 
 	reqData, err := json.Marshal(relayExecRequest{Command: "noop"})
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+	require.NoError(t, err, "marshal request")
 
 	done := make(chan struct{})
 	go func() {
@@ -114,13 +112,11 @@ func TestExecRelayPipeStdinEOFDoesNotCancel(t *testing.T) {
 
 	<-machine.execStarted
 
-	if err := sendRelayMsg(clientConn, relayMsgStdin, nil); err != nil {
-		t.Fatalf("send stdin EOF: %v", err)
-	}
+	require.NoError(t, sendRelayMsg(clientConn, relayMsgStdin, nil), "send stdin EOF")
 
 	select {
 	case <-machine.ctxCanceled:
-		t.Fatal("context canceled on stdin EOF")
+		require.Fail(t, "context canceled on stdin EOF")
 	case <-time.After(200 * time.Millisecond):
 	}
 
@@ -133,30 +129,22 @@ func TestExecRelayPipeStdinEOFDoesNotCancel(t *testing.T) {
 			exitErr <- err
 			return
 		}
-		if msgType != relayMsgExit {
-			exitErr <- fmt.Errorf("expected exit message, got %d", msgType)
-			return
-		}
-		if len(data) != 4 {
-			exitErr <- fmt.Errorf("expected 4-byte exit payload, got %d", len(data))
-			return
-		}
+		require.Equal(t, relayMsgExit, msgType)
+		require.Len(t, data, 4)
 		exitErr <- nil
 	}()
 
 	select {
 	case err := <-exitErr:
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for exit")
+		require.Fail(t, "timed out waiting for exit")
 	}
 
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for relay")
+		require.Fail(t, "timed out waiting for relay")
 	}
 }
 
@@ -169,9 +157,7 @@ func TestExecRelayPipeDisconnectCancels(t *testing.T) {
 	defer serverConn.Close()
 
 	reqData, err := json.Marshal(relayExecRequest{Command: "noop"})
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+	require.NoError(t, err, "marshal request")
 
 	done := make(chan struct{})
 	go func() {
@@ -181,20 +167,18 @@ func TestExecRelayPipeDisconnectCancels(t *testing.T) {
 
 	<-machine.execStarted
 
-	if err := clientConn.Close(); err != nil {
-		t.Fatalf("close client conn: %v", err)
-	}
+	require.NoError(t, clientConn.Close(), "close client conn")
 
 	select {
 	case <-machine.ctxCanceled:
 	case <-time.After(1 * time.Second):
-		t.Fatal("expected context cancellation on disconnect")
+		require.Fail(t, "expected context cancellation on disconnect")
 	}
 
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for relay")
+		require.Fail(t, "timed out waiting for relay")
 	}
 }
 
@@ -208,9 +192,7 @@ func TestExecRelayInteractiveDisconnectClosesStdin(t *testing.T) {
 	defer clientConn.Close()
 
 	reqData, err := json.Marshal(relayExecInteractiveRequest{Command: "noop", Rows: 24, Cols: 80})
-	if err != nil {
-		t.Fatalf("marshal request: %v", err)
-	}
+	require.NoError(t, err, "marshal request")
 
 	done := make(chan struct{})
 	go func() {
@@ -220,25 +202,19 @@ func TestExecRelayInteractiveDisconnectClosesStdin(t *testing.T) {
 
 	<-machine.execStarted
 
-	if err := sendRelayMsg(clientConn, relayMsgStdin, []byte("hello")); err != nil {
-		t.Fatalf("send stdin: %v", err)
-	}
-	if err := clientConn.Close(); err != nil {
-		t.Fatalf("close client conn: %v", err)
-	}
+	require.NoError(t, sendRelayMsg(clientConn, relayMsgStdin, []byte("hello")), "send stdin")
+	require.NoError(t, clientConn.Close(), "close client conn")
 
 	select {
 	case data := <-machine.stdinData:
-		if string(data) != "hello" {
-			t.Fatalf("unexpected stdin data: %q", string(data))
-		}
+		require.Equal(t, "hello", string(data), "unexpected stdin data")
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for stdin data")
+		require.Fail(t, "timed out waiting for stdin data")
 	}
 
 	select {
 	case <-done:
 	case <-time.After(1 * time.Second):
-		t.Fatal("timed out waiting for relay")
+		require.Fail(t, "timed out waiting for relay")
 	}
 }

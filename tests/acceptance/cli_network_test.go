@@ -3,19 +3,17 @@
 package acceptance
 
 import (
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCLIRunHelpShowsDNSServersFlag(t *testing.T) {
 	stdout, _, exitCode := runCLI(t, "run", "--help")
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", exitCode)
-	}
-	if !strings.Contains(stdout, "--dns-servers") {
-		t.Errorf("run --help should mention --dns-servers flag, got: %s", stdout)
-	}
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "--dns-servers")
 }
 
 func TestCLIDNSServersResolvConf(t *testing.T) {
@@ -24,15 +22,9 @@ func TestCLIDNSServersResolvConf(t *testing.T) {
 		"--dns-servers", "1.1.1.1,1.0.0.1",
 		"cat", "/etc/resolv.conf",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", exitCode)
-	}
-	if !strings.Contains(stdout, "1.1.1.1") {
-		t.Errorf("resolv.conf should contain 1.1.1.1, got: %s", stdout)
-	}
-	if !strings.Contains(stdout, "1.0.0.1") {
-		t.Errorf("resolv.conf should contain 1.0.0.1, got: %s", stdout)
-	}
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "1.1.1.1")
+	assert.Contains(t, stdout, "1.0.0.1")
 }
 
 func TestCLIDNSServersDefaultResolvConf(t *testing.T) {
@@ -40,15 +32,9 @@ func TestCLIDNSServersDefaultResolvConf(t *testing.T) {
 		"run", "--image", "alpine:latest",
 		"cat", "/etc/resolv.conf",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", exitCode)
-	}
-	if !strings.Contains(stdout, "8.8.8.8") {
-		t.Errorf("default resolv.conf should contain 8.8.8.8, got: %s", stdout)
-	}
-	if !strings.Contains(stdout, "8.8.4.4") {
-		t.Errorf("default resolv.conf should contain 8.8.4.4, got: %s", stdout)
-	}
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "8.8.8.8")
+	assert.Contains(t, stdout, "8.8.4.4")
 }
 
 func TestCLIAllowedHostHTTP(t *testing.T) {
@@ -57,12 +43,8 @@ func TestCLIAllowedHostHTTP(t *testing.T) {
 		"--allow-host", "example.com",
 		"--", "sh", "-c", "wget -q -O - http://example.com/ 2>&1",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0; stdout: %s", exitCode, stdout)
-	}
-	if !strings.Contains(stdout, "Example Domain") {
-		t.Errorf("expected 'Example Domain' in response, got: %s", stdout)
-	}
+	require.Equalf(t, 0, exitCode, "stdout: %s", stdout)
+	assert.Contains(t, stdout, "Example Domain")
 }
 
 func TestCLIBlockedHostHTTP(t *testing.T) {
@@ -72,9 +54,7 @@ func TestCLIBlockedHostHTTP(t *testing.T) {
 		"--", "sh", "-c", "wget -q -T 5 -O - http://example.com/ 2>&1 || echo BLOCKED",
 	)
 	combined := stdout + stderr
-	if strings.Contains(combined, "Example Domain") {
-		t.Errorf("expected request to example.com to be blocked, got: %s", combined)
-	}
+	assert.NotContains(t, combined, "Example Domain", "expected request to example.com to be blocked")
 }
 
 func TestCLIPassthroughAllowed(t *testing.T) {
@@ -83,12 +63,8 @@ func TestCLIPassthroughAllowed(t *testing.T) {
 		"--allow-host", "httpbin.org",
 		"--", "sh", "-c", "wget -q -O - https://httpbin.org/get 2>&1",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0; stdout: %s", exitCode, stdout)
-	}
-	if !strings.Contains(stdout, `"url"`) {
-		t.Errorf("expected request to succeed, got: %s", stdout)
-	}
+	require.Equalf(t, 0, exitCode, "stdout: %s", stdout)
+	assert.Contains(t, stdout, `"url"`)
 }
 
 func TestCLIPassthroughBlocked(t *testing.T) {
@@ -98,7 +74,5 @@ func TestCLIPassthroughBlocked(t *testing.T) {
 		"--", "sh", "-c", "wget -q -T 5 -O - https://httpbin.org/get 2>&1 || echo BLOCKED",
 	)
 	combined := stdout + stderr
-	if strings.Contains(combined, `"url"`) {
-		t.Errorf("expected request to httpbin.org to be blocked, got: %s", combined)
-	}
+	assert.NotContains(t, combined, `"url"`, "expected request to httpbin.org to be blocked")
 }

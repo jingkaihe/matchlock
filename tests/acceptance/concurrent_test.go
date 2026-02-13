@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -70,7 +72,7 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 	})
 
 	for err := range errs {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 
 	mu.Lock()
@@ -78,19 +80,14 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 	copy(activeClients, clients)
 	mu.Unlock()
 
-	if len(activeClients) != n {
-		t.Fatalf("expected %d clients, got %d", n, len(activeClients))
-	}
+	require.Len(t, activeClients, n)
 
 	for i, client := range activeClients {
 		result, err := client.Exec(context.Background(), "echo hello")
-		if err != nil {
-			t.Errorf("sandbox %d: Exec: %v", i, err)
+		if !assert.NoErrorf(t, err, "sandbox %d: Exec", i) {
 			continue
 		}
-		if got := strings.TrimSpace(result.Stdout); got != "hello" {
-			t.Errorf("sandbox %d: stdout = %q, want %q", i, got, "hello")
-		}
+		assert.Equalf(t, "hello", strings.TrimSpace(result.Stdout), "sandbox %d: stdout", i)
 	}
 }
 
@@ -144,7 +141,7 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 	})
 
 	for err := range errs {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 
 	mu.Lock()
@@ -154,14 +151,11 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 
 	for i, client := range activeClients {
 		result, err := client.Exec(context.Background(), "wget -q -O - https://httpbin.org/get 2>&1")
-		if err != nil {
-			t.Errorf("sandbox %d: Exec: %v", i, err)
+		if !assert.NoErrorf(t, err, "sandbox %d: Exec", i) {
 			continue
 		}
 		combined := result.Stdout + result.Stderr
-		if !strings.Contains(combined, `"url"`) {
-			t.Errorf("sandbox %d: expected httpbin.org response, got: %s", i, combined)
-		}
+		assert.Containsf(t, combined, `"url"`, "sandbox %d: expected httpbin.org response", i)
 	}
 }
 
@@ -216,17 +210,14 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 	})
 
 	for err := range errs {
-		t.Fatal(err)
+		require.NoError(t, err)
 	}
 
 	for i, client := range clients {
 		result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - --header "Authorization: Bearer $MY_KEY" https://httpbin.org/headers 2>&1'`)
-		if err != nil {
-			t.Errorf("sandbox %d: Exec: %v", i, err)
+		if !assert.NoErrorf(t, err, "sandbox %d: Exec", i) {
 			continue
 		}
-		if !strings.Contains(result.Stdout, secrets[i]) {
-			t.Errorf("sandbox %d: expected secret %q in response, got: %s", i, secrets[i], result.Stdout)
-		}
+		assert.Containsf(t, result.Stdout, secrets[i], "sandbox %d: expected secret in response", i)
 	}
 }

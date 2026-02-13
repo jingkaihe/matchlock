@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func hasDebugfs() bool {
@@ -22,19 +25,14 @@ func createTestExt4(t *testing.T, sizeMB int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.ext4")
 	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Truncate(int64(sizeMB) * 1024 * 1024); err != nil {
-		f.Close()
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	err = f.Truncate(int64(sizeMB) * 1024 * 1024)
 	f.Close()
+	require.NoError(t, err)
 
 	cmd := exec.Command("mkfs.ext4", "-F", "-q", path)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("mkfs.ext4 failed: %v: %s", err, out)
-	}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "mkfs.ext4 failed: %s", out)
 	return path
 }
 
@@ -42,9 +40,7 @@ func debugfsStatMode(t *testing.T, rootfsPath, guestPath string) string {
 	t.Helper()
 	cmd := exec.Command("debugfs", "-R", "stat "+guestPath, rootfsPath)
 	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("debugfs stat failed: %v", err)
-	}
+	require.NoError(t, err, "debugfs stat failed")
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, "Mode:") {
 			return strings.TrimSpace(line)
@@ -57,9 +53,7 @@ func debugfsCat(t *testing.T, rootfsPath, guestPath string) string {
 	t.Helper()
 	cmd := exec.Command("debugfs", "-R", "cat "+guestPath, rootfsPath)
 	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("debugfs cat failed: %v", err)
-	}
+	require.NoError(t, err, "debugfs cat failed")
 	return string(out)
 }
 
@@ -71,14 +65,10 @@ func TestInjectConfigFileIntoRootfs(t *testing.T) {
 	rootfs := createTestExt4(t, 10)
 	content := []byte("test-ca-cert-content")
 
-	if err := injectConfigFileIntoRootfs(rootfs, "/etc/ssl/certs/ca.crt", content); err != nil {
-		t.Fatalf("injectConfigFileIntoRootfs failed: %v", err)
-	}
+	require.NoError(t, injectConfigFileIntoRootfs(rootfs, "/etc/ssl/certs/ca.crt", content), "injectConfigFileIntoRootfs failed")
 
 	got := debugfsCat(t, rootfs, "/etc/ssl/certs/ca.crt")
-	if got != string(content) {
-		t.Errorf("content = %q, want %q", got, string(content))
-	}
+	assert.Equal(t, string(content), got)
 }
 
 func TestInjectConfigFileIntoRootfs_Mode0644(t *testing.T) {
@@ -88,14 +78,10 @@ func TestInjectConfigFileIntoRootfs_Mode0644(t *testing.T) {
 
 	rootfs := createTestExt4(t, 10)
 
-	if err := injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("data")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("data")))
 
 	modeLine := debugfsStatMode(t, rootfs, "/etc/test.conf")
-	if !strings.Contains(modeLine, "0644") {
-		t.Errorf("expected mode 0644, got: %s", modeLine)
-	}
+	assert.Contains(t, modeLine, "0644", "expected mode 0644")
 }
 
 func TestInjectConfigFileIntoRootfs_CreatesParentDirs(t *testing.T) {
@@ -105,14 +91,10 @@ func TestInjectConfigFileIntoRootfs_CreatesParentDirs(t *testing.T) {
 
 	rootfs := createTestExt4(t, 10)
 
-	if err := injectConfigFileIntoRootfs(rootfs, "/a/b/c/file.txt", []byte("deep")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, injectConfigFileIntoRootfs(rootfs, "/a/b/c/file.txt", []byte("deep")))
 
 	got := debugfsCat(t, rootfs, "/a/b/c/file.txt")
-	if got != "deep" {
-		t.Errorf("content = %q, want %q", got, "deep")
-	}
+	assert.Equal(t, "deep", got)
 }
 
 func TestInjectConfigFileIntoRootfs_Overwrites(t *testing.T) {
@@ -122,15 +104,9 @@ func TestInjectConfigFileIntoRootfs_Overwrites(t *testing.T) {
 
 	rootfs := createTestExt4(t, 10)
 
-	if err := injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("first")); err != nil {
-		t.Fatal(err)
-	}
-	if err := injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("second")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("first")))
+	require.NoError(t, injectConfigFileIntoRootfs(rootfs, "/etc/test.conf", []byte("second")))
 
 	got := debugfsCat(t, rootfs, "/etc/test.conf")
-	if got != "second" {
-		t.Errorf("content = %q, want %q", got, "second")
-	}
+	assert.Equal(t, "second", got)
 }

@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRemoveNonExistentVM(t *testing.T) {
@@ -12,9 +15,7 @@ func TestRemoveNonExistentVM(t *testing.T) {
 	mgr := NewManagerWithDir(dir)
 
 	err := mgr.Remove("vm-nonexistent")
-	if err == nil {
-		t.Fatal("expected error when removing non-existent VM, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestRemoveStoppedVM(t *testing.T) {
@@ -26,13 +27,10 @@ func TestRemoveStoppedVM(t *testing.T) {
 	os.WriteFile(filepath.Join(vmDir, "status"), []byte("stopped"), 0600)
 
 	err := mgr.Remove("vm-test123")
-	if err != nil {
-		t.Fatalf("expected no error removing stopped VM, got: %v", err)
-	}
+	require.NoError(t, err)
 
-	if _, err := os.Stat(vmDir); !os.IsNotExist(err) {
-		t.Fatal("expected VM directory to be removed")
-	}
+	_, err = os.Stat(vmDir)
+	require.True(t, os.IsNotExist(err), "expected VM directory to be removed")
 }
 
 func TestRemoveRunningVM(t *testing.T) {
@@ -45,9 +43,7 @@ func TestRemoveRunningVM(t *testing.T) {
 	os.WriteFile(filepath.Join(vmDir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0600)
 
 	err := mgr.Remove("vm-running1")
-	if err == nil {
-		t.Fatal("expected error when removing running VM, got nil")
-	}
+	require.Error(t, err)
 }
 
 func TestRemoveRunningVMWithDeadProcess(t *testing.T) {
@@ -60,13 +56,10 @@ func TestRemoveRunningVMWithDeadProcess(t *testing.T) {
 	os.WriteFile(filepath.Join(vmDir, "pid"), []byte("999999999"), 0600)
 
 	err := mgr.Remove("vm-dead1")
-	if err != nil {
-		t.Fatalf("expected no error removing VM with dead process, got: %v", err)
-	}
+	require.NoError(t, err)
 
-	if _, err := os.Stat(vmDir); !os.IsNotExist(err) {
-		t.Fatal("expected VM directory to be removed")
-	}
+	_, err = os.Stat(vmDir)
+	require.True(t, os.IsNotExist(err), "expected VM directory to be removed")
 }
 
 // TestUnregisterThenRemove_RmFlag is a regression test for
@@ -80,62 +73,44 @@ func TestUnregisterThenRemove_RmFlag(t *testing.T) {
 
 	id := "vm-rm-test"
 
-	if err := mgr.Register(id, map[string]string{"image": "alpine:latest"}); err != nil {
-		t.Fatalf("Register failed: %v", err)
-	}
+	err := mgr.Register(id, map[string]string{"image": "alpine:latest"})
+	require.NoError(t, err)
 
 	states, err := mgr.List()
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
-	}
+	require.NoError(t, err)
 	found := false
 	for _, s := range states {
 		if s.ID == id {
 			found = true
-			if s.Status != "running" && s.Status != "crashed" {
-				t.Fatalf("expected status running or crashed, got %s", s.Status)
-			}
+			assert.Contains(t, []string{"running", "crashed"}, s.Status, "expected status running or crashed")
 		}
 	}
-	if !found {
-		t.Fatal("expected VM to be listed after Register")
-	}
+	require.True(t, found, "expected VM to be listed after Register")
 
 	// Simulate what sb.Close() does
-	if err := mgr.Unregister(id); err != nil {
-		t.Fatalf("Unregister failed: %v", err)
-	}
+	err = mgr.Unregister(id)
+	require.NoError(t, err)
 
 	// After Unregister, the VM should still exist in state (as "stopped")
 	state, err := mgr.Get(id)
-	if err != nil {
-		t.Fatalf("expected VM to still exist after Unregister, got: %v", err)
-	}
-	if state.Status != "stopped" {
-		t.Fatalf("expected status stopped after Unregister, got %s", state.Status)
-	}
+	require.NoError(t, err)
+	require.Equal(t, "stopped", state.Status)
 
 	// Simulate what --rm should do: call Remove() after Close()
-	if err := mgr.Remove(id); err != nil {
-		t.Fatalf("Remove after Unregister failed: %v", err)
-	}
+	err = mgr.Remove(id)
+	require.NoError(t, err)
 
 	// After Remove, the VM should not be listed
 	states, err = mgr.List()
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
-	}
+	require.NoError(t, err)
 	for _, s := range states {
-		if s.ID == id {
-			t.Fatalf("VM %s should not appear in list after Remove", id)
-		}
+		assert.NotEqual(t, id, s.ID, "VM should not appear in list after Remove")
 	}
 
 	// The state directory should be gone
 	vmDir := filepath.Join(dir, id)
-	if _, err := os.Stat(vmDir); !os.IsNotExist(err) {
-		t.Fatal("expected VM directory to be fully removed after Unregister + Remove")
-	}
+	_, err = os.Stat(vmDir)
+	require.True(t, os.IsNotExist(err), "expected VM directory to be fully removed after Unregister + Remove")
 }
 
 // TestUnregisterWithoutRemove_NoRmFlag verifies that when --rm is NOT set,
@@ -146,34 +121,25 @@ func TestUnregisterWithoutRemove_NoRmFlag(t *testing.T) {
 
 	id := "vm-no-rm-test"
 
-	if err := mgr.Register(id, map[string]string{"image": "alpine:latest"}); err != nil {
-		t.Fatalf("Register failed: %v", err)
-	}
+	err := mgr.Register(id, map[string]string{"image": "alpine:latest"})
+	require.NoError(t, err)
 
-	if err := mgr.Unregister(id); err != nil {
-		t.Fatalf("Unregister failed: %v", err)
-	}
+	err = mgr.Unregister(id)
+	require.NoError(t, err)
 
 	// Without Remove, VM should still be listed as stopped
 	states, err := mgr.List()
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
-	}
+	require.NoError(t, err)
 	found := false
 	for _, s := range states {
 		if s.ID == id {
 			found = true
-			if s.Status != "stopped" {
-				t.Fatalf("expected status stopped, got %s", s.Status)
-			}
+			require.Equal(t, "stopped", s.Status)
 		}
 	}
-	if !found {
-		t.Fatal("VM should still be listed after Unregister without Remove")
-	}
+	require.True(t, found, "VM should still be listed after Unregister without Remove")
 
 	vmDir := filepath.Join(dir, id)
-	if _, err := os.Stat(vmDir); os.IsNotExist(err) {
-		t.Fatal("expected VM directory to persist after Unregister without Remove")
-	}
+	_, err = os.Stat(vmDir)
+	require.False(t, os.IsNotExist(err), "expected VM directory to persist after Unregister without Remove")
 }

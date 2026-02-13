@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStoreRoundTrip(t *testing.T) {
@@ -12,9 +15,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	store := NewStore(storeDir)
 
 	rootfsFile := filepath.Join(t.TempDir(), "test.ext4")
-	if err := os.WriteFile(rootfsFile, []byte("fake-rootfs-content"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(rootfsFile, []byte("fake-rootfs-content"), 0644))
 
 	meta := ImageMeta{
 		Digest:    "sha256:abc123",
@@ -22,28 +23,16 @@ func TestStoreRoundTrip(t *testing.T) {
 		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 
-	if err := store.Save("myapp:latest", rootfsFile, meta); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	require.NoError(t, store.Save("myapp:latest", rootfsFile, meta), "Save")
 
 	result, err := store.Get("myapp:latest")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if result.Digest != "sha256:abc123" {
-		t.Errorf("Digest = %q, want %q", result.Digest, "sha256:abc123")
-	}
-	if !result.Cached {
-		t.Error("expected Cached=true")
-	}
+	require.NoError(t, err, "Get")
+	assert.Equal(t, "sha256:abc123", result.Digest)
+	assert.True(t, result.Cached, "expected Cached=true")
 
 	content, err := os.ReadFile(result.RootfsPath)
-	if err != nil {
-		t.Fatalf("read rootfs: %v", err)
-	}
-	if string(content) != "fake-rootfs-content" {
-		t.Errorf("rootfs content = %q, want %q", string(content), "fake-rootfs-content")
-	}
+	require.NoError(t, err, "read rootfs")
+	assert.Equal(t, "fake-rootfs-content", string(content))
 }
 
 func TestStoreList(t *testing.T) {
@@ -51,9 +40,7 @@ func TestStoreList(t *testing.T) {
 	store := NewStore(storeDir)
 
 	rootfsFile := filepath.Join(t.TempDir(), "test.ext4")
-	if err := os.WriteFile(rootfsFile, []byte("data"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(rootfsFile, []byte("data"), 0644))
 
 	store.Save("app1:v1", rootfsFile, ImageMeta{
 		Digest:    "sha256:aaa",
@@ -65,19 +52,11 @@ func TestStoreList(t *testing.T) {
 	})
 
 	images, err := store.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(images) != 2 {
-		t.Fatalf("len = %d, want 2", len(images))
-	}
+	require.NoError(t, err, "List")
+	require.Len(t, images, 2)
 
-	if images[0].Tag != "app2:v2" {
-		t.Errorf("first image = %q, want %q (sorted by creation time desc)", images[0].Tag, "app2:v2")
-	}
-	if images[1].Tag != "app1:v1" {
-		t.Errorf("second image = %q, want %q", images[1].Tag, "app1:v1")
-	}
+	assert.Equal(t, "app2:v2", images[0].Tag, "sorted by creation time desc")
+	assert.Equal(t, "app1:v1", images[1].Tag)
 }
 
 func TestStoreRemove(t *testing.T) {
@@ -85,37 +64,29 @@ func TestStoreRemove(t *testing.T) {
 	store := NewStore(storeDir)
 
 	rootfsFile := filepath.Join(t.TempDir(), "test.ext4")
-	if err := os.WriteFile(rootfsFile, []byte("data"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(rootfsFile, []byte("data"), 0644))
 
 	store.Save("myapp:latest", rootfsFile, ImageMeta{Digest: "sha256:abc"})
 
-	if err := store.Remove("myapp:latest"); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
+	require.NoError(t, store.Remove("myapp:latest"), "Remove")
 
-	if _, err := store.Get("myapp:latest"); err == nil {
-		t.Error("expected error after Remove, got nil")
-	}
+	_, err := store.Get("myapp:latest")
+	require.Error(t, err, "expected error after Remove")
 }
 
 func TestStoreRemoveNotFound(t *testing.T) {
 	storeDir := t.TempDir()
 	store := NewStore(storeDir)
 
-	if err := store.Remove("nonexistent:tag"); err == nil {
-		t.Error("expected error for nonexistent tag")
-	}
+	require.Error(t, store.Remove("nonexistent:tag"), "expected error for nonexistent tag")
 }
 
 func TestStoreGetNotFound(t *testing.T) {
 	storeDir := t.TempDir()
 	store := NewStore(storeDir)
 
-	if _, err := store.Get("nonexistent:tag"); err == nil {
-		t.Error("expected error for nonexistent tag")
-	}
+	_, err := store.Get("nonexistent:tag")
+	require.Error(t, err, "expected error for nonexistent tag")
 }
 
 func TestStoreListEmpty(t *testing.T) {
@@ -123,23 +94,15 @@ func TestStoreListEmpty(t *testing.T) {
 	store := NewStore(storeDir)
 
 	images, err := store.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(images) != 0 {
-		t.Errorf("len = %d, want 0", len(images))
-	}
+	require.NoError(t, err, "List")
+	assert.Empty(t, images)
 }
 
 func TestStoreListNonexistentDir(t *testing.T) {
 	store := NewStore("/nonexistent/path")
 	images, err := store.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if images != nil {
-		t.Errorf("expected nil, got %v", images)
-	}
+	require.NoError(t, err, "List")
+	assert.Nil(t, images)
 }
 
 func TestStoreOverwrite(t *testing.T) {
@@ -156,17 +119,11 @@ func TestStoreOverwrite(t *testing.T) {
 	store.Save("myapp:latest", rootfsFile2, ImageMeta{Digest: "sha256:v2"})
 
 	result, err := store.Get("myapp:latest")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if result.Digest != "sha256:v2" {
-		t.Errorf("Digest = %q, want %q", result.Digest, "sha256:v2")
-	}
+	require.NoError(t, err, "Get")
+	assert.Equal(t, "sha256:v2", result.Digest)
 
 	content, _ := os.ReadFile(result.RootfsPath)
-	if string(content) != "version2" {
-		t.Errorf("content = %q, want %q", string(content), "version2")
-	}
+	assert.Equal(t, "version2", string(content))
 }
 
 func TestRemoveRegistryCache(t *testing.T) {
@@ -177,30 +134,21 @@ func TestRemoveRegistryCache(t *testing.T) {
 	os.WriteFile(filepath.Join(imgDir, "abc123.ext4"), []byte("rootfs"), 0644)
 	os.WriteFile(filepath.Join(imgDir, "metadata.json"), []byte(`{"tag":"ubuntu:24.04"}`), 0644)
 
-	if err := RemoveRegistryCache("ubuntu:24.04", cacheDir); err != nil {
-		t.Fatalf("RemoveRegistryCache: %v", err)
-	}
+	require.NoError(t, RemoveRegistryCache("ubuntu:24.04", cacheDir), "RemoveRegistryCache")
 
-	if _, err := os.Stat(imgDir); !os.IsNotExist(err) {
-		t.Error("expected directory to be removed")
-	}
+	_, err := os.Stat(imgDir)
+	assert.True(t, os.IsNotExist(err), "expected directory to be removed")
 }
 
 func TestRemoveRegistryCacheNotFound(t *testing.T) {
 	cacheDir := t.TempDir()
-	if err := RemoveRegistryCache("nonexistent:tag", cacheDir); err == nil {
-		t.Error("expected error for nonexistent tag")
-	}
+	require.Error(t, RemoveRegistryCache("nonexistent:tag", cacheDir), "expected error for nonexistent tag")
 }
 
 func TestListRegistryCacheEmpty(t *testing.T) {
 	images, err := ListRegistryCache(t.TempDir())
-	if err != nil {
-		t.Fatalf("ListRegistryCache: %v", err)
-	}
-	if len(images) != 0 {
-		t.Errorf("len = %d, want 0", len(images))
-	}
+	require.NoError(t, err, "ListRegistryCache")
+	assert.Empty(t, images)
 }
 
 func TestListRegistryCacheWithMetadata(t *testing.T) {
@@ -216,21 +164,11 @@ func TestListRegistryCacheWithMetadata(t *testing.T) {
 	os.MkdirAll(localDir, 0755)
 
 	images, err := ListRegistryCache(cacheDir)
-	if err != nil {
-		t.Fatalf("ListRegistryCache: %v", err)
-	}
-	if len(images) != 1 {
-		t.Fatalf("len = %d, want 1", len(images))
-	}
-	if images[0].Tag != "alpine:latest" {
-		t.Errorf("Tag = %q, want %q", images[0].Tag, "alpine:latest")
-	}
-	if images[0].Meta.Source != "registry" {
-		t.Errorf("Source = %q, want %q", images[0].Meta.Source, "registry")
-	}
-	if images[0].Meta.Digest != "sha256:abc123def456" {
-		t.Errorf("Digest = %q, want %q", images[0].Meta.Digest, "sha256:abc123def456")
-	}
+	require.NoError(t, err, "ListRegistryCache")
+	require.Len(t, images, 1)
+	assert.Equal(t, "alpine:latest", images[0].Tag)
+	assert.Equal(t, "registry", images[0].Meta.Source)
+	assert.Equal(t, "sha256:abc123def456", images[0].Meta.Digest)
 }
 
 func TestListRegistryCacheFallbackNoMetadata(t *testing.T) {
@@ -241,13 +179,7 @@ func TestListRegistryCacheFallbackNoMetadata(t *testing.T) {
 	os.WriteFile(filepath.Join(imgDir, "abc123def456.ext4"), []byte("rootfs"), 0644)
 
 	images, err := ListRegistryCache(cacheDir)
-	if err != nil {
-		t.Fatalf("ListRegistryCache: %v", err)
-	}
-	if len(images) != 1 {
-		t.Fatalf("len = %d, want 1", len(images))
-	}
-	if images[0].Tag != "alpine_latest" {
-		t.Errorf("Tag = %q, want %q (raw dir name)", images[0].Tag, "alpine_latest")
-	}
+	require.NoError(t, err, "ListRegistryCache")
+	require.Len(t, images, 1)
+	assert.Equal(t, "alpine_latest", images[0].Tag, "raw dir name")
 }

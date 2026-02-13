@@ -9,14 +9,14 @@ import (
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	t.Helper()
 	client, err := sdk.NewClient(matchlockConfig(t))
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	require.NoError(t, err, "NewClient")
 
 	t.Cleanup(func() {
 		client.Close(0)
@@ -24,9 +24,7 @@ func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	})
 
 	_, err = client.Launch(builder)
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
+	require.NoError(t, err, "Launch")
 
 	return client
 }
@@ -38,13 +36,8 @@ func TestUserSwitchByUsername(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "65534" {
-		t.Errorf("uid = %q, want %q (nobody)", got, "65534")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
 }
 
 func TestUserSwitchByUID(t *testing.T) {
@@ -52,13 +45,8 @@ func TestUserSwitchByUID(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "65534" {
-		t.Errorf("uid = %q, want %q", got, "65534")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
 }
 
 func TestUserSwitchByUIDAndGID(t *testing.T) {
@@ -66,19 +54,11 @@ func TestUserSwitchByUIDAndGID(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "id -u && id -g")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result.Stdout)
-	}
-	if lines[0] != "65534" {
-		t.Errorf("uid = %q, want %q", lines[0], "65534")
-	}
-	if lines[1] != "65534" {
-		t.Errorf("gid = %q, want %q", lines[1], "65534")
-	}
+	require.Len(t, lines, 2, "expected 2 lines, got: %q", result.Stdout)
+	assert.Equal(t, "65534", lines[0], "uid")
+	assert.Equal(t, "65534", lines[1], "gid")
 }
 
 func TestUserSwitchHomeDirIsSet(t *testing.T) {
@@ -86,14 +66,10 @@ func TestUserSwitchHomeDirIsSet(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "echo $HOME")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	got := strings.TrimSpace(result.Stdout)
 	// Alpine's nobody home is typically /
-	if got == "" {
-		t.Errorf("HOME is empty, expected it to be set")
-	}
+	assert.NotEmpty(t, got, "HOME should be set")
 }
 
 func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
@@ -101,30 +77,21 @@ func TestUserSwitchCannotWriteRootFiles(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "touch /root/test 2>&1; echo $?")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	got := strings.TrimSpace(result.Stdout)
 	lastLine := got
 	if lines := strings.Split(got, "\n"); len(lines) > 0 {
 		lastLine = lines[len(lines)-1]
 	}
-	if lastLine == "0" {
-		t.Errorf("expected non-zero exit from touch /root/test as nobody, got 0")
-	}
+	assert.NotEqual(t, "0", lastLine, "expected non-zero exit from touch /root/test as nobody")
 }
 
 func TestDefaultUserIsRoot(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "0" {
-		t.Errorf("uid = %q, want %q (root)", got, "0")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "0", strings.TrimSpace(result.Stdout))
 }
 
 // --- Entrypoint / CMD tests ---
@@ -134,12 +101,8 @@ func TestEntrypointOverride(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "echo from-entrypoint")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.Contains(result.Stdout, "from-entrypoint") {
-		t.Errorf("stdout = %q, want to contain 'from-entrypoint'", result.Stdout)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Contains(t, result.Stdout, "from-entrypoint")
 }
 
 // --- Image ENV propagation tests ---
@@ -154,20 +117,12 @@ func TestImageEnvPropagation(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "echo $MY_TEST_VAR")
-	if err != nil {
-		t.Fatalf("Exec MY_TEST_VAR: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "hello-from-image" {
-		t.Errorf("MY_TEST_VAR = %q, want %q", got, "hello-from-image")
-	}
+	require.NoError(t, err, "Exec MY_TEST_VAR")
+	assert.Equal(t, "hello-from-image", strings.TrimSpace(result.Stdout))
 
 	result, err = client.Exec(context.Background(), "echo $ANOTHER_VAR")
-	if err != nil {
-		t.Fatalf("Exec ANOTHER_VAR: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "world" {
-		t.Errorf("ANOTHER_VAR = %q, want %q", got, "world")
-	}
+	require.NoError(t, err, "Exec ANOTHER_VAR")
+	assert.Equal(t, "world", strings.TrimSpace(result.Stdout))
 }
 
 func TestImageWorkingDir(t *testing.T) {
@@ -177,12 +132,8 @@ func TestImageWorkingDir(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "pwd")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "/tmp" {
-		t.Errorf("pwd = %q, want %q", got, "/tmp")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "/tmp", strings.TrimSpace(result.Stdout))
 }
 
 // --- Image USER from OCI config tests ---
@@ -194,13 +145,8 @@ func TestImageConfigUser(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "65534" {
-		t.Errorf("uid = %q, want %q (nobody)", got, "65534")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
 }
 
 func TestImageConfigUserWithBuilderOverride(t *testing.T) {
@@ -211,13 +157,8 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "65534" {
-		t.Errorf("uid = %q, want %q (nobody override)", got, "65534")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
 }
 
 // --- VFS chmod test ---
@@ -225,44 +166,29 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 func TestChmodViaExec(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile(context.Background(), "/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n")); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	err := client.WriteFile(context.Background(), "/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n"))
+	require.NoError(t, err, "WriteFile")
 
-	_, err := client.Exec(context.Background(), "chmod +x /workspace/script.sh")
-	if err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
+	_, err = client.Exec(context.Background(), "chmod +x /workspace/script.sh")
+	require.NoError(t, err, "chmod")
 
 	result, err := client.Exec(context.Background(), "/workspace/script.sh")
-	if err != nil {
-		t.Fatalf("Exec script: %v", err)
-	}
-	if got := strings.TrimSpace(result.Stdout); got != "chmod-works" {
-		t.Errorf("stdout = %q, want %q", got, "chmod-works")
-	}
+	require.NoError(t, err, "Exec script")
+	assert.Equal(t, "chmod-works", strings.TrimSpace(result.Stdout))
 }
 
 func TestChmodPreservesAfterStat(t *testing.T) {
 	client := launchAlpine(t)
 
-	if err := client.WriteFile(context.Background(), "/workspace/check.sh", []byte("#!/bin/sh\necho ok\n")); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	err := client.WriteFile(context.Background(), "/workspace/check.sh", []byte("#!/bin/sh\necho ok\n"))
+	require.NoError(t, err, "WriteFile")
 
-	_, err := client.Exec(context.Background(), "chmod 755 /workspace/check.sh")
-	if err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
+	_, err = client.Exec(context.Background(), "chmod 755 /workspace/check.sh")
+	require.NoError(t, err, "chmod")
 
 	result, err := client.Exec(context.Background(), "stat -c '%a' /workspace/check.sh")
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "755" {
-		t.Errorf("mode = %q, want %q", got, "755")
-	}
+	require.NoError(t, err, "stat")
+	assert.Equal(t, "755", strings.TrimSpace(result.Stdout))
 }
 
 // --- Streaming with user tests ---
@@ -275,15 +201,9 @@ func TestExecStreamWithImageConfig(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	result, err := client.ExecStream(context.Background(), "echo $STREAM_VAR", &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("ExecStream: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-	if got := strings.TrimSpace(stdout.String()); got != "streamed-env" {
-		t.Errorf("stdout = %q, want %q", got, "streamed-env")
-	}
+	require.NoError(t, err, "ExecStream")
+	assert.Equal(t, 0, result.ExitCode)
+	assert.Equal(t, "streamed-env", strings.TrimSpace(stdout.String()))
 }
 
 // --- Combined user + workdir tests ---
@@ -297,19 +217,11 @@ func TestUserWithCustomWorkdir(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "pwd && id -u")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result.Stdout)
-	}
-	if lines[0] != "/tmp" {
-		t.Errorf("pwd = %q, want %q", lines[0], "/tmp")
-	}
-	if lines[1] != "65534" {
-		t.Errorf("uid = %q, want %q", lines[1], "65534")
-	}
+	require.Len(t, lines, 2, "expected 2 lines, got: %q", result.Stdout)
+	assert.Equal(t, "/tmp", lines[0], "pwd")
+	assert.Equal(t, "65534", lines[1], "uid")
 }
 
 // --- Python image with real OCI USER ---
@@ -319,14 +231,9 @@ func TestPythonImageDefaultUser(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "python3 -c 'import os; print(os.getuid())'")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
+	require.NoError(t, err, "Exec")
 	// python:3.12-alpine runs as root by default
-	if got != "0" {
-		t.Errorf("uid = %q, want %q", got, "0")
-	}
+	assert.Equal(t, "0", strings.TrimSpace(result.Stdout))
 }
 
 func TestPythonImageWithUserOverride(t *testing.T) {
@@ -334,13 +241,8 @@ func TestPythonImageWithUserOverride(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "python3 -c 'import os; print(os.getuid())'")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "65534" {
-		t.Errorf("uid = %q, want %q (nobody)", got, "65534")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
 }
 
 func TestPythonImageEntrypointAndCmd(t *testing.T) {
@@ -350,12 +252,8 @@ func TestPythonImageEntrypointAndCmd(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "python3 --version")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !strings.Contains(result.Stdout, "Python 3.12") {
-		t.Errorf("stdout = %q, want to contain 'Python 3.12'", result.Stdout)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Contains(t, result.Stdout, "Python 3.12")
 }
 
 // --- Multiple execs with user ---
@@ -366,11 +264,7 @@ func TestMultipleExecsWithUser(t *testing.T) {
 
 	for i, cmd := range []string{"id -u", "id -g", "whoami"} {
 		result, err := client.Exec(context.Background(), cmd)
-		if err != nil {
-			t.Fatalf("Exec[%d] %q: %v", i, cmd, err)
-		}
-		if result.ExitCode != 0 {
-			t.Errorf("Exec[%d] %q exit code = %d, want 0", i, cmd, result.ExitCode)
-		}
+		require.NoErrorf(t, err, "Exec[%d] %q", i, cmd)
+		assert.Equalf(t, 0, result.ExitCode, "Exec[%d] %q exit code", i, cmd)
 	}
 }

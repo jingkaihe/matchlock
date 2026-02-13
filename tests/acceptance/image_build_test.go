@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Dockerfile build ---
@@ -20,14 +22,12 @@ func TestCLIDockerfileBuild(t *testing.T) {
 	dockerfile := filepath.Join(contextDir, "Dockerfile")
 	helloFile := filepath.Join(contextDir, "hello.txt")
 
-	if err := os.WriteFile(helloFile, []byte("hello from matchlock build"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dockerfile, []byte(`FROM busybox:latest
+	err := os.WriteFile(helloFile, []byte("hello from matchlock build"), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(dockerfile, []byte(`FROM busybox:latest
 COPY hello.txt /hello.txt
-`), 0644); err != nil {
-		t.Fatal(err)
-	}
+`), 0644)
+	require.NoError(t, err)
 
 	tag := "matchlock-test-build:latest"
 
@@ -41,30 +41,18 @@ COPY hello.txt /hello.txt
 		"-t", tag,
 		contextDir,
 	)
-	if exitCode != 0 {
-		t.Fatalf("build exit code = %d\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "Successfully built and tagged") {
-		t.Errorf("build stdout = %q, want to contain 'Successfully built and tagged'", stdout)
-	}
+	require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Contains(t, stdout, "Successfully built and tagged")
 
 	imgStdout, _, imgExitCode := runCLI(t, "image", "ls")
-	if imgExitCode != 0 {
-		t.Fatalf("image ls exit code = %d", imgExitCode)
-	}
-	if !strings.Contains(imgStdout, tag) {
-		t.Errorf("image ls output should contain %q, got: %s", tag, imgStdout)
-	}
+	require.Equal(t, 0, imgExitCode)
+	assert.Contains(t, imgStdout, tag)
 
 	runStdout, runStderr, runExitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", tag, "cat", "/hello.txt",
 	)
-	if runExitCode != 0 {
-		t.Fatalf("run exit code = %d\nstdout: %s\nstderr: %s", runExitCode, runStdout, runStderr)
-	}
-	if got := strings.TrimSpace(runStdout); got != "hello from matchlock build" {
-		t.Errorf("cat /hello.txt = %q, want %q", got, "hello from matchlock build")
-	}
+	require.Equalf(t, 0, runExitCode, "stdout: %s\nstderr: %s", runStdout, runStderr)
+	assert.Equal(t, "hello from matchlock build", strings.TrimSpace(runStdout))
 }
 
 // --- Symlink preservation ---
@@ -73,25 +61,17 @@ func TestImageSymlinksPreserved(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "readlink /bin/sh")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	got := strings.TrimSpace(result.Stdout)
-	if !strings.Contains(got, "busybox") {
-		t.Errorf("readlink /bin/sh = %q, want to contain 'busybox'", got)
-	}
+	assert.Contains(t, got, "busybox")
 }
 
 func TestImageSymlinksInLib(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "ls -la / | grep '^l' | head -5")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, 0, result.ExitCode)
 }
 
 func TestPythonImageSymlinks(t *testing.T) {
@@ -99,13 +79,9 @@ func TestPythonImageSymlinks(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "readlink /usr/local/bin/python3")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	got := strings.TrimSpace(result.Stdout)
-	if !strings.Contains(got, "python") {
-		t.Errorf("readlink python3 = %q, want to contain 'python'", got)
-	}
+	assert.Contains(t, got, "python")
 }
 
 // --- File ownership (uid/gid) ---
@@ -114,27 +90,18 @@ func TestImageFileOwnershipRoot(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /etc/passwd")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "0:0" {
-		t.Errorf("/etc/passwd uid:gid = %q, want %q", got, "0:0")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "0:0", strings.TrimSpace(result.Stdout))
 }
 
 func TestImageFileOwnershipNonRoot(t *testing.T) {
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /etc/shadow")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
+	require.NoError(t, err, "Exec")
 	got := strings.TrimSpace(result.Stdout)
 	uid := strings.Split(got, ":")[0]
-	if uid != "0" {
-		t.Errorf("/etc/shadow uid = %q, want %q", uid, "0")
-	}
+	assert.Equal(t, "0", uid)
 }
 
 func TestPythonImageOwnership(t *testing.T) {
@@ -142,13 +109,8 @@ func TestPythonImageOwnership(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	result, err := client.Exec(context.Background(), "stat -c '%u:%g' /usr/local/bin/python3.12")
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	got := strings.TrimSpace(result.Stdout)
-	if got != "0:0" {
-		t.Errorf("python3.12 uid:gid = %q, want %q", got, "0:0")
-	}
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "0:0", strings.TrimSpace(result.Stdout))
 }
 
 // --- File permissions ---
@@ -167,13 +129,8 @@ func TestImageFilePermissions(t *testing.T) {
 
 	for _, tc := range tests {
 		result, err := client.Exec(context.Background(), "stat -c '%a' "+tc.path)
-		if err != nil {
-			t.Fatalf("stat %s: %v", tc.path, err)
-		}
-		got := strings.TrimSpace(result.Stdout)
-		if got != tc.mode {
-			t.Errorf("%s mode = %q, want %q", tc.path, got, tc.mode)
-		}
+		require.NoErrorf(t, err, "stat %s", tc.path)
+		assert.Equalf(t, tc.mode, strings.TrimSpace(result.Stdout), "%s mode", tc.path)
 	}
 }
 
@@ -186,11 +143,7 @@ func TestBusyboxSymlinksWork(t *testing.T) {
 	// Verify the symlink chain resolves and commands execute correctly.
 	for _, cmd := range []string{"ls /", "cat /etc/hostname", "id -u"} {
 		result, err := client.Exec(context.Background(), cmd)
-		if err != nil {
-			t.Fatalf("Exec %q: %v", cmd, err)
-		}
-		if result.ExitCode != 0 {
-			t.Errorf("%q exit code = %d, want 0; stderr: %s", cmd, result.ExitCode, result.Stderr)
-		}
+		require.NoErrorf(t, err, "Exec %q", cmd)
+		assert.Equalf(t, 0, result.ExitCode, "%q exit code; stderr: %s", cmd, result.Stderr)
 	}
 }

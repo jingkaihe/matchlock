@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMountRouter_BasicRouting(t *testing.T) {
@@ -16,28 +19,20 @@ func TestMountRouter_BasicRouting(t *testing.T) {
 	})
 
 	h1, err := router.Create("/workspace/file.txt", 0644)
-	if err != nil {
-		t.Fatalf("Create in workspace failed: %v", err)
-	}
+	require.NoError(t, err)
 	h1.Write([]byte("workspace content"))
 	h1.Close()
 
 	h2, err := router.Create("/data/file.txt", 0644)
-	if err != nil {
-		t.Fatalf("Create in data failed: %v", err)
-	}
+	require.NoError(t, err)
 	h2.Write([]byte("data content"))
 	h2.Close()
 
 	content1, _ := workspace.ReadFile("/file.txt")
-	if string(content1) != "workspace content" {
-		t.Errorf("Expected 'workspace content' in workspace provider")
-	}
+	assert.Equal(t, "workspace content", string(content1))
 
 	content2, _ := data.ReadFile("/file.txt")
-	if string(content2) != "data content" {
-		t.Errorf("Expected 'data content' in data provider")
-	}
+	assert.Equal(t, "data content", string(content2))
 }
 
 func TestMountRouter_UnmountedPath(t *testing.T) {
@@ -46,9 +41,7 @@ func TestMountRouter_UnmountedPath(t *testing.T) {
 	})
 
 	_, err := router.Create("/other/file.txt", 0644)
-	if err == nil {
-		t.Error("Create on unmounted path should fail")
-	}
+	require.Error(t, err)
 }
 
 func TestMountRouter_NestedMounts(t *testing.T) {
@@ -67,14 +60,10 @@ func TestMountRouter_NestedMounts(t *testing.T) {
 	h2.Close()
 
 	_, err := parent.Stat("/parent.txt")
-	if err != nil {
-		t.Error("parent.txt should be in parent provider")
-	}
+	require.NoError(t, err, "parent.txt should be in parent provider")
 
 	_, err = child.Stat("/child.txt")
-	if err != nil {
-		t.Error("child.txt should be in child provider")
-	}
+	require.NoError(t, err, "child.txt should be in child provider")
 }
 
 func TestMountRouter_Stat(t *testing.T) {
@@ -89,12 +78,8 @@ func TestMountRouter_Stat(t *testing.T) {
 	})
 
 	info, err := router.Stat("/mount/dir/file.txt")
-	if err != nil {
-		t.Fatalf("Stat failed: %v", err)
-	}
-	if info.Size() != 7 {
-		t.Errorf("Expected size 7, got %d", info.Size())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int64(7), info.Size())
 }
 
 func TestMountRouter_ReadDir(t *testing.T) {
@@ -110,12 +95,8 @@ func TestMountRouter_ReadDir(t *testing.T) {
 	})
 
 	entries, err := router.ReadDir("/mount")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Errorf("Expected 3 entries, got %d", len(entries))
-	}
+	require.NoError(t, err)
+	assert.Len(t, entries, 3)
 }
 
 func TestMountRouter_Open(t *testing.T) {
@@ -129,16 +110,12 @@ func TestMountRouter_Open(t *testing.T) {
 	})
 
 	rh, err := router.Open("/mount/file.txt", os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatalf("Open failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer rh.Close()
 
 	buf := make([]byte, 100)
 	n, _ := rh.Read(buf)
-	if string(buf[:n]) != "test data" {
-		t.Errorf("Expected 'test data', got %q", string(buf[:n]))
-	}
+	assert.Equal(t, "test data", string(buf[:n]))
 }
 
 func TestMountRouter_Mkdir(t *testing.T) {
@@ -148,17 +125,11 @@ func TestMountRouter_Mkdir(t *testing.T) {
 		"/mount": mp,
 	})
 
-	if err := router.Mkdir("/mount/newdir", 0755); err != nil {
-		t.Fatalf("Mkdir failed: %v", err)
-	}
+	require.NoError(t, router.Mkdir("/mount/newdir", 0755))
 
 	info, err := mp.Stat("/newdir")
-	if err != nil {
-		t.Fatalf("Directory should exist: %v", err)
-	}
-	if !info.IsDir() {
-		t.Error("Should be a directory")
-	}
+	require.NoError(t, err, "Directory should exist")
+	assert.True(t, info.IsDir())
 }
 
 func TestMountRouter_Remove(t *testing.T) {
@@ -170,14 +141,10 @@ func TestMountRouter_Remove(t *testing.T) {
 		"/mount": mp,
 	})
 
-	if err := router.Remove("/mount/file.txt"); err != nil {
-		t.Fatalf("Remove failed: %v", err)
-	}
+	require.NoError(t, router.Remove("/mount/file.txt"))
 
 	_, err := mp.Stat("/file.txt")
-	if err == nil {
-		t.Error("File should not exist after remove")
-	}
+	require.Error(t, err, "File should not exist after remove")
 }
 
 func TestMountRouter_Rename(t *testing.T) {
@@ -191,19 +158,13 @@ func TestMountRouter_Rename(t *testing.T) {
 		"/mount": mp,
 	})
 
-	if err := router.Rename("/mount/old.txt", "/mount/new.txt"); err != nil {
-		t.Fatalf("Rename failed: %v", err)
-	}
+	require.NoError(t, router.Rename("/mount/old.txt", "/mount/new.txt"))
 
 	_, err := mp.Stat("/old.txt")
-	if err == nil {
-		t.Error("Old file should not exist")
-	}
+	require.Error(t, err, "Old file should not exist")
 
 	_, err = mp.Stat("/new.txt")
-	if err != nil {
-		t.Error("New file should exist")
-	}
+	require.NoError(t, err, "New file should exist")
 }
 
 func TestMountRouter_NotReadonly(t *testing.T) {
@@ -211,17 +172,13 @@ func TestMountRouter_NotReadonly(t *testing.T) {
 		"/mount": NewMemoryProvider(),
 	})
 
-	if router.Readonly() {
-		t.Error("MountRouter should not be readonly")
-	}
+	assert.False(t, router.Readonly())
 }
 
 func TestMountRouter_ReadDirIncludesNestedFileMount(t *testing.T) {
 	hostDir := t.TempDir()
 	hostFile := filepath.Join(hostDir, "hello.txt")
-	if err := os.WriteFile(hostFile, []byte("hello"), 0644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(hostFile, []byte("hello"), 0644), "write file")
 
 	router := NewMountRouter(map[string]Provider{
 		"/workspace":           NewMemoryProvider(),
@@ -229,22 +186,16 @@ func TestMountRouter_ReadDirIncludesNestedFileMount(t *testing.T) {
 	})
 
 	entries, err := router.ReadDir("/workspace")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
+	require.NoError(t, err, "ReadDir failed")
 
 	var found bool
 	for _, e := range entries {
 		if e.Name() == "hello.txt" {
 			found = true
-			if e.IsDir() {
-				t.Fatal("hello.txt should be a file mount entry")
-			}
+			require.False(t, e.IsDir(), "hello.txt should be a file mount entry")
 		}
 	}
-	if !found {
-		t.Fatalf("expected hello.txt in /workspace listing, got %v entries", len(entries))
-	}
+	require.True(t, found, "expected hello.txt in /workspace listing, got %v entries", len(entries))
 }
 
 func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
@@ -254,20 +205,14 @@ func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
 	})
 
 	entries, err := router.ReadDir("/workspace")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
+	require.NoError(t, err, "ReadDir failed")
 
 	var found bool
 	for _, e := range entries {
 		if e.Name() == "nested" {
 			found = true
-			if !e.IsDir() {
-				t.Fatal("nested should be a directory mount entry")
-			}
+			require.True(t, e.IsDir(), "nested should be a directory mount entry")
 		}
 	}
-	if !found {
-		t.Fatalf("expected nested in /workspace listing, got %v entries", len(entries))
-	}
+	require.True(t, found, "expected nested in /workspace listing, got %v entries", len(entries))
 }

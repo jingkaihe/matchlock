@@ -85,6 +85,8 @@ mise run test:acceptance   # Acceptance tests (requires VM support, builds first
 mise run test:coverage     # Coverage report
 ```
 
+> **Convention:** Use `github.com/stretchr/testify/assert` and `github.com/stretchr/testify/require` for test assertions instead of manual `if/t.Fatal`/`t.Errorf` patterns. Use `require` when a failure should stop the test immediately, and `assert` when subsequent checks should still run.
+
 **Release:**
 ```bash
 mise run push-tag          # Push v$VERSION tag → triggers GitHub Actions release

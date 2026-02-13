@@ -10,6 +10,8 @@ import (
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/policy"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHandlePassthrough_Allowed(t *testing.T) {
@@ -32,19 +34,15 @@ func TestHandlePassthrough_Allowed(t *testing.T) {
 
 	msg := []byte("hello passthrough")
 	client.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	if _, err := client.Write(msg); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
+	_, err := client.Write(msg)
+	require.NoError(t, err)
 
 	buf := make([]byte, len(msg))
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := io.ReadFull(client, buf); err != nil {
-		t.Fatalf("read failed: %v", err)
-	}
+	_, err = io.ReadFull(client, buf)
+	require.NoError(t, err)
 
-	if string(buf) != string(msg) {
-		t.Errorf("expected %q, got %q", msg, buf)
-	}
+	assert.Equal(t, string(msg), string(buf))
 }
 
 func TestHandlePassthrough_Blocked(t *testing.T) {
@@ -67,19 +65,15 @@ func TestHandlePassthrough_Blocked(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("handlePassthrough should have returned quickly for blocked host")
+		require.Fail(t, "handlePassthrough should have returned quickly for blocked host")
 	}
 
 	select {
 	case ev := <-tp.events:
-		if !ev.Network.Blocked {
-			t.Error("expected blocked event")
-		}
-		if ev.Network.Host != "93.184.216.34:8080" {
-			t.Errorf("expected host 93.184.216.34:8080, got %s", ev.Network.Host)
-		}
+		assert.True(t, ev.Network.Blocked, "expected blocked event")
+		assert.Equal(t, "93.184.216.34:8080", ev.Network.Host)
 	default:
-		t.Error("expected a blocked event to be emitted")
+		assert.Fail(t, "expected a blocked event to be emitted")
 	}
 }
 
@@ -105,13 +99,10 @@ func TestHandlePassthrough_EmptyAllowlist(t *testing.T) {
 
 	buf := make([]byte, len(msg))
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, err := io.ReadFull(client, buf); err != nil {
-		t.Fatalf("read failed: %v", err)
-	}
+	_, err := io.ReadFull(client, buf)
+	require.NoError(t, err)
 
-	if string(buf) != string(msg) {
-		t.Errorf("expected %q, got %q", msg, buf)
-	}
+	assert.Equal(t, string(msg), string(buf))
 }
 
 func TestHandlePassthrough_UpstreamRefused(t *testing.T) {
@@ -135,16 +126,14 @@ func TestHandlePassthrough_UpstreamRefused(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handlePassthrough should return when upstream is unreachable")
+		require.Fail(t, "handlePassthrough should return when upstream is unreachable")
 	}
 }
 
 func TestHandlePassthrough_HalfClose(t *testing.T) {
 	// Start a server that writes a response then closes its write side
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer ln.Close()
 
 	go func() {
@@ -185,24 +174,20 @@ func TestHandlePassthrough_HalfClose(t *testing.T) {
 	client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	io.ReadFull(client, buf)
 
-	if string(buf) != string(msg) {
-		t.Errorf("expected %q, got %q", msg, buf)
-	}
+	assert.Equal(t, string(msg), string(buf))
 
 	// handlePassthrough should exit cleanly after upstream closes
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("handlePassthrough should have exited after upstream closed")
+		require.Fail(t, "handlePassthrough should have exited after upstream closed")
 	}
 }
 
 func startEchoServer(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start echo server: %v", err)
-	}
+	require.NoError(t, err)
 	go func() {
 		for {
 			conn, err := ln.Accept()

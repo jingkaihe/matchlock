@@ -4,13 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCurrentArch(t *testing.T) {
 	arch := CurrentArch()
-	if arch != ArchX86_64 && arch != ArchARM64 {
-		t.Errorf("unexpected architecture: %s", arch)
-	}
+	assert.Contains(t, []Architecture{ArchX86_64, ArchARM64}, arch)
 }
 
 func TestKernelFilename(t *testing.T) {
@@ -22,9 +23,7 @@ func TestKernelFilename(t *testing.T) {
 		{ArchARM64, "kernel-arm64"},
 	}
 	for _, tt := range tests {
-		if got := tt.arch.KernelFilename(); got != tt.expected {
-			t.Errorf("KernelFilename(%s) = %s, want %s", tt.arch, got, tt.expected)
-		}
+		assert.Equal(t, tt.expected, tt.arch.KernelFilename())
 	}
 }
 
@@ -37,9 +36,7 @@ func TestOCIPlatform(t *testing.T) {
 		{ArchARM64, "linux/arm64"},
 	}
 	for _, tt := range tests {
-		if got := tt.arch.OCIPlatform(); got != tt.expected {
-			t.Errorf("OCIPlatform(%s) = %s, want %s", tt.arch, got, tt.expected)
-		}
+		assert.Equal(t, tt.expected, tt.arch.OCIPlatform())
 	}
 }
 
@@ -49,15 +46,11 @@ func TestManagerKernelPath(t *testing.T) {
 
 	path := mgr.KernelPath(ArchX86_64, "6.1.137")
 	expected := filepath.Join(tmpDir, "kernels", "6.1.137", "kernel")
-	if path != expected {
-		t.Errorf("KernelPath() = %s, want %s", path, expected)
-	}
+	assert.Equal(t, expected, path)
 
 	path = mgr.KernelPath(ArchARM64, "")
 	expected = filepath.Join(tmpDir, "kernels", Version, "kernel-arm64")
-	if path != expected {
-		t.Errorf("KernelPath() = %s, want %s", path, expected)
-	}
+	assert.Equal(t, expected, path)
 }
 
 func TestListCachedVersions(t *testing.T) {
@@ -65,37 +58,23 @@ func TestListCachedVersions(t *testing.T) {
 	mgr := NewManager(WithCacheDir(tmpDir))
 
 	versions, err := mgr.ListCachedVersions()
-	if err != nil {
-		t.Fatalf("ListCachedVersions() error: %v", err)
-	}
-	if len(versions) != 0 {
-		t.Errorf("expected empty list, got %v", versions)
-	}
+	require.NoError(t, err)
+	assert.Len(t, versions, 0)
 
 	os.MkdirAll(filepath.Join(tmpDir, "kernels", "6.1.137"), 0755)
 	os.MkdirAll(filepath.Join(tmpDir, "kernels", "6.1.140"), 0755)
 
 	versions, err = mgr.ListCachedVersions()
-	if err != nil {
-		t.Fatalf("ListCachedVersions() error: %v", err)
-	}
-	if len(versions) != 2 {
-		t.Errorf("expected 2 versions, got %d", len(versions))
-	}
+	require.NoError(t, err)
+	assert.Len(t, versions, 2)
 }
 
 func TestImageReference(t *testing.T) {
 	ref := ImageReference("")
-	expected := DefaultRegistry + "/kernel:" + Version
-	if ref != expected {
-		t.Errorf("ImageReference() = %s, want %s", ref, expected)
-	}
+	assert.Equal(t, DefaultRegistry+"/kernel:"+Version, ref)
 
 	ref = ImageReference("6.1.140")
-	expected = DefaultRegistry + "/kernel:6.1.140"
-	if ref != expected {
-		t.Errorf("ImageReference(6.1.140) = %s, want %s", ref, expected)
-	}
+	assert.Equal(t, DefaultRegistry+"/kernel:6.1.140", ref)
 }
 
 func TestParseVersion(t *testing.T) {
@@ -108,8 +87,6 @@ func TestParseVersion(t *testing.T) {
 		{"kernel", Version},
 	}
 	for _, tt := range tests {
-		if got := ParseVersion(tt.ref); got != tt.expected {
-			t.Errorf("ParseVersion(%s) = %s, want %s", tt.ref, got, tt.expected)
-		}
+		assert.Equal(t, tt.expected, ParseVersion(tt.ref))
 	}
 }
