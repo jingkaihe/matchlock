@@ -4,58 +4,13 @@ package acceptance
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// --- Dockerfile build ---
-
-func TestCLIDockerfileBuild(t *testing.T) {
-	contextDir := t.TempDir()
-	dockerfile := filepath.Join(contextDir, "Dockerfile")
-	helloFile := filepath.Join(contextDir, "hello.txt")
-
-	err := os.WriteFile(helloFile, []byte("hello from matchlock build"), 0644)
-	require.NoError(t, err)
-	err = os.WriteFile(dockerfile, []byte(`FROM busybox:latest
-COPY hello.txt /hello.txt
-`), 0644)
-	require.NoError(t, err)
-
-	tag := "matchlock-test-build:latest"
-
-	t.Cleanup(func() {
-		runCLI(t, "image", "rm", tag)
-	})
-
-	stdout, stderr, exitCode := runCLIWithTimeout(t, 10*time.Minute,
-		"build",
-		"-f", dockerfile,
-		"-t", tag,
-		contextDir,
-	)
-	require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-	assert.Contains(t, stdout, "Successfully built and tagged")
-
-	imgStdout, _, imgExitCode := runCLI(t, "image", "ls")
-	require.Equal(t, 0, imgExitCode)
-	assert.Contains(t, imgStdout, tag)
-
-	runStdout, runStderr, runExitCode := runCLIWithTimeout(t, 2*time.Minute,
-		"run", "--image", tag, "cat", "/hello.txt",
-	)
-	require.Equalf(t, 0, runExitCode, "stdout: %s\nstderr: %s", runStdout, runStderr)
-	assert.Equal(t, "hello from matchlock build", strings.TrimSpace(runStdout))
-}
-
-// --- Symlink preservation ---
 
 func TestImageSymlinksPreserved(t *testing.T) {
 	client := launchAlpine(t)
@@ -84,8 +39,6 @@ func TestPythonImageSymlinks(t *testing.T) {
 	assert.Contains(t, got, "python")
 }
 
-// --- File ownership (uid/gid) ---
-
 func TestImageFileOwnershipRoot(t *testing.T) {
 	client := launchAlpine(t)
 
@@ -113,8 +66,6 @@ func TestPythonImageOwnership(t *testing.T) {
 	assert.Equal(t, "0:0", strings.TrimSpace(result.Stdout))
 }
 
-// --- File permissions ---
-
 func TestImageFilePermissions(t *testing.T) {
 	client := launchAlpine(t)
 
@@ -133,8 +84,6 @@ func TestImageFilePermissions(t *testing.T) {
 		assert.Equalf(t, tc.mode, strings.TrimSpace(result.Stdout), "%s mode", tc.path)
 	}
 }
-
-// --- Busybox symlinks ---
 
 func TestBusyboxSymlinksWork(t *testing.T) {
 	client := launchAlpine(t)

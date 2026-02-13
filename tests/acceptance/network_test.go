@@ -12,23 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// launchAlpineWithNetwork creates a sandbox with network policy configured.
-func launchAlpineWithNetwork(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
-	t.Helper()
-	client, err := sdk.NewClient(matchlockConfig(t))
-	require.NoError(t, err, "NewClient")
-
-	t.Cleanup(func() {
-		client.Close(0)
-		client.Remove()
-	})
-
-	_, err = client.Launch(builder)
-	require.NoError(t, err, "Launch")
-
-	return client
-}
-
 // ---------------------------------------------------------------------------
 // Allowlist tests
 // ---------------------------------------------------------------------------
@@ -114,7 +97,7 @@ func TestAllowlistMultipleHosts(t *testing.T) {
 }
 
 func TestNoAllowlistPermitsAll(t *testing.T) {
-	// No AllowHost → all hosts are allowed (empty allowlist = permit all)
+	// No AllowHost -> all hosts are allowed (empty allowlist = permit all)
 	sandbox := sdk.New("alpine:latest").
 		BlockPrivateIPs() // enable interception without restricting hosts
 
@@ -228,7 +211,7 @@ func TestSecretInjectedInQueryParam(t *testing.T) {
 
 	client := launchAlpineWithNetwork(t, sandbox)
 
-	// Send secret as a query parameter — the MITM should replace the placeholder in the URL
+	// Send secret as a query parameter - the MITM should replace the placeholder in the URL
 	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - "http://httpbin.org/get?api_key=$QP_KEY" 2>&1'`)
 	require.NoError(t, err, "Exec")
 

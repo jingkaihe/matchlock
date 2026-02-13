@@ -13,22 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
-	t.Helper()
-	client, err := sdk.NewClient(matchlockConfig(t))
-	require.NoError(t, err, "NewClient")
-
-	t.Cleanup(func() {
-		client.Close(0)
-		client.Remove()
-	})
-
-	_, err = client.Launch(builder)
-	require.NoError(t, err, "Launch")
-
-	return client
-}
-
 // --- User switching tests ---
 
 func TestUserSwitchByUsername(t *testing.T) {
@@ -159,36 +143,6 @@ func TestImageConfigUserWithBuilderOverride(t *testing.T) {
 	result, err := client.Exec(context.Background(), "id -u")
 	require.NoError(t, err, "Exec")
 	assert.Equal(t, "65534", strings.TrimSpace(result.Stdout))
-}
-
-// --- VFS chmod test ---
-
-func TestChmodViaExec(t *testing.T) {
-	client := launchAlpine(t)
-
-	err := client.WriteFile(context.Background(), "/workspace/script.sh", []byte("#!/bin/sh\necho chmod-works\n"))
-	require.NoError(t, err, "WriteFile")
-
-	_, err = client.Exec(context.Background(), "chmod +x /workspace/script.sh")
-	require.NoError(t, err, "chmod")
-
-	result, err := client.Exec(context.Background(), "/workspace/script.sh")
-	require.NoError(t, err, "Exec script")
-	assert.Equal(t, "chmod-works", strings.TrimSpace(result.Stdout))
-}
-
-func TestChmodPreservesAfterStat(t *testing.T) {
-	client := launchAlpine(t)
-
-	err := client.WriteFile(context.Background(), "/workspace/check.sh", []byte("#!/bin/sh\necho ok\n"))
-	require.NoError(t, err, "WriteFile")
-
-	_, err = client.Exec(context.Background(), "chmod 755 /workspace/check.sh")
-	require.NoError(t, err, "chmod")
-
-	result, err := client.Exec(context.Background(), "stat -c '%a' /workspace/check.sh")
-	require.NoError(t, err, "stat")
-	assert.Equal(t, "755", strings.TrimSpace(result.Stdout))
 }
 
 // --- Streaming with user tests ---
