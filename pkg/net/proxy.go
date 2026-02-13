@@ -54,13 +54,13 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 
 	httpLn, err := net.Listen("tcp", httpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to listen on HTTP port %s: %w", httpAddr, err)
+		return nil, fmt.Errorf("%w on HTTP port %s: %w", ErrListen, httpAddr, err)
 	}
 
 	httpsLn, err := net.Listen("tcp", httpsAddr)
 	if err != nil {
 		httpLn.Close()
-		return nil, fmt.Errorf("failed to listen on HTTPS port %s: %w", httpsAddr, err)
+		return nil, fmt.Errorf("%w on HTTPS port %s: %w", ErrListen, httpsAddr, err)
 	}
 
 	var passthroughLn net.Listener
@@ -70,7 +70,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		if err != nil {
 			httpLn.Close()
 			httpsLn.Close()
-			return nil, fmt.Errorf("failed to listen on passthrough port %s: %w", ptAddr, err)
+			return nil, fmt.Errorf("%w on passthrough port %s: %w", ErrListen, ptAddr, err)
 		}
 	}
 
@@ -231,7 +231,7 @@ type originalDst struct {
 func getOriginalDst(conn *net.TCPConn) (*originalDst, error) {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get syscall conn: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrSyscall, err)
 	}
 
 	var origDst *originalDst
@@ -252,7 +252,7 @@ func getOriginalDst(conn *net.TCPConn) (*originalDst, error) {
 			0,
 		)
 		if errno != 0 {
-			controlErr = fmt.Errorf("getsockopt SO_ORIGINAL_DST failed: %w", errno)
+			controlErr = fmt.Errorf("%w: %w", ErrOriginalDst, errno)
 			return
 		}
 

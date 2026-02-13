@@ -59,7 +59,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
-		return nil, fmt.Errorf("parse image reference: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrParseReference, err)
 	}
 
 	cacheDir := filepath.Join(b.cacheDir, sanitizeRef(imageRef))
@@ -95,18 +95,18 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 
 	img, err := remote.Image(ref, remoteOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("pull image: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrPullImage, err)
 	}
 
 	digest, err := img.Digest()
 	if err != nil {
-		return nil, fmt.Errorf("get image digest: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrImageDigest, err)
 	}
 
 	rootfsPath := filepath.Join(cacheDir, digest.Hex[:12]+".ext4")
 
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0755); err != nil {
-		return nil, fmt.Errorf("create cache dir: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateDir, err)
 	}
 
 	if fi, err := os.Stat(rootfsPath); err == nil && fi.Size() > 0 {
@@ -122,18 +122,18 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 
 	extractDir, err := os.MkdirTemp("", "matchlock-extract-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateTemp, err)
 	}
 	defer os.RemoveAll(extractDir)
 
 	fileMetas, err := b.extractImage(img, extractDir)
 	if err != nil {
-		return nil, fmt.Errorf("extract image: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrExtract, err)
 	}
 
 	if err := b.createExt4(extractDir, rootfsPath, fileMetas); err != nil {
 		os.Remove(rootfsPath)
-		return nil, fmt.Errorf("create ext4: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateExt4, err)
 	}
 
 	ociConfig := extractOCIConfig(img)
@@ -235,7 +235,7 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read tar: %w", err)
+			return nil, fmt.Errorf("%w: read tar: %w", ErrExtract, err)
 		}
 
 		clean := filepath.Clean(hdr.Name)
@@ -247,38 +247,38 @@ func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMet
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := ensureRealDir(destDir, target); err != nil {
-				return nil, fmt.Errorf("mkdir %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: mkdir %s: %w", ErrExtract, clean, err)
 			}
 		case tar.TypeReg:
 			f, err := safeCreate(destDir, target, os.FileMode(hdr.Mode)&0777)
 			if err != nil {
-				return nil, fmt.Errorf("create %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: create %s: %w", ErrExtract, clean, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
 				f.Close()
-				return nil, fmt.Errorf("write %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: write %s: %w", ErrExtract, clean, err)
 			}
 			f.Close()
 		case tar.TypeSymlink:
 			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
-				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: mkdir parent %s: %w", ErrExtract, clean, err)
 			}
 			if err := os.RemoveAll(target); err != nil {
-				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: remove existing %s: %w", ErrExtract, clean, err)
 			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return nil, fmt.Errorf("symlink %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: symlink %s: %w", ErrExtract, clean, err)
 			}
 		case tar.TypeLink:
 			linkTarget := filepath.Join(destDir, filepath.Clean(hdr.Linkname))
 			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
-				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: mkdir parent %s: %w", ErrExtract, clean, err)
 			}
 			if err := os.RemoveAll(target); err != nil {
-				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: remove existing %s: %w", ErrExtract, clean, err)
 			}
 			if err := os.Link(linkTarget, target); err != nil {
-				return nil, fmt.Errorf("hardlink %s: %w", clean, err)
+				return nil, fmt.Errorf("%w: hardlink %s: %w", ErrExtract, clean, err)
 			}
 		default:
 			continue

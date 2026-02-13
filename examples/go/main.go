@@ -2,11 +2,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+)
+
+var (
+	errCreateClient    = errors.New("create client")
+	errLaunchSandbox   = errors.New("launch sandbox")
+	errExecPythonVer   = errors.New("exec python3 --version")
+	errExecPipInstall  = errors.New("exec pip install uv")
+	errWriteFile       = errors.New("write_file")
+	errExecStream      = errors.New("exec_stream")
 )
 
 func main() {
@@ -24,7 +34,7 @@ func run() error {
 
 	client, err := sdk.NewClient(cfg)
 	if err != nil {
-		return fmt.Errorf("create client: %w", err)
+		return fmt.Errorf("%w: %w", errCreateClient, err)
 	}
 	defer client.Remove()
 	defer client.Close(0)
@@ -40,20 +50,20 @@ func run() error {
 
 	vmID, err := client.Launch(sandbox)
 	if err != nil {
-		return fmt.Errorf("launch sandbox: %w", err)
+		return fmt.Errorf("%w: %w", errLaunchSandbox, err)
 	}
 	slog.Info("sandbox ready", "vm", vmID)
 
 	// Buffered exec — collects all output, returns when done
 	result, err := client.Exec(context.Background(), "python3 --version")
 	if err != nil {
-		return fmt.Errorf("exec python3 --version: %w", err)
+		return fmt.Errorf("%w: %w", errExecPythonVer, err)
 	}
 	fmt.Print(result.Stdout)
 
 	// Install uv
 	if _, err := client.Exec(context.Background(), "pip install --quiet uv"); err != nil {
-		return fmt.Errorf("exec pip install uv: %w", err)
+		return fmt.Errorf("%w: %w", errExecPipInstall, err)
 	}
 
 	// Write a Python script that uses the Anthropic SDK to stream plain text
@@ -74,7 +84,7 @@ with client.messages.stream(
 print()
 `
 	if err := client.WriteFile(context.Background(), "/workspace/ask.py", []byte(script)); err != nil {
-		return fmt.Errorf("write_file: %w", err)
+		return fmt.Errorf("%w: %w", errWriteFile, err)
 	}
 
 	// Streaming exec — prints plain text as it arrives
@@ -83,7 +93,7 @@ print()
 		os.Stdout, os.Stderr,
 	)
 	if err != nil {
-		return fmt.Errorf("exec_stream: %w", err)
+		return fmt.Errorf("%w: %w", errExecStream, err)
 	}
 	fmt.Println()
 	slog.Info("done", "exit_code", streamResult.ExitCode, "duration_ms", streamResult.DurationMS)

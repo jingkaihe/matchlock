@@ -67,7 +67,7 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 		if userName == "" {
 			u, err := user.Current()
 			if err != nil {
-				return fmt.Errorf("could not determine user: %w", err)
+				return fmt.Errorf("%w: %w", ErrDetermineUser, err)
 			}
 			userName = u.Username
 		}
@@ -140,7 +140,7 @@ func installFirecracker(installDir string) error {
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrDownloadFailed, err)
 	}
 	defer resp.Body.Close()
 
@@ -150,7 +150,7 @@ func installFirecracker(installDir string) error {
 
 	gr, err := gzip.NewReader(resp.Body)
 	if err != nil {
-		return fmt.Errorf("gzip reader: %w", err)
+		return fmt.Errorf("%w: %w", ErrGzipReader, err)
 	}
 	defer gr.Close()
 
@@ -165,7 +165,7 @@ func installFirecracker(installDir string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("tar reader: %w", err)
+			return fmt.Errorf("%w: %w", ErrTarReader, err)
 		}
 
 		baseName := filepath.Base(hdr.Name)
@@ -181,13 +181,13 @@ func installFirecracker(installDir string) error {
 		destPath := filepath.Join(installDir, destName)
 		f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 		if err != nil {
-			return fmt.Errorf("create %s: %w", destPath, err)
+			return fmt.Errorf("%w %s: %w", ErrCreateFile, destPath, err)
 		}
 
 		_, err = io.Copy(f, tr)
 		f.Close()
 		if err != nil {
-			return fmt.Errorf("write %s: %w", destPath, err)
+			return fmt.Errorf("%w %s: %w", ErrWriteFile, destPath, err)
 		}
 		fmt.Printf("✓ Installed %s\n", destPath)
 	}
@@ -304,7 +304,7 @@ func setupTunDevice(userName string) error {
 
 	if err := exec.Command("getent", "group", "netdev").Run(); err != nil {
 		if err := exec.Command("groupadd", "netdev").Run(); err != nil {
-			return fmt.Errorf("create netdev group: %w", err)
+			return fmt.Errorf("%w: %w", ErrCreateNetdev, err)
 		}
 		fmt.Println("✓ Created netdev group")
 	}
@@ -312,13 +312,13 @@ func setupTunDevice(userName string) error {
 	out, _ := exec.Command("groups", userName).Output()
 	if !strings.Contains(string(out), "netdev") {
 		if err := exec.Command("usermod", "-aG", "netdev", userName).Run(); err != nil {
-			return fmt.Errorf("add %s to netdev group: %w", userName, err)
+			return fmt.Errorf("%w %s: %w", ErrAddToNetdev, userName, err)
 		}
 		fmt.Printf("✓ Added %s to netdev group\n", userName)
 	}
 
 	if err := exec.Command("chown", "root:netdev", "/dev/net/tun").Run(); err != nil {
-		return fmt.Errorf("chown /dev/net/tun: %w", err)
+		return fmt.Errorf("%w: %w", ErrChownTun, err)
 	}
 	if err := os.Chmod("/dev/net/tun", 0660); err != nil {
 		return err
@@ -356,7 +356,7 @@ func enableIPForwarding() error {
 	}
 
 	if err := os.WriteFile(dropInFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("write %s: %w", dropInFile, err)
+		return fmt.Errorf("%w %s: %w", ErrWriteSysctl, dropInFile, err)
 	}
 
 	if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
@@ -368,7 +368,7 @@ func enableIPForwarding() error {
 
 func checkNftables() error {
 	if err := exec.Command("modprobe", "nf_tables").Run(); err != nil {
-		return fmt.Errorf("nf_tables module not available: %w", err)
+		return fmt.Errorf("%w: %w", ErrNfTablesModule, err)
 	}
 	fmt.Println("✓ nftables kernel module loaded")
 	return nil

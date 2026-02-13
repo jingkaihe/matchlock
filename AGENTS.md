@@ -377,6 +377,59 @@ type VFSConfig struct {
 }
 ```
 
+## Error Handling
+
+This project uses the standard library `errors` package with **sentinel errors** for structured, programmatic error handling. Every package that returns errors defines its sentinels in a dedicated `errors.go` file.
+
+### Pattern
+
+1. **Define sentinel errors** in `errors.go` per package using `errors.New`:
+```go
+// pkg/image/errors.go
+package image
+
+import "errors"
+
+var (
+    ErrParseReference = errors.New("parse image reference")
+    ErrPullImage      = errors.New("pull image")
+    ErrExtract        = errors.New("extract image")
+)
+```
+
+2. **Wrap errors** using `fmt.Errorf` with two `%w` verbs — the sentinel and the underlying error:
+```go
+return fmt.Errorf("%w: %w", ErrParseReference, err)
+```
+
+3. **Include dynamic context** (paths, indices, etc.) between the two `%w` verbs:
+```go
+return fmt.Errorf("%w %s: %w", ErrKernelNotFound, config.KernelPath, err)
+return fmt.Errorf("%w disk %d: %w", ErrCreateDiskAttachment, i, err)
+```
+
+4. **Return sentinels directly** when there's no underlying error to wrap:
+```go
+return ErrImageNotFound
+```
+
+### Conventions
+
+- **Exported sentinels** (`ErrFoo`) in library packages (`pkg/...`) — callers use `errors.Is(err, pkg.ErrFoo)`
+- **Unexported sentinels** (`errFoo`) in `main` packages, tests, and examples
+- **Group sentinels** by operation category, not by individual call site — e.g., one `ErrExtract` for all tar extraction failures, not separate sentinels per tar operation
+- **Sentinel names** should be concise and describe the operation that failed, without "failed to" prefix — e.g., `ErrCreateSocket` not `ErrFailedToCreateSocket`
+- **Never use** bare `fmt.Errorf("message: %w", err)` without a sentinel — always wrap with `fmt.Errorf("%w: %w", ErrSentinel, err)`
+
+### Checking Errors
+
+Callers should use `errors.Is` to check for specific failure modes:
+```go
+if errors.Is(err, image.ErrParseReference) {
+    // handle parse failure
+}
+```
+
 ## Known Limitations
 
 ### gVisor Dependency

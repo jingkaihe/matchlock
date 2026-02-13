@@ -149,7 +149,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	buildResult, err := builder.Build(ctx, imageName)
 	if err != nil {
-		return fmt.Errorf("building rootfs: %w", err)
+		return fmt.Errorf("%w: %w", ErrBuildingRootfs, err)
 	}
 	if !buildResult.Cached {
 		fmt.Fprintf(os.Stderr, "Built rootfs from %s (%.1f MB)\n", imageName, float64(buildResult.Size)/(1024*1024))
@@ -208,7 +208,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		for _, vol := range volumes {
 			hostPath, guestPath, readonly, err := api.ParseVolumeMount(vol, workspace)
 			if err != nil {
-				return fmt.Errorf("invalid volume mount %q: %w", vol, err)
+				return fmt.Errorf("%w %q: %w", ErrInvalidVolume, vol, err)
 			}
 			mounts[guestPath] = api.MountConfig{
 				Type:     "real_fs",
@@ -225,7 +225,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		for _, s := range secrets {
 			name, secret, err := api.ParseSecret(s)
 			if err != nil {
-				return fmt.Errorf("invalid secret %q: %w", s, err)
+				return fmt.Errorf("%w %q: %w", ErrInvalidSecret, s, err)
 			}
 			parsedSecrets[name] = secret
 		}
@@ -252,12 +252,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	sb, err := sandbox.New(ctx, config, sandboxOpts)
 	if err != nil {
-		return fmt.Errorf("creating sandbox: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateSandbox, err)
 	}
 
 	if err := sb.Start(ctx); err != nil {
 		sb.Close(ctx)
-		return fmt.Errorf("starting sandbox: %w", err)
+		return fmt.Errorf("%w: %w", ErrStartSandbox, err)
 	}
 
 	// Start exec relay server so `matchlock exec` can connect from another process
@@ -309,7 +309,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 				cancel()
 				stateMgr.Remove(sb.ID())
 			}
-			return fmt.Errorf("executing command: %w", err)
+			return fmt.Errorf("%w: %w", ErrExecCommand, err)
 		}
 
 		if rm {

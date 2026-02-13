@@ -44,7 +44,7 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 	tapName := fmt.Sprintf("fc-%s", config.ID[:8])
 	tapFD, err := CreateTAP(tapName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create TAP device: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrTAPCreate, err)
 	}
 
 	// Use configured subnet or default to 192.168.100.0/24
@@ -57,13 +57,13 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 	if err := ConfigureInterface(tapName, subnetCIDR); err != nil {
 		syscall.Close(tapFD)
 		DeleteInterface(tapName)
-		return nil, fmt.Errorf("failed to configure TAP interface: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrTAPConfigure, err)
 	}
 
 	if err := SetMTU(tapName, 1500); err != nil {
 		syscall.Close(tapFD)
 		DeleteInterface(tapName)
-		return nil, fmt.Errorf("failed to set MTU: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrTAPSetMTU, err)
 	}
 
 	// Close the FD - Firecracker will re-open the device by name
@@ -100,7 +100,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 
 	configPath := filepath.Join(filepath.Dir(m.config.SocketPath), "config.json")
 	if err := os.WriteFile(configPath, fcConfig, 0644); err != nil {
-		return fmt.Errorf("failed to write firecracker config: %w", err)
+		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
 
 	m.cmd = exec.CommandContext(ctx, "firecracker",
@@ -111,14 +111,14 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	if m.config.LogPath != "" {
 		logFile, err := os.Create(m.config.LogPath)
 		if err != nil {
-			return fmt.Errorf("failed to create log file: %w", err)
+			return fmt.Errorf("%w: %w", ErrCreateLogFile, err)
 		}
 		m.cmd.Stdout = logFile
 		m.cmd.Stderr = logFile
 	}
 
 	if err := m.cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start firecracker: %w", err)
+		return fmt.Errorf("%w: %w", ErrStartFirecracker, err)
 	}
 
 	m.pid = m.cmd.Process.Pid
@@ -140,7 +140,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	if m.config.VsockCID > 0 {
 		if err := m.waitForReady(ctx, 30*time.Second); err != nil {
 			m.Stop(ctx)
-			return fmt.Errorf("VM failed to become ready: %w", err)
+			return fmt.Errorf("%w: %w", ErrVMNotReady, err)
 		}
 	} else {
 		// Fallback: wait a bit for boot
@@ -190,7 +190,7 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return fmt.Errorf("timeout waiting for VM ready signal")
+	return ErrVMReadyTimeout
 }
 
 // dialVsock connects to the guest via the Firecracker vsock UDS
@@ -200,19 +200,19 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 // 3. Read "OK <assigned_port>\n" acknowledgement
 func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 	if m.config.VsockPath == "" {
-		return nil, fmt.Errorf("vsock not configured")
+		return nil, ErrVsockNotConfigured
 	}
 
 	conn, err := net.Dial("unix", m.config.VsockPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to vsock UDS %s: %w", m.config.VsockPath, err)
+		return nil, fmt.Errorf("%w %s: %w", ErrVsockConnect, m.config.VsockPath, err)
 	}
 
 	// Send CONNECT command
 	connectCmd := fmt.Sprintf("CONNECT %d\n", port)
 	if _, err := conn.Write([]byte(connectCmd)); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to send CONNECT command: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrVsockSendConnect, err)
 	}
 
 	// Read OK response (format: "OK <port>\n")
@@ -220,13 +220,13 @@ func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 	n, err := conn.Read(buf)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("failed to read CONNECT response: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrVsockReadResponse, err)
 	}
 
 	response := string(buf[:n])
 	if len(response) < 3 || response[:2] != "OK" {
 		conn.Close()
-		return nil, fmt.Errorf("vsock CONNECT failed, got: %q", response)
+		return nil, fmt.Errorf("%w, got: %q", ErrVsockConnectFailed, response)
 	}
 
 	return conn, nil
@@ -372,7 +372,7 @@ func (m *LinuxMachine) Wait(ctx context.Context) error {
 
 func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if m.config.VsockCID == 0 || m.config.VsockPath == "" {
-		return nil, fmt.Errorf("vsock not configured; VsockCID and VsockPath are required")
+		return nil, ErrVsockNotConfigured
 	}
 	return m.execVsock(ctx, command, opts)
 }
@@ -386,7 +386,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 	if opts != nil && opts.Stdin != nil {
 		conn, err := m.dialVsock(VsockPortExec)
 		if err != nil {
-			return nil, fmt.Errorf("failed to connect to exec service: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrExecConnect, err)
 		}
 		return vsock.ExecPipe(ctx, conn, command, opts)
 	}
@@ -395,7 +395,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to exec service: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrExecConnect, err)
 	}
 	defer conn.Close()
 
@@ -417,7 +417,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 	reqData, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode exec request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrExecEncodeRequest, err)
 	}
 
 	streaming := opts != nil && (opts.Stdout != nil || opts.Stderr != nil)
@@ -437,13 +437,13 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("failed to write header: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrExecWriteHeader, err)
 	}
 	if _, err := conn.Write(reqData); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("failed to write request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrExecWriteRequest, err)
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -452,7 +452,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, fmt.Errorf("failed to read response header: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrExecReadRespHeader, err)
 		}
 
 		msgType := header[0]
@@ -464,7 +464,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
-				return nil, fmt.Errorf("failed to read response data: %w", err)
+				return nil, fmt.Errorf("%w: %w", ErrExecReadRespData, err)
 			}
 		}
 
@@ -482,7 +482,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 		case vsock.MsgTypeExecResult:
 			var resp vsock.ExecResponse
 			if err := json.Unmarshal(data, &resp); err != nil {
-				return nil, fmt.Errorf("failed to decode exec response: %w", err)
+				return nil, fmt.Errorf("%w: %w", ErrExecDecodeResponse, err)
 			}
 
 			duration := time.Since(start)
@@ -505,7 +505,7 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 			}
 
 			if resp.Error != "" {
-				return result, fmt.Errorf("exec error: %s", resp.Error)
+				return result, fmt.Errorf("%w: %s", ErrExecRemote, resp.Error)
 			}
 
 			return result, nil
@@ -516,12 +516,12 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 // ExecInteractive executes a command with PTY support for interactive sessions
 func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	if m.config.VsockCID == 0 || m.config.VsockPath == "" {
-		return 1, fmt.Errorf("vsock not configured")
+		return 1, ErrVsockNotConfigured
 	}
 
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
-		return 1, fmt.Errorf("failed to connect to exec service: %w", err)
+		return 1, fmt.Errorf("%w: %w", ErrExecConnect, err)
 	}
 	defer conn.Close()
 
@@ -539,7 +539,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 
 	reqData, err := json.Marshal(req)
 	if err != nil {
-		return 1, fmt.Errorf("failed to encode request: %w", err)
+		return 1, fmt.Errorf("%w: %w", ErrExecEncodeRequest, err)
 	}
 
 	// Send TTY exec request
@@ -548,10 +548,10 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 	binary.BigEndian.PutUint32(header[1:], uint32(len(reqData)))
 
 	if _, err := conn.Write(header); err != nil {
-		return 1, fmt.Errorf("failed to write header: %w", err)
+		return 1, fmt.Errorf("%w: %w", ErrExecWriteHeader, err)
 	}
 	if _, err := conn.Write(reqData); err != nil {
-		return 1, fmt.Errorf("failed to write request: %w", err)
+		return 1, fmt.Errorf("%w: %w", ErrExecWriteRequest, err)
 	}
 
 	done := make(chan int, 1)
@@ -631,7 +631,7 @@ func (m *LinuxMachine) NetworkFD() (int, error) {
 }
 
 func (m *LinuxMachine) VsockFD() (int, error) {
-	return -1, fmt.Errorf("vsock not implemented for direct FD access; use VsockPath for UDS")
+	return -1, ErrVsockNoDirectFD
 }
 
 // VsockPath returns the vsock UDS path for connecting to guest services
@@ -662,7 +662,7 @@ func (m *LinuxMachine) Close(ctx context.Context) error {
 
 	if m.cmd != nil && m.cmd.Process != nil {
 		if err := m.Stop(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop: %w", err))
+			errs = append(errs, fmt.Errorf("%w: %w", ErrStop, err))
 		}
 		// Wait for process to fully exit
 		m.cmd.Wait()
@@ -670,13 +670,13 @@ func (m *LinuxMachine) Close(ctx context.Context) error {
 
 	if m.tapFD > 0 {
 		if err := syscall.Close(m.tapFD); err != nil {
-			errs = append(errs, fmt.Errorf("close tap fd: %w", err))
+			errs = append(errs, fmt.Errorf("%w: %w", ErrCloseTapFD, err))
 		}
 	}
 
 	if m.tapName != "" {
 		if err := DeleteInterface(m.tapName); err != nil {
-			errs = append(errs, fmt.Errorf("delete interface %s: %w", m.tapName, err))
+			errs = append(errs, fmt.Errorf("%w: %w", ErrTAPDelete, err))
 		}
 	}
 

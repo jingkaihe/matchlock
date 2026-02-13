@@ -49,7 +49,7 @@ func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort, passt
 func (r *NFTablesRules) Setup() error {
 	conn, err := nftables.New()
 	if err != nil {
-		return fmt.Errorf("failed to open nftables connection: %w", err)
+		return fmt.Errorf("%w: %w", ErrNFTablesConn, err)
 	}
 	r.conn = conn
 
@@ -126,7 +126,7 @@ func (r *NFTablesRules) Setup() error {
 	})
 
 	if err := conn.Flush(); err != nil {
-		return fmt.Errorf("failed to apply nftables rules: %w", err)
+		return fmt.Errorf("%w: %w", ErrNFTablesApply, err)
 	}
 
 	return nil
@@ -335,7 +335,7 @@ func NewNFTablesNAT(tapInterface string) *NFTablesNAT {
 func (n *NFTablesNAT) Setup() error {
 	conn, err := nftables.New()
 	if err != nil {
-		return fmt.Errorf("failed to open nftables connection: %w", err)
+		return fmt.Errorf("%w: %w", ErrNFTablesConn, err)
 	}
 	n.conn = conn
 
@@ -409,7 +409,7 @@ func (n *NFTablesNAT) Setup() error {
 	})
 
 	if err := conn.Flush(); err != nil {
-		return fmt.Errorf("failed to apply NAT rules: %w", err)
+		return fmt.Errorf("%w: %w", ErrNFTablesApply, err)
 	}
 
 	return nil

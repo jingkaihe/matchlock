@@ -107,7 +107,7 @@ func (c *Client) sendRequestCtx(ctx context.Context, method string, params inter
 	c.pendingMu.Lock()
 	if c.pending == nil {
 		c.pendingMu.Unlock()
-		return nil, fmt.Errorf("client is closed")
+		return nil, ErrClientClosed
 	}
 	c.pending[id] = pending
 	c.pendingMu.Unlock()
@@ -127,14 +127,14 @@ func (c *Client) sendRequestCtx(ctx context.Context, method string, params inter
 
 	data, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrMarshalRequest, err)
 	}
 
 	c.writeMu.Lock()
 	_, writeErr := fmt.Fprintln(c.stdin, string(data))
 	c.writeMu.Unlock()
 	if writeErr != nil {
-		return nil, fmt.Errorf("failed to write request: %w", writeErr)
+		return nil, fmt.Errorf("%w: %w", ErrWriteRequest, writeErr)
 	}
 
 	select {
@@ -171,7 +171,7 @@ func (c *Client) startReader() {
 			if err != nil {
 				c.pendingMu.Lock()
 				for _, p := range c.pending {
-					p.ch <- pendingResult{err: fmt.Errorf("connection closed: %w", err)}
+					p.ch <- pendingResult{err: fmt.Errorf("%w: %w", ErrConnectionClose, err)}
 				}
 				c.pending = nil
 				c.pendingMu.Unlock()

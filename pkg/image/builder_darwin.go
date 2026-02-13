@@ -30,12 +30,12 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	// Check for mke2fs in PATH
 	mke2fsPath, err := exec.LookPath("mke2fs")
 	if err != nil {
-		return fmt.Errorf("mke2fs not found in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs")
+		return fmt.Errorf("%w: mke2fs not in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs", ErrToolNotFound)
 	}
 
 	debugfsPath, err := exec.LookPath("debugfs")
 	if err != nil {
-		return fmt.Errorf("debugfs not found in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs")
+		return fmt.Errorf("%w: debugfs not in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs", ErrToolNotFound)
 	}
 
 	// Calculate size (use Lstat-based walk to avoid following symlinks)
@@ -51,14 +51,14 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	cmd := exec.Command("dd", "if=/dev/zero", "of="+tmpPath, "bs=1M", fmt.Sprintf("count=%d", sizeMB), "conv=sparse")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("create sparse file: %w: %s", err, out)
+		return fmt.Errorf("%w: create sparse file: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	// Create ext4 filesystem
 	cmd = exec.Command(mke2fsPath, "-t", "ext4", "-F", "-q", tmpPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("mke2fs: %w: %s", err, out)
+		return fmt.Errorf("%w: mke2fs: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	// Build debugfs commands to copy all files
@@ -104,7 +104,7 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	})
 	if err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("walk source dir: %w", err)
+		return fmt.Errorf("%w: walk source dir: %w", ErrCreateExt4, err)
 	}
 
 	// Run debugfs to populate the filesystem
@@ -112,12 +112,12 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	cmd.Stdin = strings.NewReader(debugfsCommands.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("debugfs: %w: %s", err, out)
+		return fmt.Errorf("%w: debugfs: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
+		return fmt.Errorf("%w: rename: %w", ErrCreateExt4, err)
 	}
 
 	return nil

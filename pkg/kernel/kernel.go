@@ -111,7 +111,7 @@ func (m *Manager) EnsureKernel(ctx context.Context, arch Architecture, version s
 	}
 
 	if err := m.download(ctx, arch, version, kernelPath); err != nil {
-		return "", fmt.Errorf("download kernel: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrDownloadKernel, err)
 	}
 
 	return kernelPath, nil
@@ -122,12 +122,12 @@ func (m *Manager) download(ctx context.Context, arch Architecture, version strin
 
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
-		return fmt.Errorf("parse reference %s: %w", imageRef, err)
+		return fmt.Errorf("%w %s: %w", ErrParseReference, imageRef, err)
 	}
 
 	platform, err := v1.ParsePlatform(arch.OCIPlatform())
 	if err != nil {
-		return fmt.Errorf("parse platform: %w", err)
+		return fmt.Errorf("%w: %w", ErrParsePlatform, err)
 	}
 
 	desc, err := remote.Get(ref,
@@ -136,38 +136,38 @@ func (m *Manager) download(ctx context.Context, arch Architecture, version strin
 		remote.WithPlatform(*platform),
 	)
 	if err != nil {
-		return fmt.Errorf("get image descriptor: %w", err)
+		return fmt.Errorf("%w: %w", ErrGetDescriptor, err)
 	}
 
 	img, err := desc.Image()
 	if err != nil {
-		return fmt.Errorf("get image: %w", err)
+		return fmt.Errorf("%w: %w", ErrGetImage, err)
 	}
 
 	layers, err := img.Layers()
 	if err != nil {
-		return fmt.Errorf("get layers: %w", err)
+		return fmt.Errorf("%w: %w", ErrGetLayers, err)
 	}
 
 	if len(layers) == 0 {
-		return fmt.Errorf("no layers in image")
+		return ErrNoLayers
 	}
 
 	layer := layers[0]
 	rc, err := layer.Uncompressed()
 	if err != nil {
-		return fmt.Errorf("get uncompressed layer: %w", err)
+		return fmt.Errorf("%w: %w", ErrUncompressLayer, err)
 	}
 	defer rc.Close()
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateDirectory, err)
 	}
 
 	// Read layer content into buffer to try multiple formats
 	content, err := io.ReadAll(rc)
 	if err != nil {
-		return fmt.Errorf("read layer: %w", err)
+		return fmt.Errorf("%w: %w", ErrReadLayer, err)
 	}
 
 	kernelFilename := arch.KernelFilename()
@@ -185,11 +185,11 @@ func (m *Manager) download(ctx context.Context, arch Architecture, version strin
 	// Fallback: treat as raw kernel binary (old format)
 	tmpPath := destPath + ".tmp"
 	if err := os.WriteFile(tmpPath, content, 0644); err != nil {
-		return fmt.Errorf("write kernel: %w", err)
+		return fmt.Errorf("%w: %w", ErrWriteKernel, err)
 	}
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("rename kernel: %w", err)
+		return fmt.Errorf("%w: %w", ErrRenameKernel, err)
 	}
 
 	return nil
@@ -223,7 +223,7 @@ func extractFromTarReader(tr *tar.Reader, destPath, kernelFilename string) error
 			tmpPath := destPath + ".tmp"
 			f, err := os.Create(tmpPath)
 			if err != nil {
-				return fmt.Errorf("create file: %w", err)
+				return fmt.Errorf("%w: %w", ErrCreateFile, err)
 			}
 
 			_, err = io.Copy(f, tr)
@@ -241,7 +241,7 @@ func extractFromTarReader(tr *tar.Reader, destPath, kernelFilename string) error
 		}
 	}
 
-	return fmt.Errorf("kernel file %s not found in archive", kernelFilename)
+	return fmt.Errorf("%w: %s", ErrKernelNotFound, kernelFilename)
 }
 
 func (m *Manager) ListCachedVersions() ([]string, error) {

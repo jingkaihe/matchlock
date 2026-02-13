@@ -24,13 +24,13 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	if err != nil {
 		mke2fsPath, err = exec.LookPath("mkfs.ext4")
 		if err != nil {
-			return fmt.Errorf("mke2fs/mkfs.ext4 not found; install e2fsprogs")
+			return fmt.Errorf("%w: mke2fs/mkfs.ext4; install e2fsprogs", ErrToolNotFound)
 		}
 	}
 
 	debugfsPath, err := exec.LookPath("debugfs")
 	if err != nil {
-		return fmt.Errorf("debugfs not found; install e2fsprogs")
+		return fmt.Errorf("%w: debugfs; install e2fsprogs", ErrToolNotFound)
 	}
 
 	var totalSize int64
@@ -46,13 +46,13 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	cmd.Stderr = nil
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("create sparse file: %w: %s", err, out)
+		return fmt.Errorf("%w: create sparse file: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	cmd = exec.Command(mke2fsPath, "-t", "ext4", "-F", "-q", tmpPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("mke2fs: %w: %s", err, out)
+		return fmt.Errorf("%w: mke2fs: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	var debugfsCommands strings.Builder
@@ -97,19 +97,19 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	})
 	if err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("walk source dir: %w", err)
+		return fmt.Errorf("%w: walk source dir: %w", ErrCreateExt4, err)
 	}
 
 	cmd = exec.Command(debugfsPath, "-w", "-f", "/dev/stdin", tmpPath)
 	cmd.Stdin = strings.NewReader(debugfsCommands.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("debugfs: %w: %s", err, out)
+		return fmt.Errorf("%w: debugfs: %w: %s", ErrCreateExt4, err, out)
 	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
+		return fmt.Errorf("%w: rename: %w", ErrCreateExt4, err)
 	}
 
 	return nil

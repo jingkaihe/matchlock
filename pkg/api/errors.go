@@ -10,4 +10,11 @@ var (
 	ErrVMNotFound     = errors.New("VM not found")
 	ErrTimeout        = errors.New("operation timed out")
 	ErrInvalidConfig  = errors.New("invalid configuration")
+
+	ErrInvalidVolumeFormat = errors.New("expected format host:guest or host:guest:ro")
+	ErrResolvePath         = errors.New("failed to resolve path")
+	ErrHostPathNotExist    = errors.New("host path does not exist")
+	ErrUnknownMountOption  = errors.New("unknown option")
+	ErrGuestPathNotAbs     = errors.New("guest path must be absolute")
+	ErrGuestPathOutside    = errors.New("guest path must be within workspace")
 )

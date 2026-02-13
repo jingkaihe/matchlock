@@ -48,7 +48,7 @@ func runPull(cmd *cobra.Command, args []string) error {
 
 	if tag != "" {
 		if err := builder.SaveTag(tag, result); err != nil {
-			return fmt.Errorf("saving tag: %w", err)
+			return fmt.Errorf("%w: %w", ErrSaveTag, err)
 		}
 		fmt.Printf("Tagged: %s\n", tag)
 	}

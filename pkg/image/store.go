@@ -49,30 +49,30 @@ func NewStore(baseDir string) *Store {
 func (s *Store) Save(tag string, rootfsPath string, meta ImageMeta) error {
 	dir := filepath.Join(s.baseDir, sanitizeRef(tag))
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create store dir: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateDir, err)
 	}
 
 	destPath := filepath.Join(dir, "rootfs.ext4")
 
 	src, err := os.Open(rootfsPath)
 	if err != nil {
-		return fmt.Errorf("open source rootfs: %w", err)
+		return fmt.Errorf("%w: open source rootfs: %w", ErrStoreSave, err)
 	}
 	defer src.Close()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
-		return fmt.Errorf("create dest rootfs: %w", err)
+		return fmt.Errorf("%w: create dest rootfs: %w", ErrStoreSave, err)
 	}
 
 	if _, err := io.Copy(dst, src); err != nil {
 		dst.Close()
 		os.Remove(destPath)
-		return fmt.Errorf("copy rootfs: %w", err)
+		return fmt.Errorf("%w: copy rootfs: %w", ErrStoreSave, err)
 	}
 	if err := dst.Close(); err != nil {
 		os.Remove(destPath)
-		return fmt.Errorf("flush rootfs: %w", err)
+		return fmt.Errorf("%w: flush rootfs: %w", ErrStoreSave, err)
 	}
 
 	meta.Tag = tag
@@ -86,12 +86,12 @@ func (s *Store) Save(tag string, rootfsPath string, meta ImageMeta) error {
 
 	metaBytes, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal metadata: %w", err)
+		return fmt.Errorf("%w: marshal: %w", ErrMetadata, err)
 	}
 
 	metaPath := filepath.Join(dir, "metadata.json")
 	if err := os.WriteFile(metaPath, metaBytes, 0644); err != nil {
-		return fmt.Errorf("write metadata: %w", err)
+		return fmt.Errorf("%w: write: %w", ErrMetadata, err)
 	}
 
 	return nil
@@ -103,17 +103,17 @@ func (s *Store) Get(tag string) (*BuildResult, error) {
 	metaPath := filepath.Join(dir, "metadata.json")
 	metaBytes, err := os.ReadFile(metaPath)
 	if err != nil {
-		return nil, fmt.Errorf("image %q not found in local store", tag)
+		return nil, fmt.Errorf("%w: %q in local store", ErrImageNotFound, tag)
 	}
 
 	var meta ImageMeta
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return nil, fmt.Errorf("read metadata: %w", err)
+		return nil, fmt.Errorf("%w: read: %w", ErrMetadata, err)
 	}
 
 	rootfsPath := filepath.Join(dir, "rootfs.ext4")
 	if _, err := os.Stat(rootfsPath); err != nil {
-		return nil, fmt.Errorf("rootfs not found for %q", tag)
+		return nil, fmt.Errorf("%w: rootfs for %q", ErrImageNotFound, tag)
 	}
 
 	fi, _ := os.Stat(rootfsPath)
@@ -132,7 +132,7 @@ func (s *Store) List() ([]ImageInfo, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read store dir: %w", err)
+		return nil, fmt.Errorf("%w: store dir: %w", ErrStoreRead, err)
 	}
 
 	var images []ImageInfo
@@ -170,7 +170,7 @@ func (s *Store) List() ([]ImageInfo, error) {
 func (s *Store) Remove(tag string) error {
 	dir := filepath.Join(s.baseDir, sanitizeRef(tag))
 	if _, err := os.Stat(dir); err != nil {
-		return fmt.Errorf("image %q not found", tag)
+		return fmt.Errorf("%w: %q", ErrImageNotFound, tag)
 	}
 	return os.RemoveAll(dir)
 }
@@ -184,10 +184,10 @@ func RemoveRegistryCache(tag string, cacheDir string) error {
 
 	dir := filepath.Join(cacheDir, sanitizeRef(tag))
 	if dir == filepath.Clean(cacheDir) || dir == filepath.Join(cacheDir, "local") {
-		return fmt.Errorf("image %q not found", tag)
+		return fmt.Errorf("%w: %q", ErrImageNotFound, tag)
 	}
 	if _, err := os.Stat(dir); err != nil {
-		return fmt.Errorf("image %q not found", tag)
+		return fmt.Errorf("%w: %q", ErrImageNotFound, tag)
 	}
 	return os.RemoveAll(dir)
 }
@@ -204,7 +204,7 @@ func ListRegistryCache(cacheDir string) ([]ImageInfo, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read cache dir: %w", err)
+		return nil, fmt.Errorf("%w: cache dir: %w", ErrStoreRead, err)
 	}
 
 	var images []ImageInfo

@@ -85,21 +85,21 @@ func NewClient(cfg Config) (*Client, error) {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get stdin pipe: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStdinPipe, err)
 	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get stdout pipe: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStdoutPipe, err)
 	}
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get stderr pipe: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStderrPipe, err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start matchlock: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrStartProc, err)
 	}
 
 	// Drain stderr in background to prevent blocking
@@ -164,7 +164,7 @@ func (c *Client) Close(timeout time.Duration) error {
 	case <-time.After(timeout):
 		c.cmd.Process.Kill()
 		<-done
-		return fmt.Errorf("close timed out after %s, process killed", timeout)
+		return fmt.Errorf("%w after %s", ErrCloseTimeout, timeout)
 	}
 }
 
@@ -178,7 +178,7 @@ func (c *Client) Remove() error {
 	bin := c.cmd.Path
 	out, err := exec.Command(bin, "rm", c.vmID).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("matchlock rm %s: %s: %w", c.vmID, out, err)
+		return fmt.Errorf("%w %s: %s: %w", ErrRemoveVM, c.vmID, out, err)
 	}
 	return nil
 }
@@ -243,7 +243,7 @@ type MountConfig struct {
 // Create creates and starts a new sandbox VM
 func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.Image == "" {
-		return "", fmt.Errorf("Image is required (e.g., alpine:latest)")
+		return "", ErrImageRequired
 	}
 	if opts.CPUs == 0 {
 		opts.CPUs = api.DefaultCPUs
@@ -317,7 +317,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(result, &createResult); err != nil {
-		return "", fmt.Errorf("failed to parse create result: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrParseCreateResult, err)
 	}
 
 	c.vmID = createResult.ID
@@ -364,7 +364,7 @@ func (c *Client) ExecWithDir(ctx context.Context, command, workingDir string) (*
 		DurationMS int64  `json:"duration_ms"`
 	}
 	if err := json.Unmarshal(result, &execResult); err != nil {
-		return nil, fmt.Errorf("failed to parse exec result: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrParseExecResult, err)
 	}
 
 	stdout, _ := base64.StdEncoding.DecodeString(execResult.Stdout)
@@ -435,7 +435,7 @@ func (c *Client) ExecStreamWithDir(ctx context.Context, command, workingDir stri
 		DurationMS int64 `json:"duration_ms"`
 	}
 	if err := json.Unmarshal(result, &streamResult); err != nil {
-		return nil, fmt.Errorf("failed to parse exec_stream result: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrParseExecStreamResult, err)
 	}
 
 	return &ExecStreamResult{
@@ -476,7 +476,7 @@ func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal(result, &readResult); err != nil {
-		return nil, fmt.Errorf("failed to parse read result: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrParseReadResult, err)
 	}
 
 	return base64.StdEncoding.DecodeString(readResult.Content)
@@ -505,7 +505,7 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]FileInfo, error)
 		Files []FileInfo `json:"files"`
 	}
 	if err := json.Unmarshal(result, &listResult); err != nil {
-		return nil, fmt.Errorf("failed to parse list result: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrParseListResult, err)
 	}
 
 	return listResult.Files, nil

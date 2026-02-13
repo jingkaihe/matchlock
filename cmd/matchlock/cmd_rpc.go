@@ -35,7 +35,7 @@ func runRPC(cmd *cobra.Command, args []string) error {
 
 		result, err := builder.Build(ctx, config.Image)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build rootfs: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrBuildRootfs, err)
 		}
 
 		return sandbox.New(ctx, config, &sandbox.Options{RootfsPath: result.RootfsPath})

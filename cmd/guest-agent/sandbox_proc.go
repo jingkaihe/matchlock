@@ -316,11 +316,11 @@ func resolveUserFrom(spec, passwdPath, groupPath string) (uid, gid int, homeDir 
 	if parts := strings.SplitN(spec, ":", 2); len(parts) == 2 {
 		uid, err = resolveUIDFrom(parts[0], passwdPath)
 		if err != nil {
-			return 0, 0, "", fmt.Errorf("resolve uid %q: %w", parts[0], err)
+			return 0, 0, "", fmt.Errorf("%w %q: %w", ErrResolveUID, parts[0], err)
 		}
 		gid, err = resolveGIDFrom(parts[1], groupPath)
 		if err != nil {
-			return 0, 0, "", fmt.Errorf("resolve gid %q: %w", parts[1], err)
+			return 0, 0, "", fmt.Errorf("%w %q: %w", ErrResolveGID, parts[1], err)
 		}
 		_, _, homeDir = lookupPasswdByUIDFrom(uid, passwdPath)
 		return uid, gid, homeDir, nil
@@ -333,7 +333,7 @@ func resolveUserFrom(spec, passwdPath, groupPath string) (uid, gid int, homeDir 
 
 	uid, gid, homeDir, ok := lookupPasswdByNameFrom(spec, passwdPath)
 	if !ok {
-		return 0, 0, "", fmt.Errorf("user %q not found in /etc/passwd", spec)
+		return 0, 0, "", fmt.Errorf("%w: %q", ErrUserNotFound, spec)
 	}
 	return uid, gid, homeDir, nil
 }
@@ -344,7 +344,7 @@ func resolveUIDFrom(s, passwdPath string) (int, error) {
 	}
 	uid, _, _, ok := lookupPasswdByNameFrom(s, passwdPath)
 	if !ok {
-		return 0, fmt.Errorf("user %q not found", s)
+		return 0, fmt.Errorf("%w: %q", ErrUserNotFound, s)
 	}
 	return uid, nil
 }
@@ -372,7 +372,7 @@ func resolveGIDFrom(s, groupPath string) (int, error) {
 			}
 		}
 	}
-	return 0, fmt.Errorf("group %q not found", s)
+	return 0, fmt.Errorf("%w: %q", ErrGroupNotFound, s)
 }
 
 func lookupPasswdByNameFrom(name, passwdPath string) (int, int, string, bool) {

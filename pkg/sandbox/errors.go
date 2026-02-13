@@ -1,0 +1,49 @@
+package sandbox
+
+import "errors"
+
+// Sentinel errors for the sandbox package.
+var (
+	// Exec relay errors
+	ErrRelayConnect    = errors.New("connect to exec relay")
+	ErrRelaySend       = errors.New("send exec request")
+	ErrRelayRead       = errors.New("read exec result")
+	ErrRelayUnexpected = errors.New("unexpected message type")
+	ErrRelayDecode     = errors.New("decode exec result")
+	ErrRelayListen     = errors.New("listen on relay socket")
+
+	// Rootfs errors
+	ErrGuestAgent   = errors.New("guest-agent not found")
+	ErrGuestFused   = errors.New("guest-fused not found")
+	ErrResizeRootfs = errors.New("resize rootfs")
+	ErrCreateTemp   = errors.New("create temp file")
+	ErrWriteTemp    = errors.New("write temp file")
+	ErrDebugfs      = errors.New("debugfs")
+	ErrStatRootfs   = errors.New("stat rootfs")
+	ErrTruncate     = errors.New("truncate rootfs")
+	ErrResize2fs    = errors.New("resize2fs")
+
+	// Sandbox lifecycle errors (shared between darwin and linux)
+	ErrRegisterState    = errors.New("register VM state")
+	ErrAllocateSubnet   = errors.New("allocate subnet")
+	ErrCreateCAPool     = errors.New("create CA pool")
+	ErrCopyRootfs       = errors.New("copy rootfs")
+	ErrPrepareRootfs    = errors.New("prepare rootfs")
+	ErrInjectCACert     = errors.New("inject CA cert into rootfs")
+	ErrInvalidDiskCfg   = errors.New("invalid extra disk config")
+	ErrCreateVM         = errors.New("create VM")
+	ErrCreateProxy      = errors.New("create transparent proxy")
+	ErrFirewallSetup    = errors.New("setup firewall rules")
+	ErrNetworkStack     = errors.New("create network stack")
+	ErrVFSListener      = errors.New("setup VFS listener")
+	ErrVFSServer        = errors.New("start VFS server")
+	ErrMachineClose     = errors.New("machine close")
+	ErrFirewallCleanup  = errors.New("firewall cleanup")
+	ErrNATCleanup       = errors.New("NAT cleanup")
+	ErrNetworkFile      = errors.New("get network file")
+
+	// copyRootfs errors (linux only)
+	ErrOpenSource = errors.New("open source")
+	ErrCreateDest = errors.New("create dest")
+	ErrCopy       = errors.New("copy")
+)

@@ -709,7 +709,7 @@ func sendExecResponse(fd int, resp *ExecResponse) {
 func listenVsock(port uint32) (int, error) {
 	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return -1, fmt.Errorf("socket: %w", err)
+		return -1, fmt.Errorf("%w: %w", ErrSocket, err)
 	}
 
 	addr := sockaddrVM{
@@ -726,12 +726,12 @@ func listenVsock(port uint32) (int, error) {
 	)
 	if errno != 0 {
 		syscall.Close(fd)
-		return -1, fmt.Errorf("bind: %w", errno)
+		return -1, fmt.Errorf("%w: %w", ErrBind, errno)
 	}
 
 	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
 		syscall.Close(fd)
-		return -1, fmt.Errorf("listen: %w", err)
+		return -1, fmt.Errorf("%w: %w", ErrListen, err)
 	}
 
 	return fd, nil
@@ -757,7 +757,7 @@ func acceptVsock(listenFd int) (int, error) {
 func dialVsock(cid, port uint32) (int, error) {
 	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return -1, fmt.Errorf("socket: %w", err)
+		return -1, fmt.Errorf("%w: %w", ErrSocket, err)
 	}
 
 	addr := sockaddrVM{
@@ -774,7 +774,7 @@ func dialVsock(cid, port uint32) (int, error) {
 	)
 	if errno != 0 {
 		syscall.Close(fd)
-		return -1, fmt.Errorf("connect: %w", errno)
+		return -1, fmt.Errorf("%w: %w", ErrConnect, errno)
 	}
 
 	return fd, nil
@@ -788,7 +788,7 @@ func readFull(fd int, buf []byte) (int, error) {
 			return total, err
 		}
 		if n == 0 {
-			return total, fmt.Errorf("EOF")
+			return total, ErrEOF
 		}
 		total += n
 	}

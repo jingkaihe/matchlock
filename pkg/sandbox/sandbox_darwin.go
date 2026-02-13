@@ -55,14 +55,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
-		return nil, fmt.Errorf("failed to register VM state: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrRegisterState, err)
 	}
 
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)
 	if err != nil {
 		stateMgr.Unregister(id)
-		return nil, fmt.Errorf("failed to allocate subnet: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrAllocateSubnet, err)
 	}
 
 	backend := darwin.NewDarwinBackend()
@@ -87,7 +87,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		if err != nil {
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to create CA pool: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrCreateCAPool, err)
 		}
 	}
 
@@ -97,7 +97,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if err != nil {
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
-		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCopyRootfs, err)
 	}
 	var diskSizeMB int64
 	if config.Resources != nil {
@@ -107,7 +107,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		os.Remove(prebuiltRootfs)
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
-		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrPrepareRootfs, err)
 	}
 
 	// Inject CA cert into rootfs before backend.Create() attaches the disk
@@ -116,7 +116,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			os.Remove(prebuiltRootfs)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to inject CA cert into rootfs: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrInjectCACert, err)
 		}
 	}
 
@@ -125,7 +125,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("invalid extra disk config: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrInvalidDiskCfg, err)
 		}
 		extraDisks = append(extraDisks, vm.DiskConfig{
 			HostPath:   d.HostPath,
@@ -161,7 +161,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
-		return nil, fmt.Errorf("failed to create VM: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateVM, err)
 	}
 
 	darwinMachine := machine.(*darwin.DarwinMachine)
@@ -192,7 +192,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to get network file")
+			return nil, ErrNetworkFile
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
@@ -209,7 +209,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to create network stack: %w", err)
+			return nil, fmt.Errorf("%w: %w", ErrNetworkStack, err)
 		}
 	}
 
@@ -226,7 +226,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		machine.Close(ctx)
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
-		return nil, fmt.Errorf("failed to setup VFS listener: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrVFSListener, err)
 	}
 
 	vfsStopCh := make(chan struct{})
@@ -331,7 +331,7 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	close(s.events)
 	s.stateMgr.Unregister(s.id)
 	if err := s.machine.Close(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("machine close: %w", err))
+		errs = append(errs, fmt.Errorf("%w: %w", ErrMachineClose, err))
 	}
 
 	if len(errs) > 0 {

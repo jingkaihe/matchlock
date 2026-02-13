@@ -70,7 +70,7 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 
 	reqData, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode exec request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrEncodeExecRequest, err)
 	}
 
 	header := make([]byte, 5)
@@ -81,13 +81,13 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("failed to write header: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrWriteHeader, err)
 	}
 	if _, err := conn.Write(reqData); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("failed to write request: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrWriteRequest, err)
 	}
 
 	done := make(chan *api.ExecResult, 1)
@@ -135,7 +135,7 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 				if ctx.Err() != nil {
 					errCh <- ctx.Err()
 				} else {
-					errCh <- fmt.Errorf("failed to read response header: %w", err)
+					errCh <- fmt.Errorf("%w: %w", ErrReadResponseHeader, err)
 				}
 				return
 			}
@@ -149,7 +149,7 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 					if ctx.Err() != nil {
 						errCh <- ctx.Err()
 					} else {
-						errCh <- fmt.Errorf("failed to read response data: %w", err)
+						errCh <- fmt.Errorf("%w: %w", ErrReadResponseData, err)
 					}
 					return
 				}

@@ -101,7 +101,7 @@ func Listen(port uint32) (*Listener, error) {
 func ListenCID(cid, port uint32) (*Listener, error) {
 	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create vsock socket: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateSocket, err)
 	}
 
 	addr := sockaddrVM{
@@ -118,12 +118,12 @@ func ListenCID(cid, port uint32) (*Listener, error) {
 	)
 	if errno != 0 {
 		syscall.Close(fd)
-		return nil, fmt.Errorf("failed to bind vsock: %w", errno)
+		return nil, fmt.Errorf("%w: %w", ErrBind, errno)
 	}
 
 	if err := syscall.Listen(fd, syscall.SOMAXCONN); err != nil {
 		syscall.Close(fd)
-		return nil, fmt.Errorf("failed to listen on vsock: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrListen, err)
 	}
 
 	return &Listener{
@@ -143,7 +143,7 @@ func (l *Listener) Accept() (*Conn, error) {
 		uintptr(unsafe.Pointer(&addrLen)),
 	)
 	if errno != 0 {
-		return nil, fmt.Errorf("failed to accept vsock connection: %w", errno)
+		return nil, fmt.Errorf("%w: %w", ErrAccept, errno)
 	}
 
 	return &Conn{
@@ -165,7 +165,7 @@ func (l *Listener) Addr() net.Addr {
 func Dial(cid, port uint32) (*Conn, error) {
 	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create vsock socket: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrCreateSocket, err)
 	}
 
 	addr := sockaddrVM{
@@ -182,7 +182,7 @@ func Dial(cid, port uint32) (*Conn, error) {
 	)
 	if errno != 0 {
 		syscall.Close(fd)
-		return nil, fmt.Errorf("failed to connect to vsock: %w", errno)
+		return nil, fmt.Errorf("%w: %w", ErrConnect, errno)
 	}
 
 	return &Conn{
@@ -196,7 +196,7 @@ func Dial(cid, port uint32) (*Conn, error) {
 func GetLocalCID() (uint32, error) {
 	f, err := os.Open("/dev/vsock")
 	if err != nil {
-		return 0, fmt.Errorf("failed to open /dev/vsock: %w", err)
+		return 0, fmt.Errorf("%w: %w", ErrOpenDevice, err)
 	}
 	defer f.Close()
 
@@ -208,7 +208,7 @@ func GetLocalCID() (uint32, error) {
 		uintptr(unsafe.Pointer(&cid)),
 	)
 	if errno != 0 {
-		return 0, fmt.Errorf("failed to get local CID: %w", errno)
+		return 0, fmt.Errorf("%w: %w", ErrGetLocalCID, errno)
 	}
 
 	return cid, nil

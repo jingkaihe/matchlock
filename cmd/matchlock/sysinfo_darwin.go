@@ -11,7 +11,7 @@ import (
 func totalMemoryMB() (int, error) {
 	raw, err := syscall.Sysctl("hw.memsize")
 	if err != nil {
-		return 0, fmt.Errorf("sysctl hw.memsize: %w", err)
+		return 0, fmt.Errorf("%w: %w", ErrSysctlMemsize, err)
 	}
 	b := []byte(raw)
 	if len(b) < 8 {

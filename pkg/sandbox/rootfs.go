@@ -116,10 +116,10 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	guestFusedPath := DefaultGuestFusedPath()
 
 	if _, err := os.Stat(guestAgentPath); err != nil {
-		return fmt.Errorf("guest-agent not found at %s: %w", guestAgentPath, err)
+		return fmt.Errorf("%w at %s: %w", ErrGuestAgent, guestAgentPath, err)
 	}
 	if _, err := os.Stat(guestFusedPath); err != nil {
-		return fmt.Errorf("guest-fused not found at %s: %w", guestFusedPath, err)
+		return fmt.Errorf("%w at %s: %w", ErrGuestFused, guestFusedPath, err)
 	}
 
 	// Resize BEFORE injecting components so that the filesystem has free space.
@@ -127,19 +127,19 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	// free blocks in the ext4 image created by createExt4.
 	if diskSizeMB > 0 {
 		if err := resizeRootfs(rootfsPath, diskSizeMB); err != nil {
-			return fmt.Errorf("resize rootfs: %w", err)
+			return fmt.Errorf("%w: %w", ErrResizeRootfs, err)
 		}
 	}
 
 	// Write init script to temp file for debugfs injection
 	initTmp, err := os.CreateTemp("", "matchlock-init-*")
 	if err != nil {
-		return fmt.Errorf("create init temp: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateTemp, err)
 	}
 	defer os.Remove(initTmp.Name())
 	if _, err := initTmp.WriteString(initScript); err != nil {
 		initTmp.Close()
-		return fmt.Errorf("write init temp: %w", err)
+		return fmt.Errorf("%w: %w", ErrWriteTemp, err)
 	}
 	initTmp.Close()
 
@@ -191,7 +191,7 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	cmd := exec.Command("debugfs", "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("debugfs inject components: %w: %s", err, output)
+		return fmt.Errorf("%w inject components: %w: %s", ErrDebugfs, err, output)
 	}
 
 	return nil
@@ -207,7 +207,7 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 
 	fi, err := os.Stat(rootfsPath)
 	if err != nil {
-		return fmt.Errorf("stat rootfs: %w", err)
+		return fmt.Errorf("%w: %w", ErrStatRootfs, err)
 	}
 
 	targetBytes := sizeMB * 1024 * 1024
@@ -216,7 +216,7 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 	}
 
 	if err := os.Truncate(rootfsPath, targetBytes); err != nil {
-		return fmt.Errorf("truncate rootfs: %w", err)
+		return fmt.Errorf("%w: %w", ErrTruncate, err)
 	}
 
 	e2fsckPath, _ := exec.LookPath("e2fsck")
@@ -234,7 +234,7 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 	cmd := exec.Command(resize2fsPath, "-f", rootfsPath)
 	cmd.Stdin = nil
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("resize2fs: %w: %s", err, out)
+		return fmt.Errorf("%w: %w: %s", ErrResize2fs, err, out)
 	}
 
 	return nil
@@ -246,14 +246,14 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 func injectConfigFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
 	tmpFile, err := os.CreateTemp("", "inject-*")
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("%w: %w", ErrCreateTemp, err)
 	}
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
 	if _, err := tmpFile.Write(content); err != nil {
 		tmpFile.Close()
-		return fmt.Errorf("write temp file: %w", err)
+		return fmt.Errorf("%w: %w", ErrWriteTemp, err)
 	}
 	tmpFile.Close()
 
@@ -276,7 +276,7 @@ func injectConfigFileIntoRootfs(rootfsPath, guestPath string, content []byte) er
 	cmd := exec.Command("debugfs", "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("debugfs: %w: %s", err, output)
+		return fmt.Errorf("%w: %w: %s", ErrDebugfs, err, output)
 	}
 
 	return nil

@@ -4,12 +4,18 @@ package acceptance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
+)
+
+var (
+	errNewClient = errors.New("NewClient")
+	errLaunch    = errors.New("Launch")
 )
 
 func TestConcurrentSandboxesWithProxy(t *testing.T) {
@@ -35,7 +41,7 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 
 			client, err := sdk.NewClient(matchlockConfig(t))
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: NewClient: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errNewClient, err)
 				return
 			}
 
@@ -45,7 +51,7 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 
 			_, err = client.Launch(sandbox())
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: Launch: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errLaunch, err)
 				return
 			}
 		}(i)
@@ -109,7 +115,7 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 
 			client, err := sdk.NewClient(matchlockConfig(t))
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: NewClient: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errNewClient, err)
 				return
 			}
 
@@ -119,7 +125,7 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 
 			_, err = client.Launch(sb)
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: Launch: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errLaunch, err)
 				return
 			}
 		}(i)
@@ -183,7 +189,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 
 			client, err := sdk.NewClient(matchlockConfig(t))
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: NewClient: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errNewClient, err)
 				return
 			}
 
@@ -191,7 +197,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 
 			_, err = client.Launch(sb)
 			if err != nil {
-				errs <- fmt.Errorf("sandbox %d: Launch: %w", idx, err)
+				errs <- fmt.Errorf("sandbox %d: %w: %w", idx, errLaunch, err)
 				return
 			}
 		}(i)

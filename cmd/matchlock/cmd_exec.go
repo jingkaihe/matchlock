@@ -51,7 +51,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	mgr := state.NewManager()
 	vmState, err := mgr.Get(vmID)
 	if err != nil {
-		return fmt.Errorf("VM %s not found: %w", vmID, err)
+		return fmt.Errorf("%w %s: %w", ErrVMNotFound, vmID, err)
 	}
 	if vmState.Status != "running" {
 		return fmt.Errorf("VM %s is not running (status: %s)", vmID, vmState.Status)
@@ -77,7 +77,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	result, err := sandbox.ExecViaRelay(ctx, execSocketPath, command, workdir, user)
 	if err != nil {
-		return fmt.Errorf("exec failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrExecFailed, err)
 	}
 
 	os.Stdout.Write(result.Stdout)
@@ -89,7 +89,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 func runExecPipe(ctx context.Context, execSocketPath, command, workdir, user string) error {
 	exitCode, err := sandbox.ExecPipeViaRelay(ctx, execSocketPath, command, workdir, user, os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("pipe exec failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrPipeExecFailed, err)
 	}
 	os.Exit(exitCode)
 	return nil
@@ -107,14 +107,14 @@ func runExecInteractive(ctx context.Context, execSocketPath, command, workdir, u
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		return fmt.Errorf("setting raw mode: %w", err)
+		return fmt.Errorf("%w: %w", ErrSetRawMode, err)
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	exitCode, err := sandbox.ExecInteractiveViaRelay(ctx, execSocketPath, command, workdir, user, uint16(rows), uint16(cols), os.Stdin, os.Stdout)
 	if err != nil {
 		term.Restore(int(os.Stdin.Fd()), oldState)
-		return fmt.Errorf("interactive exec failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrInteractiveExec, err)
 	}
 
 	term.Restore(int(os.Stdin.Fd()), oldState)
