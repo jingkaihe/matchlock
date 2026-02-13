@@ -5,7 +5,7 @@
 # ///
 """Matchlock + Anthropic example.
 
-Usage: ANTHROPIC_API_KEY=sk-xxx uv run main.py
+Usage: ANTHROPIC_API_KEY=sk-xxx uv run examples/python/basic/main.py
 """
 
 import logging

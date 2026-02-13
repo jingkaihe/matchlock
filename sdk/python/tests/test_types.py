@@ -10,8 +10,16 @@ from matchlock.types import (
     MountConfig,
     RPCError,
     Secret,
+    VFSActionRequest,
+    VFS_HOOK_ACTION_ALLOW,
+    VFS_HOOK_ACTION_BLOCK,
+    VFS_HOOK_OP_CREATE,
+    VFS_HOOK_OP_WRITE,
+    VFS_HOOK_PHASE_AFTER,
+    VFS_HOOK_PHASE_BEFORE,
     VFSHookRule,
     VFSInterceptionConfig,
+    VFSMutateRequest,
 )
 
 
@@ -127,35 +135,59 @@ class TestVFSHookRule:
     def test_to_dict_full(self):
         r = VFSHookRule(
             name="rule1",
-            phase="after",
-            ops=["write"],
-            path="/workspace/*",
-            action="exec_after",
-            data="x",
-            command="echo audit",
+            phase=VFS_HOOK_PHASE_BEFORE,
+            ops=[VFS_HOOK_OP_CREATE],
+            path="/workspace/blocked.txt",
+            action="block",
             timeout_ms=250,
         )
         assert r.to_dict() == {
             "name": "rule1",
-            "phase": "after",
-            "ops": ["write"],
-            "path": "/workspace/*",
-            "action": "exec_after",
-            "data": "x",
-            "command": "echo audit",
+            "phase": "before",
+            "ops": ["create"],
+            "path": "/workspace/blocked.txt",
+            "action": "block",
             "timeout_ms": 250,
         }
 
     def test_to_dict_ignores_hook(self):
         called = []
         r = VFSHookRule(
-            phase="after",
-            ops=["write"],
+            phase=VFS_HOOK_PHASE_AFTER,
+            ops=[VFS_HOOK_OP_WRITE],
             path="/workspace/*",
-            hook=lambda client: called.append(client),
+            hook=lambda client, event: called.append((client, event)),
         )
         assert r.to_dict() == {
             "phase": "after",
+            "ops": ["write"],
+            "path": "/workspace/*",
+            "action": "allow",
+        }
+
+    def test_to_dict_ignores_mutate_hook(self):
+        r = VFSHookRule(
+            phase=VFS_HOOK_PHASE_BEFORE,
+            ops=[VFS_HOOK_OP_WRITE],
+            path="/workspace/*",
+            mutate_hook=lambda req: b"x",
+        )
+        assert r.to_dict() == {
+            "phase": "before",
+            "ops": ["write"],
+            "path": "/workspace/*",
+            "action": "allow",
+        }
+
+    def test_to_dict_ignores_action_hook(self):
+        r = VFSHookRule(
+            phase=VFS_HOOK_PHASE_BEFORE,
+            ops=[VFS_HOOK_OP_WRITE],
+            path="/workspace/*",
+            action_hook=lambda req: VFS_HOOK_ACTION_ALLOW,
+        )
+        assert r.to_dict() == {
+            "phase": "before",
             "ops": ["write"],
             "path": "/workspace/*",
             "action": "allow",
@@ -170,7 +202,13 @@ class TestVFSInterceptionConfig:
     def test_to_dict_with_values(self):
         c = VFSInterceptionConfig(
             max_exec_depth=1,
-            rules=[VFSHookRule(action="block", phase="before", ops=["write"])],
+            rules=[
+                VFSHookRule(
+                    action="block",
+                    phase=VFS_HOOK_PHASE_BEFORE,
+                    ops=[VFS_HOOK_OP_WRITE],
+                )
+            ],
         )
         assert c.to_dict() == {
             "max_exec_depth": 1,
@@ -180,6 +218,48 @@ class TestVFSInterceptionConfig:
     def test_to_dict_with_emit_events(self):
         c = VFSInterceptionConfig(emit_events=True)
         assert c.to_dict() == {"emit_events": True}
+
+
+class TestVFSHookConstants:
+    def test_phase_constants(self):
+        assert VFS_HOOK_PHASE_BEFORE == "before"
+        assert VFS_HOOK_PHASE_AFTER == "after"
+
+    def test_op_constants(self):
+        assert VFS_HOOK_OP_CREATE == "create"
+        assert VFS_HOOK_OP_WRITE == "write"
+
+    def test_action_constants(self):
+        assert VFS_HOOK_ACTION_ALLOW == "allow"
+        assert VFS_HOOK_ACTION_BLOCK == "block"
+
+
+class TestVFSMutateRequest:
+    def test_fields(self):
+        req = VFSMutateRequest(path="/workspace/a.txt", size=123, mode=0o640, uid=1000, gid=1000)
+        assert req.path == "/workspace/a.txt"
+        assert req.size == 123
+        assert req.mode == 0o640
+        assert req.uid == 1000
+        assert req.gid == 1000
+
+
+class TestVFSActionRequest:
+    def test_fields(self):
+        req = VFSActionRequest(
+            op="write",
+            path="/workspace/a.txt",
+            size=10,
+            mode=0o640,
+            uid=1000,
+            gid=1001,
+        )
+        assert req.op == "write"
+        assert req.path == "/workspace/a.txt"
+        assert req.size == 10
+        assert req.mode == 0o640
+        assert req.uid == 1000
+        assert req.gid == 1001
 
 
 class TestFileInfo:

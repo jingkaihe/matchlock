@@ -38,8 +38,6 @@ func buildVFSHookEngine(config *api.Config) *vfs.HookEngine {
 			Ops:         ops,
 			PathPattern: cfgRule.Path,
 			Action:      action,
-			MutateWrite: []byte(cfgRule.Data),
-			ExecCommand: cfgRule.Command,
 		}
 		if cfgRule.TimeoutMS > 0 {
 			rule.ExecTimeout = time.Duration(cfgRule.TimeoutMS) * time.Millisecond
@@ -61,6 +59,17 @@ func attachVFSFileEvents(hooks *vfs.HookEngine, events chan api.Event) {
 	}
 
 	hooks.SetEventFunc(func(req vfs.HookRequest, result vfs.HookResult) {
+		mode := uint32(req.Mode)
+		uid := req.UID
+		gid := req.GID
+		if result.Meta != nil {
+			mode = uint32(result.Meta.Mode)
+			if result.Meta.HasOwnership {
+				uid = result.Meta.UID
+				gid = result.Meta.GID
+			}
+		}
+
 		evt := api.Event{
 			Type:      "file",
 			Timestamp: time.Now().UnixMilli(),
@@ -68,6 +77,9 @@ func attachVFSFileEvents(hooks *vfs.HookEngine, events chan api.Event) {
 				Op:   string(req.Op),
 				Path: req.Path,
 				Size: int64(result.Bytes),
+				Mode: mode,
+				UID:  uid,
+				GID:  gid,
 			},
 		}
 		select {
@@ -90,10 +102,6 @@ func parseVFSHookAction(action string) (vfs.HookAction, bool) {
 		return vfs.HookActionAllow, true
 	case string(vfs.HookActionBlock):
 		return vfs.HookActionBlock, true
-	case string(vfs.HookActionMutateWrite):
-		return vfs.HookActionMutateWrite, true
-	case string(vfs.HookActionExecAfter), "exec":
-		return vfs.HookActionExecAfter, true
 	default:
 		return "", false
 	}

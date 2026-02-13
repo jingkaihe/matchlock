@@ -24,7 +24,7 @@ func (p *RealFSProvider) Stat(path string) (FileInfo, error) {
 	if err != nil {
 		return FileInfo{}, err
 	}
-	return NewFileInfo(info.Name(), info.Size(), info.Mode(), info.ModTime(), info.IsDir()), nil
+	return NewFileInfoWithSys(info.Name(), info.Size(), info.Mode(), info.ModTime(), info.IsDir(), info.Sys()), nil
 }
 
 func (p *RealFSProvider) ReadDir(path string) ([]DirEntry, error) {
@@ -43,7 +43,7 @@ func (p *RealFSProvider) ReadDir(path string) ([]DirEntry, error) {
 			e.Name(),
 			e.IsDir(),
 			info.Mode(),
-			NewFileInfo(e.Name(), info.Size(), info.Mode(), info.ModTime(), e.IsDir()),
+			NewFileInfoWithSys(e.Name(), info.Size(), info.Mode(), info.ModTime(), e.IsDir(), info.Sys()),
 		))
 	}
 	return result, nil
@@ -111,5 +111,5 @@ func (h *realHandle) Stat() (FileInfo, error) {
 	if err != nil {
 		return FileInfo{}, err
 	}
-	return NewFileInfo(info.Name(), info.Size(), info.Mode(), info.ModTime(), info.IsDir()), nil
+	return NewFileInfoWithSys(info.Name(), info.Size(), info.Mode(), info.ModTime(), info.IsDir(), info.Sys()), nil
 }

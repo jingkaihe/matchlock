@@ -28,15 +28,9 @@ type VFSHookRule struct {
 	// Empty matches all paths.
 	Path string `json:"path,omitempty"`
 
-	// Action is one of: allow, block, mutate_write, exec_after.
+	// Action is one of: allow, block.
 	Action string `json:"action"`
 
-	// Data replaces write payload when action=mutate_write.
-	Data string `json:"data,omitempty"`
-
-	// Command runs when action=exec_after.
-	Command string `json:"command,omitempty"`
-
-	// TimeoutMS applies to action=exec_after.
+	// TimeoutMS is currently reserved for future hook actions.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 }

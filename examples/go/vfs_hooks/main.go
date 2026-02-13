@@ -47,28 +47,40 @@ func run() error {
 		MaxExecDepth: 1,
 		Rules: []sdk.VFSHookRule{
 			{
-				Name:   "block-create",
-				Phase:  "before",
-				Ops:    []string{"create"},
-				Path:   "/workspace/blocked.txt",
-				Action: "block",
+				Name:  "block-create",
+				Phase: sdk.VFSHookPhaseBefore,
+				Ops:   []sdk.VFSHookOp{sdk.VFSHookOpCreate},
+				Path:  "/workspace/blocked.txt",
+				ActionHook: func(ctx context.Context, req sdk.VFSActionRequest) sdk.VFSHookAction {
+					return sdk.VFSHookActionBlock
+				},
 			},
 			{
-				Name:   "mutate-write",
-				Phase:  "before",
-				Ops:    []string{"write"},
-				Path:   "/workspace/mutated.txt",
-				Action: "mutate_write",
-				Data:   "mutated-by-hook",
+				Name:  "mutate-write",
+				Phase: sdk.VFSHookPhaseBefore,
+				Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
+				Path:  "/workspace/mutated.txt",
+				MutateHook: func(ctx context.Context, req sdk.VFSMutateRequest) ([]byte, error) {
+					payload := fmt.Sprintf(
+						"mutated-by-hook size=%d mode=%#o uid=%d gid=%d",
+						req.Size, req.Mode, req.UID, req.GID,
+					)
+					return []byte(payload), nil
+				},
 			},
 			{
 				Name:      "audit-after-write",
-				Phase:     "after",
-				Ops:       []string{"write"},
+				Phase:     sdk.VFSHookPhaseAfter,
+				Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 				Path:      "/workspace/*",
 				TimeoutMS: 2000,
-				Hook: func(ctx context.Context, hookClient *sdk.Client) error {
-					_, err := hookClient.Exec(ctx, "echo 1 >> /tmp/hook_runs; if [ ! -f /workspace/hook.log ]; then echo hook > /workspace/hook.log; fi")
+				Hook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
+					line := fmt.Sprintf(
+						"op=%s path=%s size=%d mode=%#o uid=%d gid=%d",
+						event.Op, event.Path, event.Size, event.Mode, event.UID, event.GID,
+					)
+					cmd := fmt.Sprintf("echo 1 >> /tmp/hook_runs; printf '%%s\\n' %q >> /workspace/hook.log", line)
+					_, err := hookClient.Exec(ctx, cmd)
 					return err
 				},
 			},
@@ -90,7 +102,7 @@ func run() error {
 		fmt.Println("blocked write unexpectedly succeeded")
 	}
 
-	if err := client.WriteFile(ctx, "/workspace/mutated.txt", []byte("original-content")); err != nil {
+	if err := client.WriteFileMode(ctx, "/workspace/mutated.txt", []byte("original-content"), 0640); err != nil {
 		return errx.Wrap(errWriteMutatedFile, err)
 	}
 
@@ -100,7 +112,7 @@ func run() error {
 	}
 	fmt.Printf("mutated file content: %q\n", strings.TrimSpace(string(mutated)))
 
-	if err := client.WriteFile(ctx, "/workspace/trigger.txt", []byte("trigger")); err != nil {
+	if err := client.WriteFileMode(ctx, "/workspace/trigger.txt", []byte("trigger"), 0600); err != nil {
 		return errx.Wrap(errWriteTriggerFile, err)
 	}
 

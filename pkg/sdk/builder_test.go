@@ -146,11 +146,10 @@ func TestBuilderVFSInterception(t *testing.T) {
 		MaxExecDepth: 1,
 		Rules: []VFSHookRule{
 			{
-				Phase:   "after",
-				Ops:     []string{"write"},
-				Path:    "/workspace/*",
-				Action:  "exec_after",
-				Command: "echo audit",
+				Phase:  VFSHookPhaseBefore,
+				Ops:    []VFSHookOp{VFSHookOpCreate},
+				Path:   "/workspace/blocked.txt",
+				Action: VFSHookActionBlock,
 			},
 		},
 	}
@@ -159,17 +158,17 @@ func TestBuilderVFSInterception(t *testing.T) {
 	require.NotNil(t, opts.VFSInterception)
 	assert.Equal(t, 1, opts.VFSInterception.MaxExecDepth)
 	require.Len(t, opts.VFSInterception.Rules, 1)
-	assert.Equal(t, "exec_after", opts.VFSInterception.Rules[0].Action)
+	assert.Equal(t, "block", opts.VFSInterception.Rules[0].Action)
 }
 
 func TestBuilderVFSInterceptionCallback(t *testing.T) {
 	cfg := &VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
-				Phase: "after",
-				Ops:   []string{"write"},
+				Phase: VFSHookPhaseAfter,
+				Ops:   []VFSHookOp{VFSHookOpWrite},
 				Path:  "/workspace/*",
-				Hook: func(ctx context.Context, client *Client) error {
+				Hook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
 					return nil
 				},
 			},

@@ -58,6 +58,8 @@ type Client struct {
 
 	vfsHookMu       sync.RWMutex
 	vfsHooks        []compiledVFSHook
+	vfsMutateHooks  []compiledVFSMutateHook
+	vfsActionHooks  []compiledVFSActionHook
 	vfsHookMaxDepth int32
 	vfsHookDepth    atomic.Int32
 }
@@ -142,7 +144,7 @@ func (c *Client) Close(timeout time.Duration) error {
 	c.closed = true
 	c.mu.Unlock()
 
-	c.setVFSHooks(nil, 1)
+	c.setVFSHooks(nil, nil, nil, 1)
 
 	effectiveTimeout := timeout
 	if effectiveTimeout <= 0 {
@@ -254,22 +256,96 @@ type VFSInterceptionConfig struct {
 	Rules        []VFSHookRule `json:"rules,omitempty"`
 }
 
+// VFS hook phases.
+type VFSHookPhase = string
+
+const (
+	VFSHookPhaseBefore VFSHookPhase = "before"
+	VFSHookPhaseAfter  VFSHookPhase = "after"
+)
+
+// VFS hook actions.
+type VFSHookAction = string
+
+const (
+	VFSHookActionAllow VFSHookAction = "allow"
+	VFSHookActionBlock VFSHookAction = "block"
+)
+
+// VFS hook operations.
+type VFSHookOp = string
+
+const (
+	VFSHookOpStat      VFSHookOp = "stat"
+	VFSHookOpReadDir   VFSHookOp = "readdir"
+	VFSHookOpOpen      VFSHookOp = "open"
+	VFSHookOpCreate    VFSHookOp = "create"
+	VFSHookOpMkdir     VFSHookOp = "mkdir"
+	VFSHookOpChmod     VFSHookOp = "chmod"
+	VFSHookOpRemove    VFSHookOp = "remove"
+	VFSHookOpRemoveAll VFSHookOp = "remove_all"
+	VFSHookOpRename    VFSHookOp = "rename"
+	VFSHookOpSymlink   VFSHookOp = "symlink"
+	VFSHookOpReadlink  VFSHookOp = "readlink"
+	VFSHookOpRead      VFSHookOp = "read"
+	VFSHookOpWrite     VFSHookOp = "write"
+	VFSHookOpClose     VFSHookOp = "close"
+	VFSHookOpSync      VFSHookOp = "sync"
+	VFSHookOpTruncate  VFSHookOp = "truncate"
+)
+
 // VFSHookRule describes a single interception rule.
 type VFSHookRule struct {
-	Name      string      `json:"name,omitempty"`
-	Phase     string      `json:"phase,omitempty"`  // before, after
-	Ops       []string    `json:"ops,omitempty"`    // read, write, create, ...
-	Path      string      `json:"path,omitempty"`   // filepath-style glob
-	Action    string      `json:"action,omitempty"` // allow, block, mutate_write, exec_after
-	Data      string      `json:"data,omitempty"`   // mutate_write payload
-	Command   string      `json:"command,omitempty"`
-	TimeoutMS int         `json:"timeout_ms,omitempty"`
-	Hook      VFSHookFunc `json:"-"`
+	Name       string            `json:"name,omitempty"`
+	Phase      VFSHookPhase      `json:"phase,omitempty"`  // before, after
+	Ops        []VFSHookOp       `json:"ops,omitempty"`    // read, write, create, ...
+	Path       string            `json:"path,omitempty"`   // filepath-style glob
+	Action     VFSHookAction     `json:"action,omitempty"` // allow, block
+	TimeoutMS  int               `json:"timeout_ms,omitempty"`
+	Hook       VFSHookFunc       `json:"-"`
+	MutateHook VFSMutateHookFunc `json:"-"`
+	ActionHook VFSActionHookFunc `json:"-"`
+}
+
+// VFSHookEvent contains metadata about an intercepted file event.
+type VFSHookEvent struct {
+	Op   VFSHookOp
+	Path string
+	Size int64
+	Mode uint32
+	UID  int
+	GID  int
 }
 
 // VFSHookFunc runs in the SDK process when a matching after-file-event is observed.
 // Returning an error currently does not fail the triggering VFS operation.
-type VFSHookFunc func(ctx context.Context, client *Client) error
+type VFSHookFunc func(ctx context.Context, client *Client, event VFSHookEvent) error
+
+// VFSMutateRequest is passed to SDK-local mutate hooks before WriteFile.
+type VFSMutateRequest struct {
+	Path string
+	Size int
+	Mode uint32
+	UID  int
+	GID  int
+}
+
+// VFSMutateHookFunc computes replacement bytes for SDK WriteFile calls.
+// This hook runs in the SDK process and currently applies only to write_file RPCs.
+type VFSMutateHookFunc func(ctx context.Context, req VFSMutateRequest) ([]byte, error)
+
+// VFSActionRequest is passed to SDK-local allow/block action hooks.
+type VFSActionRequest struct {
+	Op   VFSHookOp
+	Path string
+	Size int
+	Mode uint32
+	UID  int
+	GID  int
+}
+
+// VFSActionHookFunc decides whether an operation should be allowed or blocked.
+type VFSActionHookFunc func(ctx context.Context, req VFSActionRequest) VFSHookAction
 
 type compiledVFSHook struct {
 	name     string
@@ -277,6 +353,20 @@ type compiledVFSHook struct {
 	path     string
 	timeout  time.Duration
 	callback VFSHookFunc
+}
+
+type compiledVFSMutateHook struct {
+	name     string
+	ops      map[string]struct{}
+	path     string
+	callback VFSMutateHookFunc
+}
+
+type compiledVFSActionHook struct {
+	name     string
+	ops      map[string]struct{}
+	path     string
+	callback VFSActionHookFunc
 }
 
 // Create creates and starts a new sandbox VM
@@ -297,7 +387,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		opts.TimeoutSeconds = api.DefaultTimeoutSeconds
 	}
 
-	wireVFS, localHooks, maxDepth, err := compileVFSHooks(opts.VFSInterception)
+	wireVFS, localHooks, localMutateHooks, localActionHooks, maxDepth, err := compileVFSHooks(opts.VFSInterception)
 	if err != nil {
 		return "", err
 	}
@@ -368,13 +458,13 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	}
 
 	c.vmID = createResult.ID
-	c.setVFSHooks(localHooks, maxDepth)
+	c.setVFSHooks(localHooks, localMutateHooks, localActionHooks, maxDepth)
 	return c.vmID, nil
 }
 
-func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []compiledVFSHook, int32, error) {
+func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []compiledVFSHook, []compiledVFSMutateHook, []compiledVFSActionHook, int32, error) {
 	if cfg == nil {
-		return nil, nil, 1, nil
+		return nil, nil, nil, nil, 1, nil
 	}
 
 	maxDepth := int32(cfg.MaxExecDepth)
@@ -387,36 +477,113 @@ func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []comp
 		EmitEvents:   cfg.EmitEvents,
 	}
 	local := make([]compiledVFSHook, 0, len(cfg.Rules))
+	localMutate := make([]compiledVFSMutateHook, 0, len(cfg.Rules))
+	localAction := make([]compiledVFSActionHook, 0, len(cfg.Rules))
 	wire.Rules = make([]VFSHookRule, 0, len(cfg.Rules))
 
 	for _, rule := range cfg.Rules {
-		if rule.Hook == nil {
+		callbackCount := 0
+		if rule.Hook != nil {
+			callbackCount++
+		}
+		if rule.MutateHook != nil {
+			callbackCount++
+		}
+		if rule.ActionHook != nil {
+			callbackCount++
+		}
+		if callbackCount > 1 {
+			return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q cannot set more than one callback hook", rule.Name)
+		}
+
+		if rule.Hook == nil && rule.MutateHook == nil && rule.ActionHook == nil {
+			action := strings.ToLower(strings.TrimSpace(string(rule.Action)))
+			switch action {
+			case "mutate_write":
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q mutate_write requires MutateHook callback", rule.Name)
+			case "exec_after":
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q exec_after requires Hook callback", rule.Name)
+			}
 			wire.Rules = append(wire.Rules, rule)
 			continue
 		}
 
-		if !strings.EqualFold(rule.Phase, "after") {
-			return nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q must use phase=after", rule.Name)
+		if rule.Hook != nil {
+			if action := strings.ToLower(strings.TrimSpace(string(rule.Action))); action != "" && action != string(VFSHookActionAllow) {
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q callback hooks cannot set action=%q", rule.Name, rule.Action)
+			}
+			if !strings.EqualFold(rule.Phase, VFSHookPhaseAfter) {
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q must use phase=after", rule.Name)
+			}
+
+			compiled := compiledVFSHook{
+				name:     rule.Name,
+				path:     rule.Path,
+				callback: rule.Hook,
+			}
+			if rule.TimeoutMS > 0 {
+				compiled.timeout = time.Duration(rule.TimeoutMS) * time.Millisecond
+			}
+			if len(rule.Ops) > 0 {
+				compiled.ops = make(map[string]struct{}, len(rule.Ops))
+				for _, op := range rule.Ops {
+					if op == "" {
+						continue
+					}
+					compiled.ops[strings.ToLower(op)] = struct{}{}
+				}
+			}
+			local = append(local, compiled)
+			continue
 		}
 
-		compiled := compiledVFSHook{
+		if rule.ActionHook != nil {
+			if action := strings.ToLower(strings.TrimSpace(string(rule.Action))); action != "" && action != string(VFSHookActionAllow) {
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q action hooks cannot set action=%q", rule.Name, rule.Action)
+			}
+			if rule.Phase != "" && !strings.EqualFold(rule.Phase, VFSHookPhaseBefore) {
+				return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q action hook must use phase=before", rule.Name)
+			}
+			compiledAction := compiledVFSActionHook{
+				name:     rule.Name,
+				path:     rule.Path,
+				callback: rule.ActionHook,
+			}
+			if len(rule.Ops) > 0 {
+				compiledAction.ops = make(map[string]struct{}, len(rule.Ops))
+				for _, op := range rule.Ops {
+					if op == "" {
+						continue
+					}
+					compiledAction.ops[strings.ToLower(op)] = struct{}{}
+				}
+			}
+			localAction = append(localAction, compiledAction)
+			continue
+		}
+
+		if action := strings.ToLower(strings.TrimSpace(string(rule.Action))); action != "" && action != string(VFSHookActionAllow) {
+			return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q mutate hooks cannot set action=%q", rule.Name, rule.Action)
+		}
+		if rule.Phase != "" && !strings.EqualFold(rule.Phase, VFSHookPhaseBefore) {
+			return nil, nil, nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q mutate hook must use phase=before", rule.Name)
+		}
+
+		compiledMutate := compiledVFSMutateHook{
 			name:     rule.Name,
 			path:     rule.Path,
-			callback: rule.Hook,
-		}
-		if rule.TimeoutMS > 0 {
-			compiled.timeout = time.Duration(rule.TimeoutMS) * time.Millisecond
+			callback: rule.MutateHook,
 		}
 		if len(rule.Ops) > 0 {
-			compiled.ops = make(map[string]struct{}, len(rule.Ops))
+			compiledMutate.ops = make(map[string]struct{}, len(rule.Ops))
 			for _, op := range rule.Ops {
 				if op == "" {
 					continue
 				}
-				compiled.ops[strings.ToLower(op)] = struct{}{}
+				compiledMutate.ops[strings.ToLower(op)] = struct{}{}
 			}
 		}
-		local = append(local, compiled)
+		localMutate = append(localMutate, compiledMutate)
 	}
 
 	if len(local) > 0 {
@@ -427,21 +594,24 @@ func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []comp
 		wire = nil
 	}
 
-	return wire, local, maxDepth, nil
+	return wire, local, localMutate, localAction, maxDepth, nil
 }
 
-func (c *Client) setVFSHooks(hooks []compiledVFSHook, maxDepth int32) {
+func (c *Client) setVFSHooks(hooks []compiledVFSHook, mutateHooks []compiledVFSMutateHook, actionHooks []compiledVFSActionHook, maxDepth int32) {
 	if maxDepth <= 0 {
 		maxDepth = 1
 	}
 
 	c.vfsHookMu.Lock()
 	c.vfsHooks = hooks
+	c.vfsMutateHooks = mutateHooks
+	c.vfsActionHooks = actionHooks
 	c.vfsHookMaxDepth = maxDepth
+	c.vfsHookDepth.Store(0)
 	c.vfsHookMu.Unlock()
 }
 
-func (c *Client) handleVFSFileEvent(op, path string) {
+func (c *Client) handleVFSFileEvent(op, path string, size int64, mode uint32, uid, gid int) {
 	c.vfsHookMu.RLock()
 	hooks := append([]compiledVFSHook(nil), c.vfsHooks...)
 	maxDepth := c.vfsHookMaxDepth
@@ -457,15 +627,24 @@ func (c *Client) handleVFSFileEvent(op, path string) {
 		return
 	}
 
+	event := VFSHookEvent{
+		Op:   VFSHookOp(op),
+		Path: path,
+		Size: size,
+		Mode: mode,
+		UID:  uid,
+		GID:  gid,
+	}
+
 	for _, hook := range hooks {
 		if !matchesVFSHook(hook, op, path) {
 			continue
 		}
-		go c.runVFSHook(hook, maxDepth)
+		go c.runVFSHook(hook, event, maxDepth)
 	}
 }
 
-func (c *Client) runVFSHook(hook compiledVFSHook, maxDepth int32) {
+func (c *Client) runVFSHook(hook compiledVFSHook, event VFSHookEvent, maxDepth int32) {
 	depth := c.vfsHookDepth.Add(1)
 	if depth > maxDepth {
 		c.vfsHookDepth.Add(-1)
@@ -480,7 +659,7 @@ func (c *Client) runVFSHook(hook compiledVFSHook, maxDepth int32) {
 	}
 	defer cancel()
 
-	_ = hook.callback(ctx, c)
+	_ = hook.callback(ctx, c, event)
 }
 
 func matchesVFSHook(hook compiledVFSHook, op, path string) bool {
@@ -497,6 +676,108 @@ func matchesVFSHook(hook compiledVFSHook, op, path string) bool {
 		return false
 	}
 	return matched
+}
+
+func matchesVFSMutateHook(hook compiledVFSMutateHook, op, path string) bool {
+	if len(hook.ops) > 0 {
+		if _, ok := hook.ops[strings.ToLower(op)]; !ok {
+			return false
+		}
+	}
+	if hook.path == "" {
+		return true
+	}
+	matched, err := filepath.Match(hook.path, path)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func matchesVFSActionHook(hook compiledVFSActionHook, op, path string) bool {
+	if len(hook.ops) > 0 {
+		if _, ok := hook.ops[strings.ToLower(op)]; !ok {
+			return false
+		}
+	}
+	if hook.path == "" {
+		return true
+	}
+	matched, err := filepath.Match(hook.path, path)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func (c *Client) applyLocalActionHooks(ctx context.Context, op VFSHookOp, path string, size int, mode uint32) error {
+	c.vfsHookMu.RLock()
+	hooks := append([]compiledVFSActionHook(nil), c.vfsActionHooks...)
+	c.vfsHookMu.RUnlock()
+
+	if len(hooks) == 0 {
+		return nil
+	}
+
+	req := VFSActionRequest{
+		Op:   op,
+		Path: path,
+		Size: size,
+		Mode: mode,
+		UID:  os.Geteuid(),
+		GID:  os.Getegid(),
+	}
+
+	for _, hook := range hooks {
+		if !matchesVFSActionHook(hook, string(op), path) {
+			continue
+		}
+
+		decision := VFSHookAction(strings.ToLower(strings.TrimSpace(string(hook.callback(ctx, req)))))
+		switch decision {
+		case "", VFSHookActionAllow:
+			continue
+		case VFSHookActionBlock:
+			return errx.With(ErrVFSHookBlocked, " op=%s path=%s hook=%q", op, path, hook.name)
+		default:
+			return errx.With(ErrInvalidVFSHook, " %q returned invalid action decision %q", hook.name, decision)
+		}
+	}
+
+	return nil
+}
+
+func (c *Client) applyLocalWriteMutations(ctx context.Context, path string, content []byte, mode uint32) ([]byte, error) {
+	c.vfsHookMu.RLock()
+	hooks := append([]compiledVFSMutateHook(nil), c.vfsMutateHooks...)
+	c.vfsHookMu.RUnlock()
+
+	if len(hooks) == 0 {
+		return content, nil
+	}
+
+	current := content
+	for _, hook := range hooks {
+		if !matchesVFSMutateHook(hook, string(VFSHookOpWrite), path) {
+			continue
+		}
+		req := VFSMutateRequest{
+			Path: path,
+			Size: len(current),
+			Mode: mode,
+			UID:  os.Geteuid(),
+			GID:  os.Getegid(),
+		}
+		mutated, err := hook.callback(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if mutated != nil {
+			current = mutated
+		}
+	}
+
+	return current, nil
 }
 
 // ExecResult holds the result of command execution
@@ -626,18 +907,31 @@ func (c *Client) WriteFile(ctx context.Context, path string, content []byte) err
 
 // WriteFileMode writes content to a file with specific permissions.
 func (c *Client) WriteFileMode(ctx context.Context, path string, content []byte, mode uint32) error {
+	if err := c.applyLocalActionHooks(ctx, VFSHookOpWrite, path, len(content), mode); err != nil {
+		return err
+	}
+
+	mutated, err := c.applyLocalWriteMutations(ctx, path, content, mode)
+	if err != nil {
+		return err
+	}
+
 	params := map[string]interface{}{
 		"path":    path,
-		"content": base64.StdEncoding.EncodeToString(content),
+		"content": base64.StdEncoding.EncodeToString(mutated),
 		"mode":    mode,
 	}
 
-	_, err := c.sendRequestCtx(ctx, "write_file", params, nil)
+	_, err = c.sendRequestCtx(ctx, "write_file", params, nil)
 	return err
 }
 
 // ReadFile reads a file from the sandbox.
 func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	if err := c.applyLocalActionHooks(ctx, VFSHookOpRead, path, 0, 0); err != nil {
+		return nil, err
+	}
+
 	params := map[string]string{
 		"path": path,
 	}
@@ -667,6 +961,10 @@ type FileInfo struct {
 
 // ListFiles lists files in a directory.
 func (c *Client) ListFiles(ctx context.Context, path string) ([]FileInfo, error) {
+	if err := c.applyLocalActionHooks(ctx, VFSHookOpReadDir, path, 0, 0); err != nil {
+		return nil, err
+	}
+
 	params := map[string]string{
 		"path": path,
 	}

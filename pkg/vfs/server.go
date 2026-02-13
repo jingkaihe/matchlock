@@ -46,6 +46,8 @@ type VFSRequest struct {
 	Data    []byte `cbor:"data,omitempty"`
 	Flags   uint32 `cbor:"flags,omitempty"`
 	Mode    uint32 `cbor:"mode,omitempty"`
+	UID     uint32 `cbor:"uid,omitempty"`
+	GID     uint32 `cbor:"gid,omitempty"`
 }
 
 type VFSResponse struct {
@@ -130,26 +132,33 @@ func (s *VFSServer) HandleConnection(conn net.Conn) {
 }
 
 func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
+	provider := s.provider
+	if callerAware, ok := provider.(interface {
+		withCaller(uid, gid int) Provider
+	}); ok {
+		provider = callerAware.withCaller(int(req.UID), int(req.GID))
+	}
+
 	switch req.Op {
 	case OpLookup, OpGetattr:
-		info, err := s.provider.Stat(req.Path)
+		info, err := provider.Stat(req.Path)
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{Stat: statFromInfo(info)}
 
 	case OpSetattr:
-		if err := s.provider.Chmod(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Chmod(req.Path, os.FileMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
-		info, err := s.provider.Stat(req.Path)
+		info, err := provider.Stat(req.Path)
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{Stat: statFromInfo(info)}
 
 	case OpOpen:
-		h, err := s.provider.Open(req.Path, int(req.Flags), os.FileMode(req.Mode))
+		h, err := provider.Open(req.Path, int(req.Flags), os.FileMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -158,7 +167,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Handle: fh}
 
 	case OpCreate:
-		h, err := s.provider.Create(req.Path, os.FileMode(req.Mode))
+		h, err := provider.Create(req.Path, os.FileMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -198,20 +207,20 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{}
 
 	case OpReaddir:
-		entries, err := s.provider.ReadDir(req.Path)
+		entries, err := provider.ReadDir(req.Path)
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{Entries: direntsFromEntries(entries)}
 
 	case OpMkdir:
-		if err := s.provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{}
 
 	case OpMkdirAll:
-		mp, ok := s.provider.(*MemoryProvider)
+		mp, ok := provider.(*MemoryProvider)
 		if ok {
 			if err := mp.MkdirAll(req.Path, os.FileMode(req.Mode)); err != nil {
 				return &VFSResponse{Err: errnoFromError(err)}
@@ -221,19 +230,19 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Err: -int32(syscall.ENOSYS)}
 
 	case OpUnlink:
-		if err := s.provider.Remove(req.Path); err != nil {
+		if err := provider.Remove(req.Path); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{}
 
 	case OpRmdir:
-		if err := s.provider.Remove(req.Path); err != nil {
+		if err := provider.Remove(req.Path); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{}
 
 	case OpRename:
-		if err := s.provider.Rename(req.Path, req.NewPath); err != nil {
+		if err := provider.Rename(req.Path, req.NewPath); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{}

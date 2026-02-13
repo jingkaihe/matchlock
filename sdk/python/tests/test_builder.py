@@ -199,11 +199,10 @@ class TestSandboxVFSInterception:
             max_exec_depth=1,
             rules=[
                 VFSHookRule(
-                    phase="after",
-                    ops=["write"],
-                    path="/workspace/*",
-                    action="exec_after",
-                    command="echo audit",
+                    phase="before",
+                    ops=["create"],
+                    path="/workspace/blocked.txt",
+                    action="block",
                 )
             ],
         )
@@ -211,7 +210,7 @@ class TestSandboxVFSInterception:
         assert opts.vfs_interception is not None
         assert opts.vfs_interception.max_exec_depth == 1
         assert len(opts.vfs_interception.rules) == 1
-        assert opts.vfs_interception.rules[0].action == "exec_after"
+        assert opts.vfs_interception.rules[0].action == "block"
 
 
 class TestSandboxImageConfig:

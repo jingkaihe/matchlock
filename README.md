@@ -136,10 +136,10 @@ with Client(Config()) as client:
 ```
 
 See full examples in:
-- [`examples/go/main.go`](examples/go/main.go)
+- [`examples/go/basic/main.go`](examples/go/basic/main.go)
 - [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
-- [`examples/python/main.py`](examples/python/main.py)
-- [`examples/python/vfs_hooks.py`](examples/python/vfs_hooks.py)
+- [`examples/python/basic/main.py`](examples/python/basic/main.py)
+- [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
 
 ## Architecture
 
@@ -180,6 +180,7 @@ graph LR
 ## Docs
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
+- [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 
 ## License

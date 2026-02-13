@@ -12,7 +12,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from matchlock.builder import Sandbox
-from matchlock.client import Client, _LocalVFSHook, _PendingRequest
+from matchlock.client import (
+    Client,
+    _LocalVFSActionHook,
+    _LocalVFSMutateHook,
+    _LocalVFSHook,
+    _PendingRequest,
+)
 from matchlock.types import (
     Config,
     CreateOptions,
@@ -22,6 +28,8 @@ from matchlock.types import (
     MatchlockError,
     MountConfig,
     RPCError,
+    VFS_HOOK_ACTION_ALLOW,
+    VFS_HOOK_ACTION_BLOCK,
     VFSHookRule,
     VFSInterceptionConfig,
 )
@@ -273,12 +281,10 @@ class TestClientCreate:
                     max_exec_depth=1,
                     rules=[
                         VFSHookRule(
-                            phase="after",
-                            ops=["write"],
-                            path="/workspace/*",
-                            action="exec_after",
-                            command="echo audit",
-                            timeout_ms=1000,
+                            phase="before",
+                            ops=["create"],
+                            path="/workspace/blocked.txt",
+                            action="block",
                         )
                     ],
                 ),
@@ -293,12 +299,10 @@ class TestClientCreate:
                 "max_exec_depth": 1,
                 "rules": [
                     {
-                        "phase": "after",
-                        "ops": ["write"],
-                        "path": "/workspace/*",
-                        "action": "exec_after",
-                        "command": "echo audit",
-                        "timeout_ms": 1000,
+                        "phase": "before",
+                        "ops": ["create"],
+                        "path": "/workspace/blocked.txt",
+                        "action": "block",
                     }
                 ],
             }
@@ -331,7 +335,7 @@ class TestClientCreate:
                             phase="after",
                             ops=["write"],
                             path="/workspace/*",
-                            hook=lambda c: None,
+                            hook=lambda c, event: None,
                         )
                     ],
                 ),
@@ -359,13 +363,156 @@ class TestClientCreate:
                         VFSHookRule(
                             name="before",
                             phase="before",
-                            hook=lambda c: None,
+                            hook=lambda c, event: None,
                         )
                     ]
                 ),
             )
             with pytest.raises(MatchlockError, match="phase=after"):
                 client.create(opts)
+        finally:
+            fake.close_stdout()
+
+    def test_create_with_vfs_mutate_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-vfs-mutate-callback"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    max_exec_depth=1,
+                    rules=[
+                        VFSHookRule(
+                            phase="before",
+                            ops=["write"],
+                            path="/workspace/*",
+                            mutate_hook=lambda req: b"mutated",
+                        )
+                    ],
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-vfs-mutate-callback"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert "vfs" not in req["params"] or "interception" not in req["params"].get(
+                "vfs", {}
+            )
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_after_mutate_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    rules=[
+                        VFSHookRule(
+                            name="after-mutate",
+                            phase="after",
+                            mutate_hook=lambda req: b"x",
+                        )
+                    ]
+                ),
+            )
+            with pytest.raises(MatchlockError, match="phase=before"):
+                client.create(opts)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_wire_exec_after_action(self):
+        client, fake = make_client_with_fake()
+        try:
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    rules=[
+                        VFSHookRule(
+                            name="wire-exec",
+                            phase="after",
+                            action="exec_after",
+                        )
+                    ]
+                ),
+            )
+            with pytest.raises(MatchlockError, match="requires hook callback"):
+                client.create(opts)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_wire_mutate_write_action(self):
+        client, fake = make_client_with_fake()
+        try:
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    rules=[
+                        VFSHookRule(
+                            name="wire-mutate",
+                            phase="before",
+                            action="mutate_write",
+                        )
+                    ]
+                ),
+            )
+            with pytest.raises(MatchlockError, match="requires mutate_hook callback"):
+                client.create(opts)
+        finally:
+            fake.close_stdout()
+
+    def test_create_with_vfs_action_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-vfs-action-callback"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    rules=[
+                        VFSHookRule(
+                            phase="before",
+                            ops=["write"],
+                            path="/workspace/*",
+                            action_hook=lambda req: VFS_HOOK_ACTION_ALLOW,
+                        )
+                    ],
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-vfs-action-callback"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert "vfs" not in req["params"] or "interception" not in req["params"].get(
+                "vfs", {}
+            )
+            t.join(timeout=2)
         finally:
             fake.close_stdout()
 
@@ -622,6 +769,95 @@ class TestClientFileOps:
         finally:
             fake.close_stdout()
 
+    def test_write_file_applies_local_mutate_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            client._set_local_vfs_hooks(
+                [],
+                [
+                    _LocalVFSMutateHook(
+                        name="mut",
+                        ops={"write"},
+                        path="/workspace/*",
+                        hook=lambda req: f"size={req.size};mode={oct(req.mode)}".encode(),
+                    )
+                ],
+                [],
+                max_depth=1,
+            )
+
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response({"jsonrpc": "2.0", "id": 1, "result": {}})
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            client.write_file("/workspace/test.txt", b"abcd")
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            payload = base64.b64decode(req["params"]["content"])
+            assert payload == b"size=4;mode=0o644"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_write_file_mutate_hook_none_keeps_original(self):
+        client, fake = make_client_with_fake()
+        try:
+            client._set_local_vfs_hooks(
+                [],
+                [
+                    _LocalVFSMutateHook(
+                        name="noop",
+                        ops={"write"},
+                        path="/workspace/*",
+                        hook=lambda req: None,
+                    )
+                ],
+                [],
+                max_depth=1,
+            )
+
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response({"jsonrpc": "2.0", "id": 1, "result": {}})
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            client.write_file("/workspace/test.txt", b"abcd")
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            payload = base64.b64decode(req["params"]["content"])
+            assert payload == b"abcd"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_write_file_blocked_by_local_action_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            client._set_local_vfs_hooks(
+                [],
+                [],
+                [
+                    _LocalVFSActionHook(
+                        name="block-writes",
+                        ops={"write"},
+                        path="/workspace/*",
+                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
+                    )
+                ],
+                max_depth=1,
+            )
+
+            with pytest.raises(MatchlockError, match="blocked operation"):
+                client.write_file("/workspace/test.txt", b"abcd")
+            assert fake.stdin.getvalue() == ""
+        finally:
+            fake.close_stdout()
+
     def test_read_file(self):
         client, fake = make_client_with_fake()
         try:
@@ -641,6 +877,28 @@ class TestClientFileOps:
             content = client.read_file("/workspace/test.txt")
             assert content == b"file contents"
             t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_read_file_blocked_by_local_action_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            client._set_local_vfs_hooks(
+                [],
+                [],
+                [
+                    _LocalVFSActionHook(
+                        name="block-reads",
+                        ops={"read"},
+                        path="/workspace/*",
+                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
+                    )
+                ],
+                max_depth=1,
+            )
+            with pytest.raises(MatchlockError, match="blocked operation"):
+                client.read_file("/workspace/test.txt")
+            assert fake.stdin.getvalue() == ""
         finally:
             fake.close_stdout()
 
@@ -694,6 +952,28 @@ class TestClientFileOps:
         finally:
             fake.close_stdout()
 
+    def test_list_files_blocked_by_local_action_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            client._set_local_vfs_hooks(
+                [],
+                [],
+                [
+                    _LocalVFSActionHook(
+                        name="block-readdir",
+                        ops={"readdir"},
+                        path="/workspace*",
+                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
+                    )
+                ],
+                max_depth=1,
+            )
+            with pytest.raises(MatchlockError, match="blocked operation"):
+                client.list_files("/workspace")
+            assert fake.stdin.getvalue() == ""
+        finally:
+            fake.close_stdout()
+
 
 class TestVFSCallbackNotifications:
     def test_event_callback_suppresses_recursion(self):
@@ -701,8 +981,11 @@ class TestVFSCallbackNotifications:
         runs = 0
         done = threading.Event()
 
-        def hook(c: Client):
+        def hook(c: Client, event):
             nonlocal runs
+            assert event.mode == 0o640
+            assert event.uid == 123
+            assert event.gid == 456
             runs += 1
             c._handle_event_notification(
                 {"file": {"op": "write", "path": "/workspace/nested.txt"}}
@@ -719,11 +1002,22 @@ class TestVFSCallbackNotifications:
                     hook=hook,
                 )
             ],
+            [],
+            [],
             max_depth=1,
         )
 
         client._handle_event_notification(
-            {"file": {"op": "write", "path": "/workspace/trigger.txt"}}
+            {
+                "file": {
+                    "op": "write",
+                    "path": "/workspace/trigger.txt",
+                    "size": 1,
+                    "mode": 0o640,
+                    "uid": 123,
+                    "gid": 456,
+                }
+            }
         )
         assert done.wait(timeout=2)
         # Give nested event delivery a moment; recursion guard keeps this at one.

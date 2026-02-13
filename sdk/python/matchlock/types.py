@@ -1,7 +1,50 @@
 """Type definitions for the Matchlock SDK."""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal, TypeAlias
+
+VFS_HOOK_PHASE_BEFORE = "before"
+VFS_HOOK_PHASE_AFTER = "after"
+VFS_HOOK_ACTION_ALLOW = "allow"
+VFS_HOOK_ACTION_BLOCK = "block"
+
+VFS_HOOK_OP_STAT = "stat"
+VFS_HOOK_OP_READDIR = "readdir"
+VFS_HOOK_OP_OPEN = "open"
+VFS_HOOK_OP_CREATE = "create"
+VFS_HOOK_OP_MKDIR = "mkdir"
+VFS_HOOK_OP_CHMOD = "chmod"
+VFS_HOOK_OP_REMOVE = "remove"
+VFS_HOOK_OP_REMOVE_ALL = "remove_all"
+VFS_HOOK_OP_RENAME = "rename"
+VFS_HOOK_OP_SYMLINK = "symlink"
+VFS_HOOK_OP_READLINK = "readlink"
+VFS_HOOK_OP_READ = "read"
+VFS_HOOK_OP_WRITE = "write"
+VFS_HOOK_OP_CLOSE = "close"
+VFS_HOOK_OP_SYNC = "sync"
+VFS_HOOK_OP_TRUNCATE = "truncate"
+
+VFSHookPhase: TypeAlias = Literal["", "before", "after"]
+VFSHookOp: TypeAlias = Literal[
+    "stat",
+    "readdir",
+    "open",
+    "create",
+    "mkdir",
+    "chmod",
+    "remove",
+    "remove_all",
+    "rename",
+    "symlink",
+    "readlink",
+    "read",
+    "write",
+    "close",
+    "sync",
+    "truncate",
+]
+VFSHookAction: TypeAlias = Literal["allow", "block"]
 
 
 @dataclass
@@ -44,29 +87,29 @@ class VFSHookRule:
     name: str = ""
     """Optional rule name."""
 
-    phase: str = ""
+    phase: VFSHookPhase = ""
     """Rule phase: before or after (empty defaults to before server-side)."""
 
-    ops: list[str] = field(default_factory=list)
+    ops: list[VFSHookOp] = field(default_factory=list)
     """Operation filters: read, write, create, ... (empty = all)."""
 
     path: str = ""
     """filepath-style glob pattern (empty = all)."""
 
-    action: str = "allow"
-    """Action: allow, block, mutate_write, exec_after."""
-
-    data: str = ""
-    """Replacement payload when action=mutate_write."""
-
-    command: str = ""
-    """Command to run when action=exec_after."""
+    action: VFSHookAction = VFS_HOOK_ACTION_ALLOW
+    """Wire action: allow or block."""
 
     timeout_ms: int = 0
-    """Timeout for command action in milliseconds."""
+    """Timeout for SDK-local callback hooks in milliseconds."""
 
-    hook: Callable[[Any], Any] | None = None
-    """SDK-local after-hook callback: hook(client) -> Any."""
+    hook: Callable[[Any, "VFSHookEvent"], Any] | None = None
+    """SDK-local after-hook callback: hook(client, event) -> Any."""
+
+    mutate_hook: Callable[["VFSMutateRequest"], bytes | str | None] | None = None
+    """SDK-local before-write mutate callback: mutate_hook(request) -> bytes|str|None."""
+
+    action_hook: Callable[["VFSActionRequest"], VFSHookAction] | None = None
+    """SDK-local before-op decision callback: action_hook(request) -> allow|block."""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"action": self.action}
@@ -78,10 +121,6 @@ class VFSHookRule:
             d["ops"] = self.ops
         if self.path:
             d["path"] = self.path
-        if self.data:
-            d["data"] = self.data
-        if self.command:
-            d["command"] = self.command
         if self.timeout_ms > 0:
             d["timeout_ms"] = self.timeout_ms
         return d
@@ -109,6 +148,41 @@ class VFSInterceptionConfig:
         if self.rules:
             d["rules"] = [r.to_dict() for r in self.rules]
         return d
+
+
+@dataclass
+class VFSMutateRequest:
+    """Input to SDK-local mutate hooks."""
+
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
+
+
+@dataclass
+class VFSActionRequest:
+    """Input to SDK-local action hooks."""
+
+    op: str
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
+
+
+@dataclass
+class VFSHookEvent:
+    """Metadata delivered to SDK-local after hooks."""
+
+    op: str
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
 
 
 @dataclass

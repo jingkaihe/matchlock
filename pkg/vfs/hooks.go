@@ -54,8 +54,10 @@ type HookRule struct {
 	Ops         []HookOp
 	PathPattern string
 	Action      HookAction
+	ActionFunc  func(ctx context.Context, req HookRequest) HookAction
 
-	MutateWrite []byte
+	MutateWriteFunc MutateWriteFunc
+	MutateWrite     []byte
 
 	ExecCommand string
 	ExecTimeout time.Duration
@@ -67,16 +69,41 @@ type HookRequest struct {
 	NewPath string
 	Flags   int
 	Mode    os.FileMode
+	UID     int
+	GID     int
 	Offset  int64
 	Data    []byte
+}
+
+type HookFileMeta struct {
+	Size         int64
+	Mode         os.FileMode
+	UID          int
+	GID          int
+	HasOwnership bool
 }
 
 type HookResult struct {
 	Err   error
 	Bytes int
+	Meta  *HookFileMeta
 }
 
 type ExecFunc func(ctx context.Context, command string) error
+
+// MutateWriteFunc computes replacement bytes for a write operation.
+// Returning an error fails the intercepted write.
+type MutateWriteFunc func(ctx context.Context, req MutateWriteRequest) ([]byte, error)
+
+// MutateWriteRequest contains metadata for write mutation decisions.
+type MutateWriteRequest struct {
+	Path   string
+	Offset int64
+	Size   int
+	Mode   os.FileMode
+	UID    int
+	GID    int
+}
 
 // HookMatcher decides whether a hook should apply for a request.
 type HookMatcher interface {
@@ -356,15 +383,51 @@ func compileHooksFromRules(rules []HookRule, getExec func() ExecFunc) []Hook {
 			Matcher: OpPathMatcher{Ops: append([]HookOp(nil), rule.Ops...), PathPattern: rule.PathPattern},
 		}
 
+		if rule.ActionFunc != nil {
+			actionFunc := rule.ActionFunc
+			hook.Before = BeforeHookFunc(func(ctx context.Context, req *HookRequest) error {
+				if req == nil {
+					return nil
+				}
+				decision := normalizeHookAction(actionFunc(ctx, *req))
+				if decision == HookActionBlock {
+					return syscall.EPERM
+				}
+				return nil
+			})
+			hooks = append(hooks, hook)
+			continue
+		}
+
 		switch rule.Action {
 		case HookActionBlock:
 			hook.Before = BeforeHookFunc(func(ctx context.Context, req *HookRequest) error {
 				return syscall.EPERM
 			})
 		case HookActionMutateWrite:
+			mutateFn := rule.MutateWriteFunc
 			data := append([]byte(nil), rule.MutateWrite...)
 			hook.Before = BeforeHookFunc(func(ctx context.Context, req *HookRequest) error {
-				if req != nil && req.Op == HookOpWrite && len(data) > 0 {
+				if req == nil || req.Op != HookOpWrite {
+					return nil
+				}
+				if mutateFn != nil {
+					mutateReq := MutateWriteRequest{
+						Path:   req.Path,
+						Offset: req.Offset,
+						Size:   len(req.Data),
+						Mode:   req.Mode,
+						UID:    req.UID,
+						GID:    req.GID,
+					}
+					mutated, err := mutateFn(ctx, mutateReq)
+					if err != nil {
+						return err
+					}
+					req.Data = append([]byte(nil), mutated...)
+					return nil
+				}
+				if len(data) > 0 {
 					req.Data = append([]byte(nil), data...)
 				}
 				return nil

@@ -31,7 +31,14 @@ from .types import (
     FileInfo,
     MatchlockError,
     RPCError,
+    VFSActionRequest,
+    VFSHookEvent,
+    VFS_HOOK_ACTION_ALLOW,
+    VFS_HOOK_ACTION_BLOCK,
     VFSInterceptionConfig,
+    VFS_HOOK_PHASE_AFTER,
+    VFS_HOOK_PHASE_BEFORE,
+    VFSMutateRequest,
 )
 
 
@@ -57,12 +64,44 @@ class _LocalVFSHook:
         ops: set[str],
         path: str,
         timeout_ms: int,
-        hook: Callable[[Any], Any],
+        hook: Callable[[Any, VFSHookEvent], Any],
     ) -> None:
         self.name = name
         self.ops = ops
         self.path = path
         self.timeout_ms = timeout_ms
+        self.hook = hook
+
+
+class _LocalVFSMutateHook:
+    __slots__ = ("name", "ops", "path", "hook")
+
+    def __init__(
+        self,
+        name: str,
+        ops: set[str],
+        path: str,
+        hook: Callable[[VFSMutateRequest], bytes | str | None],
+    ) -> None:
+        self.name = name
+        self.ops = ops
+        self.path = path
+        self.hook = hook
+
+
+class _LocalVFSActionHook:
+    __slots__ = ("name", "ops", "path", "hook")
+
+    def __init__(
+        self,
+        name: str,
+        ops: set[str],
+        path: str,
+        hook: Callable[[VFSActionRequest], str],
+    ) -> None:
+        self.name = name
+        self.ops = ops
+        self.path = path
         self.hook = hook
 
 
@@ -92,6 +131,8 @@ class Client:
         self._last_vm_id: str | None = None
 
         self._vfs_hooks: list[_LocalVFSHook] = []
+        self._vfs_mutate_hooks: list[_LocalVFSMutateHook] = []
+        self._vfs_action_hooks: list[_LocalVFSActionHook] = []
         self._vfs_hook_max_depth = 1
         self._vfs_hook_depth = 0
         self._vfs_hook_lock = threading.Lock()
@@ -139,7 +180,7 @@ class Client:
             return
         self._closed = True
         self._last_vm_id = self._vm_id
-        self._set_local_vfs_hooks([], 1)
+        self._set_local_vfs_hooks([], [], [], 1)
 
         if self._process is None or self._process.poll() is not None:
             return
@@ -256,11 +297,17 @@ class Client:
             return
         op = str(file_event.get("op", "")).lower()
         path = str(file_event.get("path", ""))
+        size = int(file_event.get("size") or 0)
+        mode = int(file_event.get("mode") or 0)
+        uid = int(file_event.get("uid") or 0)
+        gid = int(file_event.get("gid") or 0)
         if not op:
             return
-        self._handle_vfs_file_event(op, path)
+        self._handle_vfs_file_event(op, path, size, mode, uid, gid)
 
-    def _handle_vfs_file_event(self, op: str, path: str) -> None:
+    def _handle_vfs_file_event(
+        self, op: str, path: str, size: int, mode: int, uid: int, gid: int
+    ) -> None:
         with self._vfs_hook_lock:
             hooks = list(self._vfs_hooks)
             max_depth = self._vfs_hook_max_depth
@@ -270,17 +317,18 @@ class Client:
         if depth >= max_depth:
             return
 
+        event = VFSHookEvent(op=op, path=path, size=size, mode=mode, uid=uid, gid=gid)
         for hook in hooks:
             if hook.ops and op not in hook.ops:
                 continue
             if hook.path and not fnmatch.fnmatch(path, hook.path):
                 continue
             t = threading.Thread(
-                target=self._run_vfs_hook, args=(hook, max_depth), daemon=True
+                target=self._run_vfs_hook, args=(hook, event, max_depth), daemon=True
             )
             t.start()
 
-    def _run_vfs_hook(self, hook: _LocalVFSHook, max_depth: int) -> None:
+    def _run_vfs_hook(self, hook: _LocalVFSHook, event: VFSHookEvent, max_depth: int) -> None:
         with self._vfs_hook_lock:
             self._vfs_hook_depth += 1
             depth = self._vfs_hook_depth
@@ -290,26 +338,105 @@ class Client:
             return
 
         try:
-            hook.hook(self)
+            hook.hook(self, event)
         except Exception:
             pass
         finally:
             with self._vfs_hook_lock:
                 self._vfs_hook_depth -= 1
 
-    def _set_local_vfs_hooks(self, hooks: list[_LocalVFSHook], max_depth: int) -> None:
+    def _apply_local_write_mutations(self, path: str, content: bytes, mode: int) -> bytes:
+        with self._vfs_hook_lock:
+            hooks = list(self._vfs_mutate_hooks)
+
+        if not hooks:
+            return content
+
+        uid_fn = getattr(os, "geteuid", None)
+        gid_fn = getattr(os, "getegid", None)
+        uid = int(uid_fn()) if callable(uid_fn) else 0
+        gid = int(gid_fn()) if callable(gid_fn) else 0
+
+        current = content
+        for hook in hooks:
+            if hook.ops and "write" not in hook.ops:
+                continue
+            if hook.path and not fnmatch.fnmatch(path, hook.path):
+                continue
+
+            request = VFSMutateRequest(path=path, size=len(current), mode=mode, uid=uid, gid=gid)
+            mutated = hook.hook(request)
+            if mutated is None:
+                continue
+            if isinstance(mutated, str):
+                current = mutated.encode("utf-8")
+                continue
+            if not isinstance(mutated, bytes):
+                raise MatchlockError(
+                    f"invalid mutate_hook return type for {hook.name!r}: expected bytes|str|None"
+                )
+            current = mutated
+
+        return current
+
+    def _apply_local_action_hooks(self, op: str, path: str, size: int, mode: int) -> None:
+        with self._vfs_hook_lock:
+            hooks = list(self._vfs_action_hooks)
+
+        if not hooks:
+            return
+
+        uid_fn = getattr(os, "geteuid", None)
+        gid_fn = getattr(os, "getegid", None)
+        uid = int(uid_fn()) if callable(uid_fn) else 0
+        gid = int(gid_fn()) if callable(gid_fn) else 0
+
+        req = VFSActionRequest(op=op, path=path, size=size, mode=mode, uid=uid, gid=gid)
+        for hook in hooks:
+            if hook.ops and op not in hook.ops:
+                continue
+            if hook.path and not fnmatch.fnmatch(path, hook.path):
+                continue
+
+            decision = str(hook.hook(req)).strip().lower()
+            if decision in ("", VFS_HOOK_ACTION_ALLOW):
+                continue
+            if decision == VFS_HOOK_ACTION_BLOCK:
+                raise MatchlockError(
+                    f"vfs action hook blocked operation: op={op} path={path} hook={hook.name!r}"
+                )
+            raise MatchlockError(
+                f"invalid action_hook return value for {hook.name!r}: expected "
+                f"{VFS_HOOK_ACTION_ALLOW!r}|{VFS_HOOK_ACTION_BLOCK!r}, got {decision!r}"
+            )
+
+    def _set_local_vfs_hooks(
+        self,
+        hooks: list[_LocalVFSHook],
+        mutate_hooks: list[_LocalVFSMutateHook],
+        action_hooks: list[_LocalVFSActionHook],
+        max_depth: int,
+    ) -> None:
         if max_depth <= 0:
             max_depth = 1
         with self._vfs_hook_lock:
             self._vfs_hooks = hooks
+            self._vfs_mutate_hooks = mutate_hooks
+            self._vfs_action_hooks = action_hooks
             self._vfs_hook_max_depth = max_depth
             self._vfs_hook_depth = 0
 
     def _compile_vfs_hooks(
         self, cfg: VFSInterceptionConfig | None
-    ) -> tuple[VFSInterceptionConfig | None, list[_LocalVFSHook], int]:
+    ) -> tuple[
+        VFSInterceptionConfig | None,
+        list[_LocalVFSHook],
+        list[_LocalVFSMutateHook],
+        list[_LocalVFSActionHook],
+        int,
+    ]:
         if cfg is None:
-            return None, [], 1
+            return None, [], [], [], 1
 
         max_depth = cfg.max_exec_depth if cfg.max_exec_depth > 0 else 1
         wire = VFSInterceptionConfig(
@@ -318,25 +445,90 @@ class Client:
             rules=[],
         )
         local: list[_LocalVFSHook] = []
+        local_mutate: list[_LocalVFSMutateHook] = []
+        local_action: list[_LocalVFSActionHook] = []
 
         for rule in cfg.rules:
-            if rule.hook is None:
+            callbacks = [rule.hook, rule.mutate_hook, rule.action_hook]
+            callback_count = sum(1 for cb in callbacks if cb is not None)
+            if callback_count > 1:
+                raise MatchlockError(
+                    f"invalid vfs hook {rule.name!r}: cannot set more than one callback hook"
+                )
+
+            if rule.hook is None and rule.mutate_hook is None and rule.action_hook is None:
+                action = (rule.action or "").strip().lower()
+                if action == "mutate_write":
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: mutate_write requires mutate_hook callback"
+                    )
+                if action == "exec_after":
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: exec_after requires hook callback"
+                    )
                 wire.rules.append(rule)
                 continue
 
-            if rule.phase.lower() != "after":
-                raise MatchlockError(
-                    f"invalid vfs hook {rule.name!r}: callback hooks must use phase=after"
-                )
+            if rule.hook is not None:
+                action = (rule.action or "").strip().lower()
+                if action not in ("", VFS_HOOK_ACTION_ALLOW):
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: callback hooks cannot set action={rule.action!r}"
+                    )
+                if rule.phase.lower() != VFS_HOOK_PHASE_AFTER:
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: callback hooks must use phase=after"
+                    )
 
+                ops = {op.lower() for op in rule.ops if op}
+                local.append(
+                    _LocalVFSHook(
+                        name=rule.name,
+                        ops=ops,
+                        path=rule.path,
+                        timeout_ms=rule.timeout_ms,
+                        hook=rule.hook,
+                    )
+                )
+                continue
+
+            if rule.action_hook is not None:
+                action = (rule.action or "").strip().lower()
+                if action not in ("", VFS_HOOK_ACTION_ALLOW):
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: action_hook cannot set action={rule.action!r}"
+                    )
+                if rule.phase and rule.phase.lower() != VFS_HOOK_PHASE_BEFORE:
+                    raise MatchlockError(
+                        f"invalid vfs hook {rule.name!r}: action_hook must use phase=before"
+                    )
+                ops = {op.lower() for op in rule.ops if op}
+                local_action.append(
+                    _LocalVFSActionHook(
+                        name=rule.name,
+                        ops=ops,
+                        path=rule.path,
+                        hook=rule.action_hook,
+                    )
+                )
+                continue
+
+            action = (rule.action or "").strip().lower()
+            if action not in ("", VFS_HOOK_ACTION_ALLOW):
+                raise MatchlockError(
+                    f"invalid vfs hook {rule.name!r}: mutate_hook cannot set action={rule.action!r}"
+                )
+            if rule.phase and rule.phase.lower() != VFS_HOOK_PHASE_BEFORE:
+                raise MatchlockError(
+                    f"invalid vfs hook {rule.name!r}: mutate_hook must use phase=before"
+                )
             ops = {op.lower() for op in rule.ops if op}
-            local.append(
-                _LocalVFSHook(
+            local_mutate.append(
+                _LocalVFSMutateHook(
                     name=rule.name,
                     ops=ops,
                     path=rule.path,
-                    timeout_ms=rule.timeout_ms,
-                    hook=rule.hook,
+                    hook=rule.mutate_hook,
                 )
             )
 
@@ -344,7 +536,7 @@ class Client:
             wire.emit_events = True
         if not wire.rules and not wire.emit_events:
             wire = None
-        return wire, local, max_depth
+        return wire, local, local_mutate, local_action, max_depth
 
     # ── RPC transport ────────────────────────────────────────────────
 
@@ -437,10 +629,10 @@ class Client:
         if not opts.image:
             raise MatchlockError("image is required (e.g., alpine:latest)")
 
-        wire_vfs, local_hooks, hook_max_depth = self._compile_vfs_hooks(
-            opts.vfs_interception
+        wire_vfs, local_hooks, local_mutate_hooks, local_action_hooks, hook_max_depth = (
+            self._compile_vfs_hooks(opts.vfs_interception)
         )
-        self._set_local_vfs_hooks([], 1)
+        self._set_local_vfs_hooks([], [], [], 1)
 
         params: dict[str, Any] = {"image": opts.image}
 
@@ -489,7 +681,9 @@ class Client:
 
         result = self._send_request("create", params)
         self._vm_id = result["id"]
-        self._set_local_vfs_hooks(local_hooks, hook_max_depth)
+        self._set_local_vfs_hooks(
+            local_hooks, local_mutate_hooks, local_action_hooks, hook_max_depth
+        )
         return self._vm_id
 
     def launch(self, sandbox: Sandbox) -> str:
@@ -588,6 +782,8 @@ class Client:
         """
         if isinstance(content, str):
             content = content.encode("utf-8")
+        self._apply_local_action_hooks("write", path, len(content), mode)
+        content = self._apply_local_write_mutations(path, content, mode)
 
         params: dict[str, Any] = {
             "path": path,
@@ -603,6 +799,7 @@ class Client:
             path: Guest path to read.
             timeout: Optional timeout in seconds.
         """
+        self._apply_local_action_hooks("read", path, 0, 0)
         result = self._send_request("read_file", {"path": path}, timeout=timeout)
         return base64.b64decode(result["content"])
 
@@ -613,6 +810,7 @@ class Client:
             path: Guest directory path.
             timeout: Optional timeout in seconds.
         """
+        self._apply_local_action_hooks("readdir", path, 0, 0)
         result = self._send_request("list_files", {"path": path}, timeout=timeout)
         return [
             FileInfo(

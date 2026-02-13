@@ -242,6 +242,6 @@ func (c *Client) handleNotification(notif notification) {
 		if event.File == nil {
 			return
 		}
-		c.handleVFSFileEvent(event.File.Op, event.File.Path)
+		c.handleVFSFileEvent(event.File.Op, event.File.Path, event.File.Size, event.File.Mode, event.File.UID, event.File.GID)
 	}
 }

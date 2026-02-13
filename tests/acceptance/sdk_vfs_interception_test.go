@@ -22,10 +22,10 @@ func TestVFSInterceptionBlockCreate(t *testing.T) {
 		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
-					Phase:  "before",
-					Ops:    []string{"create"},
+					Phase:  sdk.VFSHookPhaseBefore,
+					Ops:    []sdk.VFSHookOp{sdk.VFSHookOpCreate},
 					Path:   "/workspace/blocked.txt",
-					Action: "block",
+					Action: sdk.VFSHookActionBlock,
 				},
 			},
 		}),
@@ -45,11 +45,12 @@ func TestVFSInterceptionMutateWrite(t *testing.T) {
 		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
-					Phase:  "before",
-					Ops:    []string{"write"},
-					Path:   "/workspace/mutate.txt",
-					Action: "mutate_write",
-					Data:   "mutated-by-hook",
+					Phase: sdk.VFSHookPhaseBefore,
+					Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
+					Path:  "/workspace/mutate.txt",
+					MutateHook: func(ctx context.Context, req sdk.VFSMutateRequest) ([]byte, error) {
+						return []byte("mutated-by-hook"), nil
+					},
 				},
 			},
 		}),
@@ -66,19 +67,19 @@ func TestVFSInterceptionMutateWrite(t *testing.T) {
 func TestVFSInterceptionExecAfterSuppressesRecursion(t *testing.T) {
 	t.Parallel()
 
-	command := "echo 1 >> /tmp/hook_runs; if [ ! -f /workspace/hook.log ]; then echo hook > /workspace/hook.log; fi"
-
 	client := launchWithBuilder(t,
 		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			MaxExecDepth: 1,
 			Rules: []sdk.VFSHookRule{
 				{
-					Phase:     "after",
-					Ops:       []string{"write"},
+					Phase:     sdk.VFSHookPhaseAfter,
+					Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 					Path:      "/workspace/*",
-					Action:    "exec_after",
-					Command:   command,
 					TimeoutMS: 2000,
+					Hook: func(ctx context.Context, hookClient *sdk.Client, _ sdk.VFSHookEvent) error {
+						_, err := hookClient.Exec(ctx, "echo 1 >> /tmp/hook_runs; if [ ! -f /workspace/hook.log ]; then echo hook > /workspace/hook.log; fi")
+						return err
+					},
 				},
 			},
 		}),
@@ -114,11 +115,11 @@ func TestVFSInterceptionAfterCallbackSuppressesRecursion(t *testing.T) {
 			Rules: []sdk.VFSHookRule{
 				{
 					Name:      "callback-after-write",
-					Phase:     "after",
-					Ops:       []string{"write"},
+					Phase:     sdk.VFSHookPhaseAfter,
+					Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 					Path:      "/workspace/*",
 					TimeoutMS: 2000,
-					Hook: func(ctx context.Context, hookClient *sdk.Client) error {
+					Hook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
 						hookRuns.Add(1)
 						_, err := hookClient.Exec(ctx, "echo callback > /workspace/callback.log")
 						return err

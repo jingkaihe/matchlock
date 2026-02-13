@@ -40,6 +40,7 @@ type FileInfo struct {
 	mode    os.FileMode
 	modTime time.Time
 	isDir   bool
+	sys     any
 }
 
 func (fi FileInfo) Name() string       { return fi.name }
@@ -47,15 +48,20 @@ func (fi FileInfo) Size() int64        { return fi.size }
 func (fi FileInfo) Mode() os.FileMode  { return fi.mode }
 func (fi FileInfo) ModTime() time.Time { return fi.modTime }
 func (fi FileInfo) IsDir() bool        { return fi.isDir }
-func (fi FileInfo) Sys() any           { return nil }
+func (fi FileInfo) Sys() any           { return fi.sys }
 
 func NewFileInfo(name string, size int64, mode os.FileMode, modTime time.Time, isDir bool) FileInfo {
+	return NewFileInfoWithSys(name, size, mode, modTime, isDir, nil)
+}
+
+func NewFileInfoWithSys(name string, size int64, mode os.FileMode, modTime time.Time, isDir bool, sys any) FileInfo {
 	return FileInfo{
 		name:    name,
 		size:    size,
 		mode:    mode,
 		modTime: modTime,
 		isDir:   isDir,
+		sys:     sys,
 	}
 }
 

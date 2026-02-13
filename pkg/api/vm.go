@@ -68,6 +68,9 @@ type FileEvent struct {
 	Op   string `json:"op"`
 	Path string `json:"path"`
 	Size int64  `json:"size"`
+	Mode uint32 `json:"mode,omitempty"`
+	UID  int    `json:"uid,omitempty"`
+	GID  int    `json:"gid,omitempty"`
 }
 
 type ExecEvent struct {

@@ -3,10 +3,13 @@
 package acceptance
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,46 +17,165 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	sandboxReadyTimeout      = 2 * time.Minute
+	sandboxReadyPollInterval = 500 * time.Millisecond
+	execReadyTimeout         = 30 * time.Second
+	vmStopTimeout            = 30 * time.Second
+	runExitWaitTimeout       = 5 * time.Second
+)
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func startPersistentRun(t *testing.T, bin string) (*exec.Cmd, <-chan error, *lockedBuffer) {
+	t.Helper()
+	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
+	stderr := &lockedBuffer{}
+	cmd.Stderr = stderr
+	require.NoError(t, cmd.Start(), "failed to start run")
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+		close(done)
+	}()
+	return cmd, done, stderr
+}
+
+func waitForRunExit(done <-chan error, timeout time.Duration) {
+	select {
+	case <-done:
+	case <-time.After(timeout):
+	}
+}
+
+func cleanupPersistentRun(t *testing.T, bin, vmID string, runPID int, runDone <-chan error) {
+	t.Helper()
+	if vmID != "" {
+		exec.Command(bin, "kill", vmID).Run()
+		waitForRunExit(runDone, runExitWaitTimeout)
+		exec.Command(bin, "rm", vmID).Run()
+	}
+	if p, err := os.FindProcess(runPID); err == nil {
+		_ = p.Kill()
+	}
+	waitForRunExit(runDone, runExitWaitTimeout)
+}
+
+func findRunningVMIDByPID(t *testing.T, runPID int) string {
+	t.Helper()
+	stdout, stderr, exitCode := runCLI(t, "list", "--running")
+	require.Equalf(t, 0, exitCode, "list --running failed: %s", stderr)
+	pidText := strconv.Itoa(runPID)
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == "ID" || fields[1] != "running" {
+			continue
+		}
+		if fields[len(fields)-1] == pidText {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func waitForRunningVMID(t *testing.T, runPID int, runDone <-chan error, runStderr *lockedBuffer) string {
+	t.Helper()
+	deadline := time.Now().Add(sandboxReadyTimeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err, ok := <-runDone:
+			if ok && err != nil {
+				require.NoErrorf(t, err, "run exited before sandbox was ready (pid=%d). stderr: %s", runPID, runStderr.String())
+			}
+			require.Failf(t, "run exited before sandbox was ready", "pid=%d stderr: %s", runPID, runStderr.String())
+		default:
+		}
+
+		if vmID := findRunningVMIDByPID(t, runPID); vmID != "" {
+			return vmID
+		}
+		time.Sleep(sandboxReadyPollInterval)
+	}
+	require.Failf(t, "timed out waiting for sandbox to appear in list", "pid=%d stderr: %s", runPID, runStderr.String())
+	return ""
+}
+
+func waitForExecReady(t *testing.T, vmID string, runPID int, runDone <-chan error, runStderr *lockedBuffer) {
+	t.Helper()
+	deadline := time.Now().Add(execReadyTimeout)
+	lastErr := ""
+	for time.Now().Before(deadline) {
+		select {
+		case err, ok := <-runDone:
+			if ok && err != nil {
+				require.NoErrorf(t, err, "run exited before exec was ready (pid=%d). stderr: %s", runPID, runStderr.String())
+			}
+			require.Failf(t, "run exited before exec was ready", "pid=%d stderr: %s", runPID, runStderr.String())
+		default:
+		}
+
+		_, stderr, exitCode := runCLI(t, "exec", vmID, "true")
+		if exitCode == 0 {
+			return
+		}
+		lastErr = stderr
+		time.Sleep(sandboxReadyPollInterval)
+	}
+	require.Failf(t, "timed out waiting for exec readiness", "vmID=%s stderr: %s", vmID, lastErr)
+}
+
+func isVMRunning(t *testing.T, vmID string) bool {
+	t.Helper()
+	stdout, stderr, exitCode := runCLI(t, "list", "--running")
+	require.Equalf(t, 0, exitCode, "list --running failed: %s", stderr)
+	for _, line := range strings.Split(stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == vmID && fields[1] == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForVMStopped(t *testing.T, vmID string) {
+	t.Helper()
+	deadline := time.Now().Add(vmStopTimeout)
+	for time.Now().Before(deadline) {
+		if !isVMRunning(t, vmID) {
+			return
+		}
+		time.Sleep(sandboxReadyPollInterval)
+	}
+	require.Failf(t, "timed out waiting for VM to stop", "vmID=%s", vmID)
+}
+
 func TestCLILifecycle(t *testing.T) {
 	bin := matchlockBin(t)
 
-	// Start a sandbox with --rm=false (it stays alive)
-	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
-	var runStderr strings.Builder
-	cmd.Stderr = &runStderr
-	require.NoError(t, cmd.Start(), "failed to start run")
+	cmd, runDone, runStderr := startPersistentRun(t, bin)
 	runPID := cmd.Process.Pid
 
-	// Wait for the sandbox to register and become visible in "list"
 	var vmID string
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second)
-		stdout, _, _ := runCLI(t, "list", "--running")
-		for _, line := range strings.Split(stdout, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && strings.HasPrefix(fields[0], "vm-") && fields[1] == "running" {
-				vmID = fields[0]
-				break
-			}
-		}
-		if vmID != "" {
-			break
-		}
-	}
-	require.NotEmptyf(t, vmID, "timed out waiting for sandbox to appear in list. stderr: %s", runStderr.String())
-
 	t.Cleanup(func() {
-		// Ensure cleanup even if test fails partway
-		exec.Command(bin, "kill", vmID).Run()
-		// Wait for the run process to exit after kill
-		time.Sleep(2 * time.Second)
-		exec.Command(bin, "rm", vmID).Run()
-		// Kill the process if it's still alive
-		if p, err := os.FindProcess(runPID); err == nil {
-			p.Kill()
-		}
+		cleanupPersistentRun(t, bin, vmID, runPID, runDone)
 	})
+	vmID = waitForRunningVMID(t, runPID, runDone, runStderr)
+	waitForExecReady(t, vmID, runPID, runDone, runStderr)
 
 	// --- list ---
 	t.Run("list", func(t *testing.T) {
@@ -132,13 +254,8 @@ func TestCLILifecycle(t *testing.T) {
 		stdout, _, exitCode := runCLI(t, "kill", vmID)
 		require.Equal(t, 0, exitCode)
 		assert.Contains(t, stdout, "Killed")
-
-		// Wait for the process to die and status to update
-		time.Sleep(3 * time.Second)
-
-		// Verify it's no longer running
-		stdout2, _, _ := runCLI(t, "list", "--running")
-		assert.NotContains(t, stdout2, vmID, "VM should not appear in running list after kill")
+		waitForVMStopped(t, vmID)
+		assert.False(t, isVMRunning(t, vmID), "VM should not appear in running list after kill")
 	})
 
 	// --- rm ---
@@ -156,42 +273,15 @@ func TestCLILifecycle(t *testing.T) {
 func TestCLIRunRmFalseNoCommand(t *testing.T) {
 	bin := matchlockBin(t)
 
-	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	require.NoError(t, cmd.Start(), "failed to start")
+	cmd, runDone, runStderr := startPersistentRun(t, bin)
 	runPID := cmd.Process.Pid
 
-	// Wait for the sandbox to come up
 	var vmID string
-	deadline := time.Now().Add(2 * time.Minute)
-	for time.Now().Before(deadline) {
-		time.Sleep(2 * time.Second)
-		stdout, _, _ := runCLI(t, "list", "--running")
-		for _, line := range strings.Split(stdout, "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && strings.HasPrefix(fields[0], "vm-") && fields[1] == "running" {
-				vmID = fields[0]
-				break
-			}
-		}
-		if vmID != "" {
-			break
-		}
-	}
-
 	t.Cleanup(func() {
-		if vmID != "" {
-			exec.Command(bin, "kill", vmID).Run()
-			time.Sleep(2 * time.Second)
-			exec.Command(bin, "rm", vmID).Run()
-		}
-		if p, err := os.FindProcess(runPID); err == nil {
-			p.Kill()
-		}
+		cleanupPersistentRun(t, bin, vmID, runPID, runDone)
 	})
-
-	require.NotEmptyf(t, vmID, "timed out waiting for sandbox; stderr: %s", stderr.String())
+	vmID = waitForRunningVMID(t, runPID, runDone, runStderr)
+	waitForExecReady(t, vmID, runPID, runDone, runStderr)
 
 	// Verify we can exec into it
 	stdout, _, exitCode := runCLIWithTimeout(t, 30*time.Second, "exec", vmID, "echo", "alive")

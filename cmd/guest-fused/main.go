@@ -62,6 +62,8 @@ type VFSRequest struct {
 	Data    []byte `cbor:"data,omitempty"`
 	Flags   uint32 `cbor:"flags,omitempty"`
 	Mode    uint32 `cbor:"mode,omitempty"`
+	UID     uint32 `cbor:"uid,omitempty"`
+	GID     uint32 `cbor:"gid,omitempty"`
 }
 
 type VFSResponse struct {
@@ -140,6 +142,16 @@ func (c *VFSClient) Request(req *VFSRequest) (*VFSResponse, error) {
 	return &resp, nil
 }
 
+func (c *VFSClient) RequestCtx(ctx context.Context, req *VFSRequest) (*VFSResponse, error) {
+	if req != nil {
+		if caller, ok := fuse.FromContext(ctx); ok {
+			req.UID = caller.Uid
+			req.GID = caller.Gid
+		}
+	}
+	return c.Request(req)
+}
+
 // VFSRoot is the root node of the FUSE filesystem
 type VFSRoot struct {
 	fs.Inode
@@ -176,7 +188,7 @@ var _ = (fs.NodeRenamer)((*VFSNode)(nil))
 var _ = (fs.NodeSetattrer)((*VFSNode)(nil))
 
 func (r *VFSRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	resp, err := r.client.Request(&VFSRequest{Op: OpGetattr, Path: r.basePath})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpGetattr, Path: r.basePath})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -189,7 +201,7 @@ func (r *VFSRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrO
 
 func (r *VFSRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	path := filepath.Join(r.basePath, name)
-	resp, err := r.client.Request(&VFSRequest{Op: OpLookup, Path: path})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpLookup, Path: path})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -205,7 +217,7 @@ func (r *VFSRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 }
 
 func (r *VFSRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	resp, err := r.client.Request(&VFSRequest{Op: OpReaddir, Path: r.basePath})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpReaddir, Path: r.basePath})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -226,7 +238,7 @@ func (r *VFSRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 
 func (r *VFSRoot) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	path := filepath.Join(r.basePath, name)
-	resp, err := r.client.Request(&VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -243,7 +255,7 @@ func (r *VFSRoot) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 
 func (r *VFSRoot) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	path := filepath.Join(r.basePath, name)
-	resp, err := r.client.Request(&VFSRequest{Op: OpCreate, Path: path, Mode: mode})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpCreate, Path: path, Mode: mode})
 	if err != nil {
 		return nil, nil, 0, syscall.EIO
 	}
@@ -261,7 +273,7 @@ func (r *VFSRoot) Create(ctx context.Context, name string, flags uint32, mode ui
 
 func (r *VFSRoot) Unlink(ctx context.Context, name string) syscall.Errno {
 	path := filepath.Join(r.basePath, name)
-	resp, err := r.client.Request(&VFSRequest{Op: OpUnlink, Path: path})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpUnlink, Path: path})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -273,7 +285,7 @@ func (r *VFSRoot) Unlink(ctx context.Context, name string) syscall.Errno {
 
 func (r *VFSRoot) Rmdir(ctx context.Context, name string) syscall.Errno {
 	path := filepath.Join(r.basePath, name)
-	resp, err := r.client.Request(&VFSRequest{Op: OpRmdir, Path: path})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpRmdir, Path: path})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -295,7 +307,7 @@ func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 		return syscall.EINVAL
 	}
 
-	resp, err := r.client.Request(&VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
+	resp, err := r.client.RequestCtx(ctx, &VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -308,7 +320,7 @@ func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 // VFSNode implementations
 
 func (n *VFSNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	resp, err := n.client.Request(&VFSRequest{Op: OpGetattr, Path: n.path})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpGetattr, Path: n.path})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -322,7 +334,7 @@ func (n *VFSNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrO
 func (n *VFSNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	// Handle chmod
 	if mode, ok := in.GetMode(); ok {
-		resp, err := n.client.Request(&VFSRequest{Op: OpSetattr, Path: n.path, Mode: mode})
+		resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpSetattr, Path: n.path, Mode: mode})
 		if err != nil {
 			return syscall.EIO
 		}
@@ -333,7 +345,7 @@ func (n *VFSNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAtt
 
 	// Handle truncate
 	if sz, ok := in.GetSize(); ok {
-		resp, err := n.client.Request(&VFSRequest{Op: OpOpen, Path: n.path, Flags: uint32(os.O_RDWR)})
+		resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpOpen, Path: n.path, Flags: uint32(os.O_RDWR)})
 		if err != nil {
 			return syscall.EIO
 		}
@@ -343,17 +355,17 @@ func (n *VFSNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAtt
 		handle := resp.Handle
 
 		if sz == 0 {
-			n.client.Request(&VFSRequest{Op: OpRelease, Handle: handle})
-			resp, err = n.client.Request(&VFSRequest{Op: OpCreate, Path: n.path, Mode: 0644})
+			n.client.RequestCtx(ctx, &VFSRequest{Op: OpRelease, Handle: handle})
+			resp, err = n.client.RequestCtx(ctx, &VFSRequest{Op: OpCreate, Path: n.path, Mode: 0644})
 			if err != nil {
 				return syscall.EIO
 			}
 			if resp.Err != 0 {
 				return syscall.Errno(-resp.Err)
 			}
-			n.client.Request(&VFSRequest{Op: OpRelease, Handle: resp.Handle})
+			n.client.RequestCtx(ctx, &VFSRequest{Op: OpRelease, Handle: resp.Handle})
 		} else {
-			n.client.Request(&VFSRequest{Op: OpRelease, Handle: handle})
+			n.client.RequestCtx(ctx, &VFSRequest{Op: OpRelease, Handle: handle})
 		}
 	}
 
@@ -362,7 +374,7 @@ func (n *VFSNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAtt
 
 func (n *VFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	path := filepath.Join(n.path, name)
-	resp, err := n.client.Request(&VFSRequest{Op: OpLookup, Path: path})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpLookup, Path: path})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -378,7 +390,7 @@ func (n *VFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 }
 
 func (n *VFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	resp, err := n.client.Request(&VFSRequest{Op: OpReaddir, Path: n.path})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpReaddir, Path: n.path})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -398,7 +410,7 @@ func (n *VFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 }
 
 func (n *VFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
-	resp, err := n.client.Request(&VFSRequest{Op: OpOpen, Path: n.path, Flags: flags})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpOpen, Path: n.path, Flags: flags})
 	if err != nil {
 		return nil, 0, syscall.EIO
 	}
@@ -410,7 +422,7 @@ func (n *VFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fus
 
 func (n *VFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	path := filepath.Join(n.path, name)
-	resp, err := n.client.Request(&VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
 	if err != nil {
 		return nil, syscall.EIO
 	}
@@ -427,7 +439,7 @@ func (n *VFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 
 func (n *VFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
 	path := filepath.Join(n.path, name)
-	resp, err := n.client.Request(&VFSRequest{Op: OpCreate, Path: path, Mode: mode})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpCreate, Path: path, Mode: mode})
 	if err != nil {
 		return nil, nil, 0, syscall.EIO
 	}
@@ -445,7 +457,7 @@ func (n *VFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 
 func (n *VFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	path := filepath.Join(n.path, name)
-	resp, err := n.client.Request(&VFSRequest{Op: OpUnlink, Path: path})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpUnlink, Path: path})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -457,7 +469,7 @@ func (n *VFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
 
 func (n *VFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 	path := filepath.Join(n.path, name)
-	resp, err := n.client.Request(&VFSRequest{Op: OpRmdir, Path: path})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpRmdir, Path: path})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -479,7 +491,7 @@ func (n *VFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 		return syscall.EINVAL
 	}
 
-	resp, err := n.client.Request(&VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -503,7 +515,7 @@ var _ = (fs.FileReleaser)((*VFSFileHandle)(nil))
 var _ = (fs.FileGetattrer)((*VFSFileHandle)(nil))
 
 func (h *VFSFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	resp, err := h.client.Request(&VFSRequest{
+	resp, err := h.client.RequestCtx(ctx, &VFSRequest{
 		Op:     OpRead,
 		Handle: h.handle,
 		Offset: off,
@@ -519,7 +531,7 @@ func (h *VFSFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.
 }
 
 func (h *VFSFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
-	resp, err := h.client.Request(&VFSRequest{
+	resp, err := h.client.RequestCtx(ctx, &VFSRequest{
 		Op:     OpWrite,
 		Handle: h.handle,
 		Offset: off,
@@ -535,7 +547,7 @@ func (h *VFSFileHandle) Write(ctx context.Context, data []byte, off int64) (uint
 }
 
 func (h *VFSFileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
-	resp, err := h.client.Request(&VFSRequest{Op: OpFsync, Handle: h.handle})
+	resp, err := h.client.RequestCtx(ctx, &VFSRequest{Op: OpFsync, Handle: h.handle})
 	if err != nil {
 		return syscall.EIO
 	}
@@ -546,12 +558,12 @@ func (h *VFSFileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
 }
 
 func (h *VFSFileHandle) Release(ctx context.Context) syscall.Errno {
-	h.client.Request(&VFSRequest{Op: OpRelease, Handle: h.handle})
+	h.client.RequestCtx(ctx, &VFSRequest{Op: OpRelease, Handle: h.handle})
 	return 0
 }
 
 func (h *VFSFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
-	resp, err := h.client.Request(&VFSRequest{Op: OpGetattr, Path: h.path})
+	resp, err := h.client.RequestCtx(ctx, &VFSRequest{Op: OpGetattr, Path: h.path})
 	if err != nil {
 		return syscall.EIO
 	}
