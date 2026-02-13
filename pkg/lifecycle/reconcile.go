@@ -92,7 +92,6 @@ func (r *Reconciler) ReconcileVM(vmID string, forceRunning bool) (ReconcileRepor
 		if err := store.Init(vmID, "unknown", vmDir); err == nil {
 			_ = store.SetResource(func(res *Resources) {
 				res.RootfsPath = filepath.Join(vmDir, "rootfs.ext4")
-				res.SubnetFile = r.subnetAlloc.AllocationPath(vmID)
 			})
 		}
 	}

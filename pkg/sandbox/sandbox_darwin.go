@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -84,7 +85,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrAllocateSubnet, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.SubnetFile = subnetAlloc.AllocationPath(id)
 		r.GatewayIP = subnetInfo.GatewayIP
 		r.GuestIP = subnetInfo.GuestIP
 		r.SubnetCIDR = subnetInfo.Subnet
@@ -116,10 +116,10 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	// Copy rootfs, inject matchlock components, and resize before backend.Create()
-	// so the VZ disk attachment sees the final size with all components in place
-	prebuiltRootfs, err := darwin.CopyRootfsToTemp(rootfsPath)
-	if err != nil {
+	// Copy rootfs into the VM state directory, then inject components and resize
+	// before backend.Create() so VZ sees the final image.
+	prebuiltRootfs := filepath.Join(stateMgr.Dir(id), "rootfs.ext4")
+	if err := copyRootfsDarwin(rootfsPath, prebuiltRootfs); err != nil {
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCopyRootfs, err)
@@ -166,7 +166,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		ID:              id,
 		KernelPath:      kernelPath,
 		InitramfsPath:   initramfsPath,
-		RootfsPath:      rootfsPath,
+		RootfsPath:      prebuiltRootfs,
 		CPUs:            config.Resources.CPUs,
 		MemoryMB:        config.Resources.MemoryMB,
 		SocketPath:      stateMgr.SocketPath(id) + ".sock",
@@ -503,4 +503,24 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 	default:
 		return vfs.NewMemoryProvider()
 	}
+}
+
+func copyRootfsDarwin(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = os.Remove(dstPath)
+		return err
+	}
+	return nil
 }

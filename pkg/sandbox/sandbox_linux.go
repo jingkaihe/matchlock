@@ -141,7 +141,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrAllocateSubnet, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.SubnetFile = subnetAlloc.AllocationPath(id)
 		r.GatewayIP = subnetInfo.GatewayIP
 		r.GuestIP = subnetInfo.GuestIP
 		r.SubnetCIDR = subnetInfo.Subnet

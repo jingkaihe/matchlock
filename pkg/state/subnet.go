@@ -37,7 +37,6 @@ func NewSubnetAllocator() *SubnetAllocator {
 }
 
 func NewSubnetAllocatorWithDir(baseDir string) *SubnetAllocator {
-	_ = os.MkdirAll(baseDir, 0755)
 	db, err := openStateDB(baseDir)
 	return &SubnetAllocator{
 		baseDir:  baseDir,
