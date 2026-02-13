@@ -2,10 +2,15 @@
 
 ## Unreleased
 
-* Mount fixes ([#35](https://github.com/jingkaihe/matchlock/pull/35)):
-  * Fixes for [#32](https://github.com/jingkaihe/matchlock/issues/32) and [#33](https://github.com/jingkaihe/matchlock/issues/33)
-  * Normalize workspace paths to avoid duplicate VFS mounts
-  * Validate guest mount paths are within the configured workspace
+* Mount path validation and normalization fixes for [#32](https://github.com/jingkaihe/matchlock/issues/32) and [#33](https://github.com/jingkaihe/matchlock/issues/33) ([#35](https://github.com/jingkaihe/matchlock/pull/35)).
+* VM lifecycle revamp: append-only lifecycle records in SQLite, reconciliation flow, and new `gc`/`inspect` commands.
+* Metadata migration to SQLite for VM state, subnet allocations, and image metadata.
+* Fixed `matchlock list` hang when stale `running` VMs (dead PID) are encountered.
+* Breaking change: legacy filesystem-only VM metadata under `~/.matchlock/vms/<id>/` is not auto-backfilled into `state.db`; pre-migration VMs may not appear in `list/kill/rm/prune` until migrated or cleaned up.
+  * Quick cleanup after upgrade:
+    * `matchlock gc --force` (best-effort host resource cleanup)
+    * `matchlock prune` (remove stopped/crashed VMs known to DB)
+    * If legacy dirs still remain, remove them manually: `rm -rf ~/.matchlock/vms/<id>`
 
 ## 0.1.12
 

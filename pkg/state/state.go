@@ -130,6 +130,7 @@ func (m *Manager) List() ([]VMState, error) {
 	defer rows.Close()
 
 	var states []VMState
+	var crashedIDs []string
 	for rows.Next() {
 		state, err := scanVMStateRow(rows)
 		if err != nil {
@@ -138,15 +139,27 @@ func (m *Manager) List() ([]VMState, error) {
 
 		if state.Status == "running" && !m.isProcessRunning(state.PID) {
 			state.Status = "crashed"
-			if _, err := m.db.Exec(`UPDATE vms SET status = ?, updated_at = ? WHERE id = ?`, "crashed", time.Now().UTC().Format(time.RFC3339Nano), state.ID); err != nil {
-				return nil, errx.Wrap(ErrListVMs, err)
-			}
+			crashedIDs = append(crashedIDs, state.ID)
 		}
 		states = append(states, state)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, errx.Wrap(ErrListVMs, err)
 	}
+
+	// Avoid issuing writes while iterating rows because storedb uses a single
+	// open connection, which can block when a SELECT cursor is still active.
+	if err := rows.Close(); err != nil {
+		return nil, errx.Wrap(ErrListVMs, err)
+	}
+
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, vmID := range crashedIDs {
+		if _, err := m.db.Exec(`UPDATE vms SET status = ?, updated_at = ? WHERE id = ?`, "crashed", updatedAt, vmID); err != nil {
+			return nil, errx.Wrap(ErrListVMs, err)
+		}
+	}
+
 	return states, nil
 }
 
