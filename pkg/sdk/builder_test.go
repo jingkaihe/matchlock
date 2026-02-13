@@ -67,6 +67,31 @@ func TestBuilderWorkspace(t *testing.T) {
 	require.Equal(t, "/home/user/code", opts.Workspace)
 }
 
+func TestBuilderEnv(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEnv("FOO", "bar").
+		WithEnv("HELLO", "world").
+		Options()
+
+	require.Equal(t, map[string]string{
+		"FOO":   "bar",
+		"HELLO": "world",
+	}, opts.Env)
+}
+
+func TestBuilderEnvMapMerge(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEnv("FOO", "old").
+		WithEnvMap(map[string]string{
+			"FOO": "new",
+			"BAR": "baz",
+		}).
+		Options()
+
+	require.Equal(t, "new", opts.Env["FOO"])
+	require.Equal(t, "baz", opts.Env["BAR"])
+}
+
 func TestBuilderDNSServers(t *testing.T) {
 	opts := New("alpine:latest").
 		WithDNSServers("1.1.1.1", "1.0.0.1").
@@ -121,6 +146,7 @@ func TestBuilderFullChain(t *testing.T) {
 	opts := New("python:3.12-alpine").
 		WithCPUs(2).
 		WithMemory(1024).
+		WithEnv("PLAIN_TOKEN", "abc123").
 		AllowHost("dl-cdn.alpinelinux.org", "api.anthropic.com").
 		AddSecret("ANTHROPIC_API_KEY", "sk-ant-xxx", "api.anthropic.com").
 		BlockPrivateIPs().
@@ -134,6 +160,7 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Equal(t, 1024, opts.MemoryMB)
 	require.Len(t, opts.AllowedHosts, 2)
 	require.Len(t, opts.Secrets, 1)
+	require.Equal(t, "abc123", opts.Env["PLAIN_TOKEN"])
 	require.True(t, opts.BlockPrivateIPs)
 	require.Equal(t, "/code", opts.Workspace)
 	require.Len(t, opts.Mounts, 1)

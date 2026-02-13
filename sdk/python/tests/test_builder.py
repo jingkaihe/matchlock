@@ -62,6 +62,8 @@ class TestSandboxChaining:
         assert isinstance(s.with_disk_size(1), Sandbox)
         assert isinstance(s.with_timeout(1), Sandbox)
         assert isinstance(s.with_workspace("/x"), Sandbox)
+        assert isinstance(s.with_env("K", "V"), Sandbox)
+        assert isinstance(s.with_env_map({"K": "V"}), Sandbox)
         assert isinstance(s.allow_host("x.com"), Sandbox)
         assert isinstance(s.block_private_ips(), Sandbox)
         assert isinstance(s.add_secret("k", "v"), Sandbox)
@@ -74,6 +76,19 @@ class TestSandboxChaining:
 
 
 class TestSandboxNetwork:
+    def test_env_single(self):
+        opts = Sandbox("img").with_env("FOO", "bar").options()
+        assert opts.env == {"FOO": "bar"}
+
+    def test_env_map_merge(self):
+        opts = (
+            Sandbox("img")
+            .with_env("A", "1")
+            .with_env_map({"A": "2", "B": "3"})
+            .options()
+        )
+        assert opts.env == {"A": "2", "B": "3"}
+
     def test_allow_host_single(self):
         opts = Sandbox("img").allow_host("api.example.com").options()
         assert opts.allowed_hosts == ["api.example.com"]

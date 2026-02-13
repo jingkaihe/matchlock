@@ -59,6 +59,9 @@ func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.E
 			opts.User = ic.User
 		}
 	}
+	for k, v := range config.Env {
+		opts.Env[k] = v
+	}
 
 	if caPool != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"

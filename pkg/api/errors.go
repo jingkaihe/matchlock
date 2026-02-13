@@ -17,4 +17,10 @@ var (
 	ErrUnknownMountOption  = errors.New("unknown option")
 	ErrGuestPathNotAbs     = errors.New("guest path must be absolute")
 	ErrGuestPathOutside    = errors.New("guest path must be within workspace")
+
+	ErrEnvNameEmpty   = errors.New("environment variable name cannot be empty")
+	ErrEnvNameInvalid = errors.New("environment variable name is invalid")
+	ErrEnvVarNotSet   = errors.New("environment variable is not set")
+	ErrReadEnvFile    = errors.New("read env file")
+	ErrEnvFileLine    = errors.New("parse env file line")
 )

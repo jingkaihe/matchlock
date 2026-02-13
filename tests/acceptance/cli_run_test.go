@@ -95,3 +95,86 @@ func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
 	require.Contains(t, stderr, "invalid volume mount")
 	require.Contains(t, stderr, "must be within workspace")
 }
+
+func TestCLIRunEnvInline(t *testing.T) {
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-e", "FOO=bar",
+		"--", "sh", "-c", `printf "%s" "$FOO"`,
+	)
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "bar", strings.TrimSpace(stdout))
+}
+
+func TestCLIRunEnvFromHost(t *testing.T) {
+	t.Setenv("MATCHLOCK_HOST_ENV_TEST", "from-host")
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-e", "MATCHLOCK_HOST_ENV_TEST",
+		"--", "sh", "-c", `printf "%s" "$MATCHLOCK_HOST_ENV_TEST"`,
+	)
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "from-host", strings.TrimSpace(stdout))
+}
+
+func TestCLIRunEnvFromHostMissingFails(t *testing.T) {
+	const key = "MATCHLOCK_ENV_MISSING_ABC123"
+	_ = os.Unsetenv(key)
+
+	_, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-e", key,
+		"--", "true",
+	)
+	require.NotEqual(t, 0, exitCode)
+	require.Contains(t, stderr, "invalid environment variable")
+	require.Contains(t, stderr, key)
+}
+
+func TestCLIRunEnvFile(t *testing.T) {
+	t.Setenv("MATCHLOCK_ENV_FILE_HOST", "from-host")
+
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "app.env")
+	content := "# sample env file\nFILE_ONLY=from-file\nMATCHLOCK_ENV_FILE_HOST\n"
+	require.NoError(t, os.WriteFile(envFile, []byte(content), 0644))
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"--env-file", envFile,
+		"--", "sh", "-c", `printf "%s|%s" "$FILE_ONLY" "$MATCHLOCK_ENV_FILE_HOST"`,
+	)
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "from-file|from-host", strings.TrimSpace(stdout))
+}
+
+func TestCLIRunEnvFlagOverridesEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, "override.env")
+	require.NoError(t, os.WriteFile(envFile, []byte("SAME=file\n"), 0644))
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"--env-file", envFile,
+		"-e", "SAME=flag",
+		"--", "sh", "-c", `printf "%s" "$SAME"`,
+	)
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "flag", strings.TrimSpace(stdout))
+}

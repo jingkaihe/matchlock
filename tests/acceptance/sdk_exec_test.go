@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,6 +134,15 @@ func TestGuestEnvironment(t *testing.T) {
 	result, err := client.Exec(context.Background(), "cat /etc/os-release")
 	require.NoError(t, err, "Exec")
 	assert.Contains(t, result.Stdout, "Alpine")
+}
+
+func TestGuestEnvironmentFromBuilderEnv(t *testing.T) {
+	t.Parallel()
+	client := launchWithBuilder(t, sdk.New("alpine:latest").WithEnv("PLAIN_ENV", "from-builder"))
+
+	result, err := client.Exec(context.Background(), `sh -c 'printf "%s" "$PLAIN_ENV"'`)
+	require.NoError(t, err, "Exec")
+	assert.Equal(t, "from-builder", strings.TrimSpace(result.Stdout))
 }
 
 func TestLargeOutput(t *testing.T) {

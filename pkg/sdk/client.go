@@ -200,6 +200,9 @@ type CreateOptions struct {
 	BlockPrivateIPs bool
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
+	// Env defines non-secret environment variables for command execution.
+	// These are visible in VM state and inspect/get outputs.
+	Env map[string]string
 	// Secrets defines secrets to inject (replaced in HTTP requests to allowed hosts)
 	Secrets []Secret
 	// Workspace is the mount point for VFS in the guest (default: /workspace)
@@ -299,6 +302,10 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 			vfs["workspace"] = opts.Workspace
 		}
 		params["vfs"] = vfs
+	}
+
+	if len(opts.Env) > 0 {
+		params["env"] = opts.Env
 	}
 
 	if opts.ImageConfig != nil {

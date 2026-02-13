@@ -251,6 +251,32 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_with_env(self):
+        client, fake = make_client_with_fake()
+        try:
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"id": "vm-env"},
+                })
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(image="img", env={"FOO": "bar", "BAR": "baz"})
+            vm_id = client.create(opts)
+            assert vm_id == "vm-env"
+
+            req_line = fake.stdin.getvalue().strip().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["env"] == {"FOO": "bar", "BAR": "baz"}
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
     def test_create_rpc_error(self):
         client, fake = make_client_with_fake()
         try:
