@@ -200,6 +200,32 @@ func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
 	}
 }
 
+func TestCLIRunVolumeMountSingleFile(t *testing.T) {
+	hostDir := t.TempDir()
+	hostFile := filepath.Join(hostDir, "1file.txt")
+	if err := os.WriteFile(hostFile, []byte("single-file-mounted"), 0644); err != nil {
+		t.Fatalf("write host file: %v", err)
+	}
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-v", hostFile+":/workspace/1file.txt",
+		"--", "sh", "-c", "ls /workspace && cat /workspace/1file.txt",
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1file.txt") {
+		t.Errorf("stdout = %q, want to contain %q", stdout, "1file.txt")
+	}
+	if !strings.Contains(stdout, "single-file-mounted") {
+		t.Errorf("stdout = %q, want to contain %q", stdout, "single-file-mounted")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // run --rm=false + exec + kill + rm (full lifecycle)
 // ---------------------------------------------------------------------------
