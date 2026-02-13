@@ -6,6 +6,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/vfs"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildVFSProvidersAddsWorkspaceRootForNestedMounts(t *testing.T) {
@@ -19,17 +20,14 @@ func TestBuildVFSProvidersAddsWorkspaceRootForNestedMounts(t *testing.T) {
 	}
 
 	providers := buildVFSProviders(config, workspace)
-	if _, ok := providers[workspace]; !ok {
-		t.Fatalf("expected workspace mount %q to exist", workspace)
-	}
-	if _, ok := providers["/workspace/not_exist_folder"]; !ok {
-		t.Fatal("expected nested mount to exist")
-	}
+	_, ok := providers[workspace]
+	require.True(t, ok, "expected workspace mount %q to exist", workspace)
+	_, ok = providers["/workspace/not_exist_folder"]
+	require.True(t, ok, "expected nested mount to exist")
 
 	router := vfs.NewMountRouter(providers)
-	if _, err := router.Stat(workspace); err != nil {
-		t.Fatalf("expected workspace root to resolve, got error: %v", err)
-	}
+	_, err := router.Stat(workspace)
+	require.NoError(t, err, "expected workspace root to resolve")
 }
 
 func TestBuildVFSProvidersKeepsExplicitWorkspaceMount(t *testing.T) {
@@ -43,9 +41,7 @@ func TestBuildVFSProvidersKeepsExplicitWorkspaceMount(t *testing.T) {
 	}
 
 	providers := buildVFSProviders(config, workspace)
-	if got := len(providers); got != 1 {
-		t.Fatalf("expected exactly one mount provider, got %d", got)
-	}
+	require.Len(t, providers, 1)
 }
 
 func TestBuildVFSProvidersDoesNotDuplicateCanonicalWorkspaceMount(t *testing.T) {
@@ -67,7 +63,5 @@ func TestBuildVFSProvidersDoesNotDuplicateCanonicalWorkspaceMount(t *testing.T) 
 		}
 	}
 
-	if workspaceMounts != 1 {
-		t.Fatalf("expected exactly one canonical workspace mount, got %d (providers=%d)", workspaceMounts, len(providers))
-	}
+	require.Equal(t, 1, workspaceMounts, "expected exactly one canonical workspace mount (providers=%d)", len(providers))
 }

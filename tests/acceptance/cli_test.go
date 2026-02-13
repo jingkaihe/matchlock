@@ -147,9 +147,7 @@ func TestCLIRunMultiWordCommand(t *testing.T) {
 
 func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
 	hostDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(hostDir, "probe.txt"), []byte("mounted-nested-path"), 0644); err != nil {
-		t.Fatalf("write probe file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "probe.txt"), []byte("mounted-nested-path"), 0644), "write probe file")
 
 	stdout, stderr, exitCode := runCLIWithTimeout(
 		t,
@@ -159,20 +157,14 @@ func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
 		"-v", hostDir+":/workspace/not_exist_folder",
 		"cat", "/workspace/not_exist_folder/probe.txt",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
-	}
-	if got := strings.TrimSpace(stdout); got != "mounted-nested-path" {
-		t.Errorf("stdout = %q, want %q", got, "mounted-nested-path")
-	}
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "mounted-nested-path", strings.TrimSpace(stdout))
 }
 
 func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 	hostDir := t.TempDir()
 	hostFile := filepath.Join(hostDir, "1file.txt")
-	if err := os.WriteFile(hostFile, []byte("single-file-mounted"), 0644); err != nil {
-		t.Fatalf("write host file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(hostFile, []byte("single-file-mounted"), 0644), "write host file")
 
 	stdout, stderr, exitCode := runCLIWithTimeout(
 		t,
@@ -182,15 +174,9 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 		"-v", hostFile+":/workspace/1file.txt",
 		"--", "sh", "-c", "ls /workspace && cat /workspace/1file.txt",
 	)
-	if exitCode != 0 {
-		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "1file.txt") {
-		t.Errorf("stdout = %q, want to contain %q", stdout, "1file.txt")
-	}
-	if !strings.Contains(stdout, "single-file-mounted") {
-		t.Errorf("stdout = %q, want to contain %q", stdout, "single-file-mounted")
-	}
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Contains(t, stdout, "1file.txt")
+	assert.Contains(t, stdout, "single-file-mounted")
 }
 
 func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
@@ -205,15 +191,9 @@ func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
 		"-v", hostDir+":/workspace",
 		"--", "true",
 	)
-	if exitCode == 0 {
-		t.Fatalf("exit code = %d, want non-zero", exitCode)
-	}
-	if !strings.Contains(stderr, "invalid volume mount") {
-		t.Fatalf("stderr = %q, want to contain %q", stderr, "invalid volume mount")
-	}
-	if !strings.Contains(stderr, "must be within workspace") {
-		t.Fatalf("stderr = %q, want to contain %q", stderr, "must be within workspace")
-	}
+	require.NotEqual(t, 0, exitCode)
+	require.Contains(t, stderr, "invalid volume mount")
+	require.Contains(t, stderr, "must be within workspace")
 }
 
 // ---------------------------------------------------------------------------

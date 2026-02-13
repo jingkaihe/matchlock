@@ -245,16 +245,8 @@ func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 	})
 
 	msg := rpc.read()
-	if msg.Error == nil {
-		t.Fatal("expected create to fail for mount outside workspace")
-	}
-	if msg.Error.Code != ErrCodeInvalidParams {
-		t.Fatalf("error code = %d, want %d", msg.Error.Code, ErrCodeInvalidParams)
-	}
-	if !strings.Contains(msg.Error.Message, "must be within workspace") {
-		t.Fatalf("error = %q, want to contain %q", msg.Error.Message, "must be within workspace")
-	}
-	if factoryCalls != 0 {
-		t.Fatalf("factory called %d times, want 0", factoryCalls)
-	}
+	require.NotNil(t, msg.Error, "expected create to fail for mount outside workspace")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "must be within workspace")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }

@@ -178,9 +178,7 @@ func TestMountRouter_NotReadonly(t *testing.T) {
 func TestMountRouter_ReadDirIncludesNestedFileMount(t *testing.T) {
 	hostDir := t.TempDir()
 	hostFile := filepath.Join(hostDir, "hello.txt")
-	if err := os.WriteFile(hostFile, []byte("hello"), 0644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(hostFile, []byte("hello"), 0644), "write file")
 
 	router := NewMountRouter(map[string]Provider{
 		"/workspace":           NewMemoryProvider(),
@@ -188,22 +186,16 @@ func TestMountRouter_ReadDirIncludesNestedFileMount(t *testing.T) {
 	})
 
 	entries, err := router.ReadDir("/workspace")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
+	require.NoError(t, err, "ReadDir failed")
 
 	var found bool
 	for _, e := range entries {
 		if e.Name() == "hello.txt" {
 			found = true
-			if e.IsDir() {
-				t.Fatal("hello.txt should be a file mount entry")
-			}
+			require.False(t, e.IsDir(), "hello.txt should be a file mount entry")
 		}
 	}
-	if !found {
-		t.Fatalf("expected hello.txt in /workspace listing, got %v entries", len(entries))
-	}
+	require.True(t, found, "expected hello.txt in /workspace listing, got %v entries", len(entries))
 }
 
 func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
@@ -213,20 +205,14 @@ func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
 	})
 
 	entries, err := router.ReadDir("/workspace")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
+	require.NoError(t, err, "ReadDir failed")
 
 	var found bool
 	for _, e := range entries {
 		if e.Name() == "nested" {
 			found = true
-			if !e.IsDir() {
-				t.Fatal("nested should be a directory mount entry")
-			}
+			require.True(t, e.IsDir(), "nested should be a directory mount entry")
 		}
 	}
-	if !found {
-		t.Fatalf("expected nested in /workspace listing, got %v entries", len(entries))
-	}
+	require.True(t, found, "expected nested in /workspace listing, got %v entries", len(entries))
 }

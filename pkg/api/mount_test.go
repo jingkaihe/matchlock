@@ -2,8 +2,10 @@ package api
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseVolumeMountRelativeGuestPath(t *testing.T) {
@@ -11,19 +13,11 @@ func TestParseVolumeMountRelativeGuestPath(t *testing.T) {
 	workspace := "/workspace"
 
 	gotHost, gotGuest, readonly, err := ParseVolumeMount(hostDir+":subdir", workspace)
-	if err != nil {
-		t.Fatalf("ParseVolumeMount: %v", err)
-	}
+	require.NoError(t, err)
 
-	if gotHost != hostDir {
-		t.Errorf("host path = %q, want %q", gotHost, hostDir)
-	}
-	if gotGuest != "/workspace/subdir" {
-		t.Errorf("guest path = %q, want %q", gotGuest, "/workspace/subdir")
-	}
-	if readonly {
-		t.Errorf("readonly = true, want false")
-	}
+	assert.Equal(t, hostDir, gotHost, "host path")
+	assert.Equal(t, "/workspace/subdir", gotGuest, "guest path")
+	assert.False(t, readonly, "readonly")
 }
 
 func TestParseVolumeMountAbsoluteGuestPathWithinWorkspace(t *testing.T) {
@@ -31,12 +25,8 @@ func TestParseVolumeMountAbsoluteGuestPathWithinWorkspace(t *testing.T) {
 	workspace := "/workspace"
 
 	_, gotGuest, _, err := ParseVolumeMount(hostDir+":/workspace/data", workspace)
-	if err != nil {
-		t.Fatalf("ParseVolumeMount: %v", err)
-	}
-	if gotGuest != "/workspace/data" {
-		t.Errorf("guest path = %q, want %q", gotGuest, "/workspace/data")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "/workspace/data", gotGuest, "guest path")
 }
 
 func TestParseVolumeMountAbsoluteGuestPathOutsideWorkspace(t *testing.T) {
@@ -44,12 +34,8 @@ func TestParseVolumeMountAbsoluteGuestPathOutsideWorkspace(t *testing.T) {
 	workspace := "/workspace/project"
 
 	_, _, _, err := ParseVolumeMount(hostDir+":/workspace", workspace)
-	if err == nil {
-		t.Fatal("expected error for absolute guest path outside workspace")
-	}
-	if !strings.Contains(err.Error(), "must be within workspace") {
-		t.Fatalf("error = %q, want to contain %q", err.Error(), "must be within workspace")
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be within workspace")
 }
 
 func TestParseVolumeMountRelativePathCannotEscapeWorkspace(t *testing.T) {
@@ -57,12 +43,8 @@ func TestParseVolumeMountRelativePathCannotEscapeWorkspace(t *testing.T) {
 	workspace := "/workspace/project"
 
 	_, _, _, err := ParseVolumeMount(hostDir+":../escape", workspace)
-	if err == nil {
-		t.Fatal("expected error for relative guest path escaping workspace")
-	}
-	if !strings.Contains(err.Error(), "must be within workspace") {
-		t.Fatalf("error = %q, want to contain %q", err.Error(), "must be within workspace")
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be within workspace")
 }
 
 func TestParseVolumeMountWorkspacePrefixBoundary(t *testing.T) {
@@ -70,12 +52,8 @@ func TestParseVolumeMountWorkspacePrefixBoundary(t *testing.T) {
 	workspace := "/workspace"
 
 	_, _, _, err := ParseVolumeMount(hostDir+":/workspace2/data", workspace)
-	if err == nil {
-		t.Fatal("expected error for guest path outside workspace prefix boundary")
-	}
-	if !strings.Contains(err.Error(), "must be within workspace") {
-		t.Fatalf("error = %q, want to contain %q", err.Error(), "must be within workspace")
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be within workspace")
 }
 
 func TestParseVolumeMountWorkspaceRootAllowsAbsolutePaths(t *testing.T) {
@@ -83,12 +61,8 @@ func TestParseVolumeMountWorkspaceRootAllowsAbsolutePaths(t *testing.T) {
 	workspace := "/"
 
 	_, gotGuest, _, err := ParseVolumeMount(hostDir+":/etc/data", workspace)
-	if err != nil {
-		t.Fatalf("ParseVolumeMount: %v", err)
-	}
-	if gotGuest != filepath.Clean("/etc/data") {
-		t.Errorf("guest path = %q, want %q", gotGuest, filepath.Clean("/etc/data"))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Clean("/etc/data"), gotGuest, "guest path")
 }
 
 func TestValidateVFSMountsWithinWorkspaceAllowsDescendants(t *testing.T) {
@@ -99,9 +73,7 @@ func TestValidateVFSMountsWithinWorkspaceAllowsDescendants(t *testing.T) {
 		},
 		"/workspace/project",
 	)
-	if err != nil {
-		t.Fatalf("ValidateVFSMountsWithinWorkspace: %v", err)
-	}
+	require.NoError(t, err)
 }
 
 func TestValidateVFSMountsWithinWorkspaceRejectsOutside(t *testing.T) {
@@ -111,12 +83,8 @@ func TestValidateVFSMountsWithinWorkspaceRejectsOutside(t *testing.T) {
 		},
 		"/workspace/project",
 	)
-	if err == nil {
-		t.Fatal("expected error for mount path outside workspace")
-	}
-	if !strings.Contains(err.Error(), "must be within workspace") {
-		t.Fatalf("error = %q, want to contain %q", err.Error(), "must be within workspace")
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be within workspace")
 }
 
 func TestValidateVFSMountsWithinWorkspaceRejectsRelative(t *testing.T) {
@@ -126,10 +94,6 @@ func TestValidateVFSMountsWithinWorkspaceRejectsRelative(t *testing.T) {
 		},
 		"/workspace",
 	)
-	if err == nil {
-		t.Fatal("expected error for relative mount path")
-	}
-	if !strings.Contains(err.Error(), "must be absolute") {
-		t.Fatalf("error = %q, want to contain %q", err.Error(), "must be absolute")
-	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be absolute")
 }
