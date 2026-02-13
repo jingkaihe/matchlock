@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,28 @@ func TestCLIRunMultiWordCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "foo bar") {
 		t.Errorf("stdout = %q, want to contain 'foo bar'", stdout)
+	}
+}
+
+func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
+	hostDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostDir, "probe.txt"), []byte("mounted-nested-path"), 0644); err != nil {
+		t.Fatalf("write probe file: %v", err)
+	}
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-v", hostDir+":/workspace/not_exist_folder",
+		"cat", "/workspace/not_exist_folder/probe.txt",
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if got := strings.TrimSpace(stdout); got != "mounted-nested-path" {
+		t.Errorf("stdout = %q, want %q", got, "mounted-nested-path")
 	}
 }
 

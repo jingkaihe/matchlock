@@ -213,18 +213,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 	}
 
-	vfsProviders := make(map[string]vfs.Provider)
-	if config.VFS != nil && config.VFS.Mounts != nil {
-		for path, mount := range config.VFS.Mounts {
-			provider := createProvider(mount)
-			if provider != nil {
-				vfsProviders[path] = provider
-			}
-		}
-	}
-	if len(vfsProviders) == 0 {
-		vfsProviders[workspace] = vfs.NewMemoryProvider()
-	}
+	vfsProviders := buildVFSProviders(config, workspace)
 	vfsRoot := vfs.NewMountRouter(vfsProviders)
 
 	vfsServer := vfs.NewVFSServer(vfsRoot)
