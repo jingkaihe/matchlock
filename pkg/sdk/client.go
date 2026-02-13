@@ -25,10 +25,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,11 @@ type Client struct {
 	pendingMu  sync.Mutex                 // protects pending map
 	pending    map[uint64]*pendingRequest // in-flight requests by ID
 	readerOnce sync.Once                  // ensures reader goroutine starts once
+
+	vfsHookMu       sync.RWMutex
+	vfsHooks        []compiledVFSHook
+	vfsHookMaxDepth int32
+	vfsHookDepth    atomic.Int32
 }
 
 // Config holds client configuration
@@ -136,6 +142,8 @@ func (c *Client) Close(timeout time.Duration) error {
 	c.closed = true
 	c.mu.Unlock()
 
+	c.setVFSHooks(nil, 1)
+
 	effectiveTimeout := timeout
 	if effectiveTimeout <= 0 {
 		effectiveTimeout = 2 * time.Second
@@ -204,6 +212,8 @@ type CreateOptions struct {
 	Secrets []Secret
 	// Workspace is the mount point for VFS in the guest (default: /workspace)
 	Workspace string
+	// VFSInterception configures host-side VFS interception hooks/rules.
+	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
 	// ImageConfig holds OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)
@@ -237,6 +247,38 @@ type MountConfig struct {
 	Readonly bool   `json:"readonly,omitempty"`
 }
 
+// VFSInterceptionConfig configures host-side VFS interception rules.
+type VFSInterceptionConfig struct {
+	MaxExecDepth int           `json:"max_exec_depth,omitempty"`
+	EmitEvents   bool          `json:"emit_events,omitempty"`
+	Rules        []VFSHookRule `json:"rules,omitempty"`
+}
+
+// VFSHookRule describes a single interception rule.
+type VFSHookRule struct {
+	Name      string      `json:"name,omitempty"`
+	Phase     string      `json:"phase,omitempty"`  // before, after
+	Ops       []string    `json:"ops,omitempty"`    // read, write, create, ...
+	Path      string      `json:"path,omitempty"`   // filepath-style glob
+	Action    string      `json:"action,omitempty"` // allow, block, mutate_write, exec_after
+	Data      string      `json:"data,omitempty"`   // mutate_write payload
+	Command   string      `json:"command,omitempty"`
+	TimeoutMS int         `json:"timeout_ms,omitempty"`
+	Hook      VFSHookFunc `json:"-"`
+}
+
+// VFSHookFunc runs in the SDK process when a matching after-file-event is observed.
+// Returning an error currently does not fail the triggering VFS operation.
+type VFSHookFunc func(ctx context.Context, client *Client) error
+
+type compiledVFSHook struct {
+	name     string
+	ops      map[string]struct{}
+	path     string
+	timeout  time.Duration
+	callback VFSHookFunc
+}
+
 // Create creates and starts a new sandbox VM
 func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.Image == "" {
@@ -253,6 +295,11 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	}
 	if opts.TimeoutSeconds == 0 {
 		opts.TimeoutSeconds = api.DefaultTimeoutSeconds
+	}
+
+	wireVFS, localHooks, maxDepth, err := compileVFSHooks(opts.VFSInterception)
+	if err != nil {
+		return "", err
 	}
 
 	params := map[string]interface{}{
@@ -290,13 +337,16 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["network"] = network
 	}
 
-	if len(opts.Mounts) > 0 || opts.Workspace != "" {
+	if len(opts.Mounts) > 0 || opts.Workspace != "" || wireVFS != nil {
 		vfs := make(map[string]interface{})
 		if len(opts.Mounts) > 0 {
 			vfs["mounts"] = opts.Mounts
 		}
 		if opts.Workspace != "" {
 			vfs["workspace"] = opts.Workspace
+		}
+		if wireVFS != nil {
+			vfs["interception"] = wireVFS
 		}
 		params["vfs"] = vfs
 	}
@@ -318,7 +368,135 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	}
 
 	c.vmID = createResult.ID
+	c.setVFSHooks(localHooks, maxDepth)
 	return c.vmID, nil
+}
+
+func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []compiledVFSHook, int32, error) {
+	if cfg == nil {
+		return nil, nil, 1, nil
+	}
+
+	maxDepth := int32(cfg.MaxExecDepth)
+	if maxDepth <= 0 {
+		maxDepth = 1
+	}
+
+	wire := &VFSInterceptionConfig{
+		MaxExecDepth: cfg.MaxExecDepth,
+		EmitEvents:   cfg.EmitEvents,
+	}
+	local := make([]compiledVFSHook, 0, len(cfg.Rules))
+	wire.Rules = make([]VFSHookRule, 0, len(cfg.Rules))
+
+	for _, rule := range cfg.Rules {
+		if rule.Hook == nil {
+			wire.Rules = append(wire.Rules, rule)
+			continue
+		}
+
+		if !strings.EqualFold(rule.Phase, "after") {
+			return nil, nil, 0, errx.With(ErrInvalidVFSHook, " %q must use phase=after", rule.Name)
+		}
+
+		compiled := compiledVFSHook{
+			name:     rule.Name,
+			path:     rule.Path,
+			callback: rule.Hook,
+		}
+		if rule.TimeoutMS > 0 {
+			compiled.timeout = time.Duration(rule.TimeoutMS) * time.Millisecond
+		}
+		if len(rule.Ops) > 0 {
+			compiled.ops = make(map[string]struct{}, len(rule.Ops))
+			for _, op := range rule.Ops {
+				if op == "" {
+					continue
+				}
+				compiled.ops[strings.ToLower(op)] = struct{}{}
+			}
+		}
+		local = append(local, compiled)
+	}
+
+	if len(local) > 0 {
+		wire.EmitEvents = true
+	}
+
+	if len(wire.Rules) == 0 && !wire.EmitEvents {
+		wire = nil
+	}
+
+	return wire, local, maxDepth, nil
+}
+
+func (c *Client) setVFSHooks(hooks []compiledVFSHook, maxDepth int32) {
+	if maxDepth <= 0 {
+		maxDepth = 1
+	}
+
+	c.vfsHookMu.Lock()
+	c.vfsHooks = hooks
+	c.vfsHookMaxDepth = maxDepth
+	c.vfsHookMu.Unlock()
+}
+
+func (c *Client) handleVFSFileEvent(op, path string) {
+	c.vfsHookMu.RLock()
+	hooks := append([]compiledVFSHook(nil), c.vfsHooks...)
+	maxDepth := c.vfsHookMaxDepth
+	c.vfsHookMu.RUnlock()
+
+	if len(hooks) == 0 {
+		return
+	}
+	if maxDepth <= 0 {
+		maxDepth = 1
+	}
+	if c.vfsHookDepth.Load() >= maxDepth {
+		return
+	}
+
+	for _, hook := range hooks {
+		if !matchesVFSHook(hook, op, path) {
+			continue
+		}
+		go c.runVFSHook(hook, maxDepth)
+	}
+}
+
+func (c *Client) runVFSHook(hook compiledVFSHook, maxDepth int32) {
+	depth := c.vfsHookDepth.Add(1)
+	if depth > maxDepth {
+		c.vfsHookDepth.Add(-1)
+		return
+	}
+	defer c.vfsHookDepth.Add(-1)
+
+	ctx := context.Background()
+	cancel := func() {}
+	if hook.timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, hook.timeout)
+	}
+	defer cancel()
+
+	_ = hook.callback(ctx, c)
+}
+
+func matchesVFSHook(hook compiledVFSHook, op, path string) bool {
+	if len(hook.ops) > 0 {
+		if _, ok := hook.ops[strings.ToLower(op)]; !ok {
+			return false
+		}
+	}
+	if hook.path == "" {
+		return true
+	}
+	matched, err := filepath.Match(hook.path, path)
+	if err != nil {
+		return false
+	}
+	return matched
 }
 
 // ExecResult holds the result of command execution

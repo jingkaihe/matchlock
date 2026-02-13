@@ -22,6 +22,7 @@ var (
 var (
 	ErrImageRequired     = errors.New("image is required (e.g., alpine:latest)")
 	ErrParseCreateResult = errors.New("parse create result")
+	ErrInvalidVFSHook    = errors.New("invalid vfs hook")
 )
 
 // Exec errors

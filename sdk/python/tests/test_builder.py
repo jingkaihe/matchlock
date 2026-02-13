@@ -1,7 +1,14 @@
 """Tests for matchlock.builder (Sandbox)."""
 
 from matchlock.builder import Sandbox
-from matchlock.types import CreateOptions, ImageConfig, MountConfig, Secret
+from matchlock.types import (
+    CreateOptions,
+    ImageConfig,
+    MountConfig,
+    Secret,
+    VFSHookRule,
+    VFSInterceptionConfig,
+)
 
 
 class TestSandboxInit:
@@ -62,6 +69,7 @@ class TestSandboxChaining:
         assert isinstance(s.with_disk_size(1), Sandbox)
         assert isinstance(s.with_timeout(1), Sandbox)
         assert isinstance(s.with_workspace("/x"), Sandbox)
+        assert isinstance(s.with_vfs_interception(VFSInterceptionConfig()), Sandbox)
         assert isinstance(s.allow_host("x.com"), Sandbox)
         assert isinstance(s.block_private_ips(), Sandbox)
         assert isinstance(s.add_secret("k", "v"), Sandbox)
@@ -183,6 +191,27 @@ class TestSandboxMounts:
         assert "/a" in opts.mounts
         assert "/b" in opts.mounts
         assert "/c" in opts.mounts
+
+
+class TestSandboxVFSInterception:
+    def test_with_vfs_interception(self):
+        cfg = VFSInterceptionConfig(
+            max_exec_depth=1,
+            rules=[
+                VFSHookRule(
+                    phase="after",
+                    ops=["write"],
+                    path="/workspace/*",
+                    action="exec_after",
+                    command="echo audit",
+                )
+            ],
+        )
+        opts = Sandbox("img").with_vfs_interception(cfg).options()
+        assert opts.vfs_interception is not None
+        assert opts.vfs_interception.max_exec_depth == 1
+        assert len(opts.vfs_interception.rules) == 1
+        assert opts.vfs_interception.rules[0].action == "exec_after"
 
 
 class TestSandboxImageConfig:

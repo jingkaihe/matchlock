@@ -92,6 +92,7 @@ type VFSConfig struct {
 	Workspace    string                 `json:"workspace,omitempty"`
 	DirectMounts map[string]DirectMount `json:"direct_mounts,omitempty"`
 	Mounts       map[string]MountConfig `json:"mounts,omitempty"`
+	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
 }
 
 // GetWorkspace returns the configured workspace path or the default

@@ -59,6 +59,12 @@ func (b *SandboxBuilder) WithWorkspace(path string) *SandboxBuilder {
 	return b
 }
 
+// WithVFSInterception sets host-side VFS interception rules.
+func (b *SandboxBuilder) WithVFSInterception(cfg *VFSInterceptionConfig) *SandboxBuilder {
+	b.opts.VFSInterception = cfg
+	return b
+}
+
 // AllowHost adds one or more hosts to the network allowlist (supports glob patterns).
 func (b *SandboxBuilder) AllowHost(hosts ...string) *SandboxBuilder {
 	b.opts.AllowedHosts = append(b.opts.AllowedHosts, hosts...)

@@ -30,6 +30,8 @@ from .types import (
     MountConfig,
     RPCError,
     Secret,
+    VFSHookRule,
+    VFSInterceptionConfig,
 )
 
 from importlib.metadata import version as _version
@@ -49,4 +51,6 @@ __all__ = [
     "RPCError",
     "Sandbox",
     "Secret",
+    "VFSHookRule",
+    "VFSInterceptionConfig",
 ]

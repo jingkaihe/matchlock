@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from matchlock.builder import Sandbox
-from matchlock.client import Client, _PendingRequest
+from matchlock.client import Client, _LocalVFSHook, _PendingRequest
 from matchlock.types import (
     Config,
     CreateOptions,
@@ -20,7 +20,10 @@ from matchlock.types import (
     ExecStreamResult,
     FileInfo,
     MatchlockError,
+    MountConfig,
     RPCError,
+    VFSHookRule,
+    VFSInterceptionConfig,
 )
 
 
@@ -239,7 +242,6 @@ class TestClientCreate:
 
             t = threading.Thread(target=respond, daemon=True)
             t.start()
-            from matchlock.types import MountConfig
             opts = CreateOptions(
                 image="img",
                 workspace="/code",
@@ -248,6 +250,122 @@ class TestClientCreate:
             vm_id = client.create(opts)
             assert vm_id == "vm-vfs"
             t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_with_vfs_interception(self):
+        client, fake = make_client_with_fake()
+        try:
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"id": "vm-vfs-hooks"},
+                })
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    max_exec_depth=1,
+                    rules=[
+                        VFSHookRule(
+                            phase="after",
+                            ops=["write"],
+                            path="/workspace/*",
+                            action="exec_after",
+                            command="echo audit",
+                            timeout_ms=1000,
+                        )
+                    ],
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-vfs-hooks"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["vfs"]["interception"] == {
+                "max_exec_depth": 1,
+                "rules": [
+                    {
+                        "phase": "after",
+                        "ops": ["write"],
+                        "path": "/workspace/*",
+                        "action": "exec_after",
+                        "command": "echo audit",
+                        "timeout_ms": 1000,
+                    }
+                ],
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_with_vfs_callback_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            def respond():
+                import time
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-vfs-callback"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    max_exec_depth=1,
+                    rules=[
+                        VFSHookRule(
+                            phase="after",
+                            ops=["write"],
+                            path="/workspace/*",
+                            hook=lambda c: None,
+                        )
+                    ],
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-vfs-callback"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["params"]["vfs"]["interception"] == {
+                "max_exec_depth": 1,
+                "emit_events": True,
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_before_callback_hook(self):
+        client, fake = make_client_with_fake()
+        try:
+            opts = CreateOptions(
+                image="img",
+                vfs_interception=VFSInterceptionConfig(
+                    rules=[
+                        VFSHookRule(
+                            name="before",
+                            phase="before",
+                            hook=lambda c: None,
+                        )
+                    ]
+                ),
+            )
+            with pytest.raises(MatchlockError, match="phase=after"):
+                client.create(opts)
         finally:
             fake.close_stdout()
 
@@ -575,6 +693,42 @@ class TestClientFileOps:
             t.join(timeout=2)
         finally:
             fake.close_stdout()
+
+
+class TestVFSCallbackNotifications:
+    def test_event_callback_suppresses_recursion(self):
+        client = Client(Config(binary_path="fake"))
+        runs = 0
+        done = threading.Event()
+
+        def hook(c: Client):
+            nonlocal runs
+            runs += 1
+            c._handle_event_notification(
+                {"file": {"op": "write", "path": "/workspace/nested.txt"}}
+            )
+            done.set()
+
+        client._set_local_vfs_hooks(
+            [
+                _LocalVFSHook(
+                    name="after",
+                    ops={"write"},
+                    path="/workspace/*",
+                    timeout_ms=0,
+                    hook=hook,
+                )
+            ],
+            max_depth=1,
+        )
+
+        client._handle_event_notification(
+            {"file": {"op": "write", "path": "/workspace/trigger.txt"}}
+        )
+        assert done.wait(timeout=2)
+        # Give nested event delivery a moment; recursion guard keeps this at one.
+        threading.Event().wait(0.1)
+        assert runs == 1
 
 
 class TestClientProcessNotRunning:

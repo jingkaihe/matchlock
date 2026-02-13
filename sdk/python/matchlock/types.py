@@ -1,7 +1,7 @@
 """Type definitions for the Matchlock SDK."""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass
@@ -34,6 +34,80 @@ class MountConfig:
             d["host_path"] = self.host_path
         if self.readonly:
             d["readonly"] = self.readonly
+        return d
+
+
+@dataclass
+class VFSHookRule:
+    """Single VFS interception rule."""
+
+    name: str = ""
+    """Optional rule name."""
+
+    phase: str = ""
+    """Rule phase: before or after (empty defaults to before server-side)."""
+
+    ops: list[str] = field(default_factory=list)
+    """Operation filters: read, write, create, ... (empty = all)."""
+
+    path: str = ""
+    """filepath-style glob pattern (empty = all)."""
+
+    action: str = "allow"
+    """Action: allow, block, mutate_write, exec_after."""
+
+    data: str = ""
+    """Replacement payload when action=mutate_write."""
+
+    command: str = ""
+    """Command to run when action=exec_after."""
+
+    timeout_ms: int = 0
+    """Timeout for command action in milliseconds."""
+
+    hook: Callable[[Any], Any] | None = None
+    """SDK-local after-hook callback: hook(client) -> Any."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"action": self.action}
+        if self.name:
+            d["name"] = self.name
+        if self.phase:
+            d["phase"] = self.phase
+        if self.ops:
+            d["ops"] = self.ops
+        if self.path:
+            d["path"] = self.path
+        if self.data:
+            d["data"] = self.data
+        if self.command:
+            d["command"] = self.command
+        if self.timeout_ms > 0:
+            d["timeout_ms"] = self.timeout_ms
+        return d
+
+
+@dataclass
+class VFSInterceptionConfig:
+    """Host-side VFS interception configuration."""
+
+    max_exec_depth: int = 0
+    """Maximum nested hook-triggered exec depth (0 = server default)."""
+
+    emit_events: bool = False
+    """Emit file-operation events from host-side VFS interception."""
+
+    rules: list[VFSHookRule] = field(default_factory=list)
+    """Interception rules."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.max_exec_depth > 0:
+            d["max_exec_depth"] = self.max_exec_depth
+        if self.emit_events:
+            d["emit_events"] = True
+        if self.rules:
+            d["rules"] = [r.to_dict() for r in self.rules]
         return d
 
 
@@ -117,6 +191,9 @@ class CreateOptions:
 
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
+
+    vfs_interception: VFSInterceptionConfig | None = None
+    """Host-side VFS interception rules."""
 
     secrets: list[Secret] = field(default_factory=list)
     """Secrets to inject (replaced in HTTP requests to allowed hosts)."""

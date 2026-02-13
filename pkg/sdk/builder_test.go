@@ -1,6 +1,7 @@
 package sdk
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -138,4 +139,45 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Equal(t, "/code", opts.Workspace)
 	require.Len(t, opts.Mounts, 1)
 	require.Equal(t, 120, opts.TimeoutSeconds)
+}
+
+func TestBuilderVFSInterception(t *testing.T) {
+	cfg := &VFSInterceptionConfig{
+		MaxExecDepth: 1,
+		Rules: []VFSHookRule{
+			{
+				Phase:   "after",
+				Ops:     []string{"write"},
+				Path:    "/workspace/*",
+				Action:  "exec_after",
+				Command: "echo audit",
+			},
+		},
+	}
+
+	opts := New("alpine:latest").WithVFSInterception(cfg).Options()
+	require.NotNil(t, opts.VFSInterception)
+	assert.Equal(t, 1, opts.VFSInterception.MaxExecDepth)
+	require.Len(t, opts.VFSInterception.Rules, 1)
+	assert.Equal(t, "exec_after", opts.VFSInterception.Rules[0].Action)
+}
+
+func TestBuilderVFSInterceptionCallback(t *testing.T) {
+	cfg := &VFSInterceptionConfig{
+		Rules: []VFSHookRule{
+			{
+				Phase: "after",
+				Ops:   []string{"write"},
+				Path:  "/workspace/*",
+				Hook: func(ctx context.Context, client *Client) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	opts := New("alpine:latest").WithVFSInterception(cfg).Options()
+	require.NotNil(t, opts.VFSInterception)
+	require.Len(t, opts.VFSInterception.Rules, 1)
+	assert.NotNil(t, opts.VFSInterception.Rules[0].Hook)
 }

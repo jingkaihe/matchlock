@@ -135,7 +135,11 @@ with Client(Config()) as client:
     client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
 ```
 
-See full examples in [`examples/go`](examples/go/main.go) and [`examples/python`](examples/python/main.py).
+See full examples in:
+- [`examples/go/main.go`](examples/go/main.go)
+- [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
+- [`examples/python/main.py`](examples/python/main.py)
+- [`examples/python/vfs_hooks.py`](examples/python/vfs_hooks.py)
 
 ## Architecture
 

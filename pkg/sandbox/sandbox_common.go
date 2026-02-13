@@ -97,7 +97,7 @@ func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, ca
 	return machine.Exec(ctx, command, opts)
 }
 
-func writeFile(vfsRoot *vfs.MountRouter, path string, content []byte, mode uint32) error {
+func writeFile(vfsRoot vfs.Provider, path string, content []byte, mode uint32) error {
 	if mode == 0 {
 		mode = 0644
 	}
@@ -110,7 +110,7 @@ func writeFile(vfsRoot *vfs.MountRouter, path string, content []byte, mode uint3
 	return err
 }
 
-func readFile(vfsRoot *vfs.MountRouter, path string) ([]byte, error) {
+func readFile(vfsRoot vfs.Provider, path string) ([]byte, error) {
 	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
@@ -130,7 +130,7 @@ func readFile(vfsRoot *vfs.MountRouter, path string) ([]byte, error) {
 	return content, nil
 }
 
-func readFileTo(vfsRoot *vfs.MountRouter, path string, w io.Writer) (int64, error) {
+func readFileTo(vfsRoot vfs.Provider, path string, w io.Writer) (int64, error) {
 	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
 	if err != nil {
 		return 0, err
@@ -139,7 +139,7 @@ func readFileTo(vfsRoot *vfs.MountRouter, path string, w io.Writer) (int64, erro
 	return io.Copy(w, h)
 }
 
-func listFiles(vfsRoot *vfs.MountRouter, path string) ([]api.FileInfo, error) {
+func listFiles(vfsRoot vfs.Provider, path string) ([]api.FileInfo, error) {
 	entries, err := vfsRoot.ReadDir(path)
 	if err != nil {
 		return nil, err

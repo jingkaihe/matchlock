@@ -10,7 +10,13 @@ Usage:
 
 from __future__ import annotations
 
-from .types import CreateOptions, ImageConfig, MountConfig, Secret
+from .types import (
+    CreateOptions,
+    ImageConfig,
+    MountConfig,
+    Secret,
+    VFSInterceptionConfig,
+)
 
 
 class Sandbox:
@@ -37,6 +43,10 @@ class Sandbox:
 
     def with_workspace(self, path: str) -> Sandbox:
         self._opts.workspace = path
+        return self
+
+    def with_vfs_interception(self, config: VFSInterceptionConfig) -> Sandbox:
+        self._opts.vfs_interception = config
         return self
 
     def allow_host(self, *hosts: str) -> Sandbox:

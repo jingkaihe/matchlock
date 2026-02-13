@@ -15,6 +15,7 @@ Usage with builder API:
 """
 
 import base64
+import fnmatch
 import json
 import os
 import subprocess
@@ -30,6 +31,7 @@ from .types import (
     FileInfo,
     MatchlockError,
     RPCError,
+    VFSInterceptionConfig,
 )
 
 
@@ -44,6 +46,24 @@ class _PendingRequest:
         self.result: Any = None
         self.error: Exception | None = None
         self.on_notification = on_notification
+
+
+class _LocalVFSHook:
+    __slots__ = ("name", "ops", "path", "timeout_ms", "hook")
+
+    def __init__(
+        self,
+        name: str,
+        ops: set[str],
+        path: str,
+        timeout_ms: int,
+        hook: Callable[[Any], Any],
+    ) -> None:
+        self.name = name
+        self.ops = ops
+        self.path = path
+        self.timeout_ms = timeout_ms
+        self.hook = hook
 
 
 class Client:
@@ -70,6 +90,11 @@ class Client:
         self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._last_vm_id: str | None = None
+
+        self._vfs_hooks: list[_LocalVFSHook] = []
+        self._vfs_hook_max_depth = 1
+        self._vfs_hook_depth = 0
+        self._vfs_hook_lock = threading.Lock()
 
     def __enter__(self) -> "Client":
         self.start()
@@ -114,6 +139,7 @@ class Client:
             return
         self._closed = True
         self._last_vm_id = self._vm_id
+        self._set_local_vfs_hooks([], 1)
 
         if self._process is None or self._process.poll() is not None:
             return
@@ -205,6 +231,11 @@ class Client:
 
     def _handle_notification(self, msg: dict[str, Any]) -> None:
         method = msg.get("method", "")
+        if method == "event":
+            params = msg.get("params", {})
+            self._handle_event_notification(params)
+            return
+
         if method not in ("exec_stream.stdout", "exec_stream.stderr"):
             return
 
@@ -218,6 +249,102 @@ class Client:
 
         if pending is not None and pending.on_notification is not None:
             pending.on_notification(method, params)
+
+    def _handle_event_notification(self, params: dict[str, Any]) -> None:
+        file_event = params.get("file")
+        if not isinstance(file_event, dict):
+            return
+        op = str(file_event.get("op", "")).lower()
+        path = str(file_event.get("path", ""))
+        if not op:
+            return
+        self._handle_vfs_file_event(op, path)
+
+    def _handle_vfs_file_event(self, op: str, path: str) -> None:
+        with self._vfs_hook_lock:
+            hooks = list(self._vfs_hooks)
+            max_depth = self._vfs_hook_max_depth
+            depth = self._vfs_hook_depth
+        if not hooks:
+            return
+        if depth >= max_depth:
+            return
+
+        for hook in hooks:
+            if hook.ops and op not in hook.ops:
+                continue
+            if hook.path and not fnmatch.fnmatch(path, hook.path):
+                continue
+            t = threading.Thread(
+                target=self._run_vfs_hook, args=(hook, max_depth), daemon=True
+            )
+            t.start()
+
+    def _run_vfs_hook(self, hook: _LocalVFSHook, max_depth: int) -> None:
+        with self._vfs_hook_lock:
+            self._vfs_hook_depth += 1
+            depth = self._vfs_hook_depth
+        if depth > max_depth:
+            with self._vfs_hook_lock:
+                self._vfs_hook_depth -= 1
+            return
+
+        try:
+            hook.hook(self)
+        except Exception:
+            pass
+        finally:
+            with self._vfs_hook_lock:
+                self._vfs_hook_depth -= 1
+
+    def _set_local_vfs_hooks(self, hooks: list[_LocalVFSHook], max_depth: int) -> None:
+        if max_depth <= 0:
+            max_depth = 1
+        with self._vfs_hook_lock:
+            self._vfs_hooks = hooks
+            self._vfs_hook_max_depth = max_depth
+            self._vfs_hook_depth = 0
+
+    def _compile_vfs_hooks(
+        self, cfg: VFSInterceptionConfig | None
+    ) -> tuple[VFSInterceptionConfig | None, list[_LocalVFSHook], int]:
+        if cfg is None:
+            return None, [], 1
+
+        max_depth = cfg.max_exec_depth if cfg.max_exec_depth > 0 else 1
+        wire = VFSInterceptionConfig(
+            max_exec_depth=cfg.max_exec_depth,
+            emit_events=cfg.emit_events,
+            rules=[],
+        )
+        local: list[_LocalVFSHook] = []
+
+        for rule in cfg.rules:
+            if rule.hook is None:
+                wire.rules.append(rule)
+                continue
+
+            if rule.phase.lower() != "after":
+                raise MatchlockError(
+                    f"invalid vfs hook {rule.name!r}: callback hooks must use phase=after"
+                )
+
+            ops = {op.lower() for op in rule.ops if op}
+            local.append(
+                _LocalVFSHook(
+                    name=rule.name,
+                    ops=ops,
+                    path=rule.path,
+                    timeout_ms=rule.timeout_ms,
+                    hook=rule.hook,
+                )
+            )
+
+        if local:
+            wire.emit_events = True
+        if not wire.rules and not wire.emit_events:
+            wire = None
+        return wire, local, max_depth
 
     # ── RPC transport ────────────────────────────────────────────────
 
@@ -310,6 +437,11 @@ class Client:
         if not opts.image:
             raise MatchlockError("image is required (e.g., alpine:latest)")
 
+        wire_vfs, local_hooks, hook_max_depth = self._compile_vfs_hooks(
+            opts.vfs_interception
+        )
+        self._set_local_vfs_hooks([], 1)
+
         params: dict[str, Any] = {"image": opts.image}
 
         resources: dict[str, Any] = {}
@@ -342,12 +474,14 @@ class Client:
                 network["dns_servers"] = opts.dns_servers
             params["network"] = network
 
-        if opts.mounts or opts.workspace:
+        if opts.mounts or opts.workspace or wire_vfs is not None:
             vfs: dict[str, Any] = {}
             if opts.mounts:
                 vfs["mounts"] = {k: v.to_dict() for k, v in opts.mounts.items()}
             if opts.workspace:
                 vfs["workspace"] = opts.workspace
+            if wire_vfs is not None:
+                vfs["interception"] = wire_vfs.to_dict()
             params["vfs"] = vfs
 
         if opts.image_config is not None:
@@ -355,6 +489,7 @@ class Client:
 
         result = self._send_request("create", params)
         self._vm_id = result["id"]
+        self._set_local_vfs_hooks(local_hooks, hook_max_depth)
         return self._vm_id
 
     def launch(self, sandbox: Sandbox) -> str:

@@ -10,6 +10,8 @@ from matchlock.types import (
     MountConfig,
     RPCError,
     Secret,
+    VFSHookRule,
+    VFSInterceptionConfig,
 )
 
 
@@ -78,6 +80,7 @@ class TestCreateOptions:
         assert opts.allowed_hosts == []
         assert opts.block_private_ips is False
         assert opts.mounts == {}
+        assert opts.vfs_interception is None
         assert opts.secrets == []
         assert opts.workspace == ""
 
@@ -114,6 +117,69 @@ class TestExecStreamResult:
         r = ExecStreamResult(exit_code=0, duration_ms=100)
         assert r.exit_code == 0
         assert r.duration_ms == 100
+
+
+class TestVFSHookRule:
+    def test_to_dict_minimal(self):
+        r = VFSHookRule(action="allow")
+        assert r.to_dict() == {"action": "allow"}
+
+    def test_to_dict_full(self):
+        r = VFSHookRule(
+            name="rule1",
+            phase="after",
+            ops=["write"],
+            path="/workspace/*",
+            action="exec_after",
+            data="x",
+            command="echo audit",
+            timeout_ms=250,
+        )
+        assert r.to_dict() == {
+            "name": "rule1",
+            "phase": "after",
+            "ops": ["write"],
+            "path": "/workspace/*",
+            "action": "exec_after",
+            "data": "x",
+            "command": "echo audit",
+            "timeout_ms": 250,
+        }
+
+    def test_to_dict_ignores_hook(self):
+        called = []
+        r = VFSHookRule(
+            phase="after",
+            ops=["write"],
+            path="/workspace/*",
+            hook=lambda client: called.append(client),
+        )
+        assert r.to_dict() == {
+            "phase": "after",
+            "ops": ["write"],
+            "path": "/workspace/*",
+            "action": "allow",
+        }
+
+
+class TestVFSInterceptionConfig:
+    def test_to_dict_empty(self):
+        c = VFSInterceptionConfig()
+        assert c.to_dict() == {}
+
+    def test_to_dict_with_values(self):
+        c = VFSInterceptionConfig(
+            max_exec_depth=1,
+            rules=[VFSHookRule(action="block", phase="before", ops=["write"])],
+        )
+        assert c.to_dict() == {
+            "max_exec_depth": 1,
+            "rules": [{"phase": "before", "ops": ["write"], "action": "block"}],
+        }
+
+    def test_to_dict_with_emit_events(self):
+        c = VFSInterceptionConfig(emit_events=True)
+        assert c.to_dict() == {"emit_events": True}
 
 
 class TestFileInfo:
