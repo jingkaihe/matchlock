@@ -1,17 +1,30 @@
 package lifecycle
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
+	sqlite "modernc.org/sqlite"
 )
 
 const (
+	// RecordFile is kept for compatibility with previous on-disk path
+	// conventions, though lifecycle state is now persisted in SQLite.
 	RecordFile = "lifecycle.json"
+
+	sqlitePrimaryErrMask     = 0xFF
+	sqlitePrimaryBusy        = 5
+	sqlitePrimaryLocked      = 6
+	recordWriteRetryAttempts = 8
+	recordWriteRetryBaseWait = 25 * time.Millisecond
 )
 
 type Phase string
@@ -63,22 +76,42 @@ type Record struct {
 }
 
 type Store struct {
-	path string
-	mu   sync.Mutex
+	vmDir      string
+	legacyPath string
+	vmID       string
+	db         *sql.DB
+	initErr    error
+	mu         sync.Mutex
 }
 
 func NewStore(vmDir string) *Store {
+	db, err := openLifecycleDB(vmDir)
 	return &Store{
-		path: filepath.Join(vmDir, RecordFile),
+		vmDir:      vmDir,
+		legacyPath: filepath.Join(vmDir, RecordFile),
+		vmID:       filepath.Base(filepath.Clean(vmDir)),
+		db:         db,
+		initErr:    err,
 	}
 }
 
 func (s *Store) Path() string {
-	return s.path
+	return lifecycleDBPath(s.vmDir)
 }
 
 func (s *Store) Exists() bool {
-	_, err := os.Stat(s.path)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.readyNoLock(); err != nil {
+		return false
+	}
+	vmID := s.resolveVMIDNoLock()
+	if vmID == "" {
+		return false
+	}
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM vm_lifecycle WHERE vm_id = ?`, vmID).Scan(&one)
 	return err == nil
 }
 
@@ -86,6 +119,10 @@ func (s *Store) Init(vmID, backend, stateDir string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.readyNoLock(); err != nil {
+		return err
+	}
+	s.vmID = vmID
 	rec := &Record{
 		Version:   1,
 		VMID:      vmID,
@@ -103,6 +140,9 @@ func (s *Store) Init(vmID, backend, stateDir string) error {
 func (s *Store) Load() (*Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.readyNoLock(); err != nil {
+		return nil, err
+	}
 	return s.loadNoLock()
 }
 
@@ -156,6 +196,9 @@ func (s *Store) Update(updateFn func(*Record) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := s.readyNoLock(); err != nil {
+		return err
+	}
 	rec, err := s.loadNoLock()
 	if err != nil {
 		return err
@@ -167,48 +210,212 @@ func (s *Store) Update(updateFn func(*Record) error) error {
 	return s.saveNoLock(rec)
 }
 
+func (s *Store) readyNoLock() error {
+	if s.initErr != nil {
+		return errx.Wrap(ErrReadRecord, s.initErr)
+	}
+	if s.db == nil {
+		return ErrReadRecord
+	}
+	return nil
+}
+
+func (s *Store) resolveVMIDNoLock() string {
+	if s.vmID != "" && s.vmID != "." {
+		return s.vmID
+	}
+	base := filepath.Base(filepath.Clean(s.vmDir))
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
+}
+
 func (s *Store) loadNoLock() (*Record, error) {
-	data, err := os.ReadFile(s.path)
+	vmID := s.resolveVMIDNoLock()
+	if vmID == "" {
+		return &Record{
+			Version: 0,
+			Phase:   PhaseCreating,
+			Cleanup: make(map[string]CleanupResult),
+		}, nil
+	}
+
+	var (
+		rec           Record
+		phase         string
+		updatedAtText string
+		resourcesJSON []byte
+		cleanupJSON   []byte
+	)
+	err := s.db.QueryRow(
+		`SELECT version, vm_id, backend, phase, updated_at, last_error, resources_json, cleanup_json
+		   FROM vm_lifecycle
+		  WHERE vm_id = ?
+		  ORDER BY version DESC
+		  LIMIT 1`,
+		vmID,
+	).Scan(&rec.Version, &rec.VMID, &rec.Backend, &phase, &updatedAtText, &rec.LastError, &resourcesJSON, &cleanupJSON)
+	if err == sql.ErrNoRows {
+		return &Record{
+			Version: 0,
+			VMID:    vmID,
+			Phase:   PhaseCreating,
+			Cleanup: make(map[string]CleanupResult),
+		}, nil
+	}
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &Record{
-				Version: 1,
-				Phase:   PhaseCreating,
-				Cleanup: make(map[string]CleanupResult),
-			}, nil
-		}
 		return nil, errx.Wrap(ErrReadRecord, err)
 	}
 
-	var rec Record
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return nil, errx.Wrap(ErrDecodeRecord, err)
+	rec.Phase = Phase(phase)
+	if updatedAtText != "" {
+		parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAtText)
+		if parseErr != nil {
+			parsed, parseErr = time.Parse(time.RFC3339, updatedAtText)
+			if parseErr != nil {
+				return nil, errx.Wrap(ErrDecodeRecord, parseErr)
+			}
+		}
+		rec.UpdatedAt = parsed
 	}
-	if rec.Version == 0 {
-		rec.Version = 1
+	if len(resourcesJSON) > 0 {
+		if err := json.Unmarshal(resourcesJSON, &rec.Resources); err != nil {
+			return nil, errx.Wrap(ErrDecodeRecord, err)
+		}
 	}
-	if rec.Cleanup == nil {
-		rec.Cleanup = make(map[string]CleanupResult)
+
+	rec.Cleanup = make(map[string]CleanupResult)
+	if len(cleanupJSON) > 0 {
+		if err := json.Unmarshal(cleanupJSON, &rec.Cleanup); err != nil {
+			return nil, errx.Wrap(ErrDecodeRecord, err)
+		}
 	}
 	return &rec, nil
 }
 
 func (s *Store) saveNoLock(rec *Record) error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
-		return errx.Wrap(ErrCreateRecordDir, err)
+	if rec.VMID == "" {
+		rec.VMID = s.resolveVMIDNoLock()
+	}
+	if rec.VMID == "" {
+		return ErrWriteRecord
+	}
+	s.vmID = rec.VMID
+	if rec.Cleanup == nil {
+		rec.Cleanup = make(map[string]CleanupResult)
+	}
+	if rec.UpdatedAt.IsZero() {
+		rec.UpdatedAt = time.Now().UTC()
 	}
 
-	data, err := json.MarshalIndent(rec, "", "  ")
+	resourcesJSON, err := json.Marshal(rec.Resources)
+	if err != nil {
+		return errx.Wrap(ErrEncodeRecord, err)
+	}
+	cleanupJSON, err := json.Marshal(rec.Cleanup)
 	if err != nil {
 		return errx.Wrap(ErrEncodeRecord, err)
 	}
 
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return errx.Wrap(ErrWriteRecord, err)
+	var lastBusyErr error
+	for attempt := 0; attempt < recordWriteRetryAttempts; attempt++ {
+		version, writeErr := s.saveAttemptNoLock(rec, resourcesJSON, cleanupJSON)
+		if writeErr == nil {
+			rec.Version = version
+			// Best-effort removal of the legacy lifecycle JSON file from previous versions.
+			_ = os.Remove(s.legacyPath)
+			return nil
+		}
+		if !isSQLiteBusy(writeErr) {
+			return errx.Wrap(ErrWriteRecord, writeErr)
+		}
+		lastBusyErr = writeErr
+		if attempt < recordWriteRetryAttempts-1 {
+			time.Sleep(recordWriteRetryBaseWait * time.Duration(attempt+1))
+		}
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		return errx.Wrap(ErrRenameRecord, err)
+
+	return errx.Wrap(ErrWriteRecord, lastBusyErr)
+}
+
+func (s *Store) saveAttemptNoLock(rec *Record, resourcesJSON, cleanupJSON []byte) (int, error) {
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, err
 	}
-	return nil
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, err
+	}
+	inTx := true
+	defer func() {
+		if inTx {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+
+	version, err := nextLifecycleVersion(ctx, conn, rec.VMID)
+	if err != nil {
+		return 0, err
+	}
+
+	if _, err := conn.ExecContext(
+		ctx,
+		`INSERT INTO vm_lifecycle(vm_id, version, backend, phase, updated_at, last_error, resources_json, cleanup_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		rec.VMID,
+		version,
+		rec.Backend,
+		string(rec.Phase),
+		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		rec.LastError,
+		resourcesJSON,
+		cleanupJSON,
+	); err != nil {
+		return 0, err
+	}
+
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return 0, err
+	}
+	inTx = false
+	return version, nil
+}
+
+func nextLifecycleVersion(ctx context.Context, conn *sql.Conn, vmID string) (int, error) {
+	var version int
+	err := conn.QueryRowContext(
+		ctx,
+		`INSERT INTO vm_lifecycle_head(vm_id, last_version)
+		 VALUES (?, COALESCE((SELECT MAX(version) FROM vm_lifecycle WHERE vm_id = ?), 0) + 1)
+		 ON CONFLICT(vm_id) DO UPDATE SET
+		   last_version = vm_lifecycle_head.last_version + 1
+		 RETURNING last_version`,
+		vmID,
+		vmID,
+	).Scan(&version)
+	if err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		switch sqliteErr.Code() & sqlitePrimaryErrMask {
+		case sqlitePrimaryBusy, sqlitePrimaryLocked:
+			return true
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database is busy")
 }

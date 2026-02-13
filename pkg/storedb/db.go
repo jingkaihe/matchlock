@@ -61,7 +61,7 @@ func Open(opts OpenOptions) (*sql.DB, error) {
 
 func configure(db *sql.DB) error {
 	pragmas := []string{
-		"PRAGMA busy_timeout = 5000",
+		"PRAGMA busy_timeout = 15000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA synchronous = NORMAL",
 		"PRAGMA journal_mode = WAL",

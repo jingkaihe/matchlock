@@ -11,25 +11,25 @@ be resumed safely and auditable later.
 
 ## Lifecycle record
 
-Each VM has a persistent lifecycle file:
+Each VM has persistent lifecycle rows in:
 
-- `~/.matchlock/vms/<vm-id>/lifecycle.json`
+- `~/.matchlock/state.db`
+- table: `vm_lifecycle`
 
 The record includes:
 
 - current lifecycle phase
 - last lifecycle error (if any)
 - known resource identifiers/paths (rootfs, subnet allocation, TAP table names)
-- per-step cleanup status for close/reconcile operations
+- per-step cleanup status snapshot for close/reconcile operations
 
 ## Metadata storage backend
 
-Lifecycle phase/audit data is still stored per-VM in `lifecycle.json`.
-
-VM runtime metadata and subnet allocation metadata are now stored in SQLite:
+Lifecycle phase/audit data, VM runtime metadata, and subnet allocation metadata
+are stored in the same SQLite DB:
 
 - `~/.matchlock/state.db`
-- tables: `vms`, `subnet_allocations`, `schema_migrations`
+- tables: `vms`, `subnet_allocations`, `vm_lifecycle`, `schema_migrations`
 
 Image metadata is stored in a separate SQLite DB:
 
@@ -87,7 +87,7 @@ Typical success path:
 
 ## Resource ownership
 
-The lifecycle record tracks resources needed for deterministic cleanup:
+The latest lifecycle snapshot tracks resources needed for deterministic cleanup:
 
 - VM state directory: `~/.matchlock/vms/<vm-id>/`
 - per-VM rootfs copy: `rootfs.ext4` under VM state dir
@@ -159,8 +159,9 @@ This replaces the previous lock-file + JSON-scan allocator model.
 
 1. Inspect VM states:
    - `matchlock list`
-2. Inspect lifecycle record:
-   - `cat ~/.matchlock/vms/<vm-id>/lifecycle.json`
+2. Inspect lifecycle history (append-only):
+   - `sqlite3 ~/.matchlock/state.db 'select vm_id,version,phase,updated_at,last_error from vm_lifecycle where vm_id=\"<vm-id>\" order by version;'`
+   - `sqlite3 ~/.matchlock/state.db 'select version,cleanup_json from vm_lifecycle where vm_id=\"<vm-id>\" order by version;'`
 3. (Optional) Inspect VM/subnet DB metadata:
    - `sqlite3 ~/.matchlock/state.db 'select id,status,pid from vms;'`
    - `sqlite3 ~/.matchlock/state.db 'select vm_id,octet,subnet from subnet_allocations;'`
@@ -171,5 +172,6 @@ This replaces the previous lock-file + JSON-scan allocator model.
 6. Remove stopped VM metadata after successful reconcile:
    - `matchlock rm <vm-id>`
 
-If `gc` still fails, check the failed cleanup steps in `lifecycle.json` and fix
-host permissions/network prerequisites before retrying.
+If `gc` still fails, check failed cleanup steps in `vm_lifecycle.cleanup_json`
+for recent versions and fix host permissions/network prerequisites before
+retrying.

@@ -310,8 +310,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		rootfsPath:  vmRootfsPath,
 		lifecycle:   lifecycleStore,
 	}
-	_ = lifecycleStore.SetPhase(lifecycle.PhaseCreated)
-	_ = lifecycleStore.SetLastError(nil)
+	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
+	if err := lifecycleStore.SetLastError(nil); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
 	return sb, nil
 }
 
@@ -334,10 +340,9 @@ func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 // Start starts the sandbox VM.
 func (s *Sandbox) Start(ctx context.Context) error {
-	var errs []error
 	if s.lifecycle != nil {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseStarting); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
 	}
 	if err := s.machine.Start(ctx); err != nil {
@@ -345,29 +350,24 @@ func (s *Sandbox) Start(ctx context.Context) error {
 			_ = s.lifecycle.SetLastError(err)
 			_ = s.lifecycle.SetPhase(lifecycle.PhaseStartFailed)
 		}
-		errs = append(errs, err)
-		return errors.Join(errs...)
+		return err
 	}
 	if s.lifecycle != nil {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseRunning); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
 		if err := s.lifecycle.SetLastError(nil); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
 	}
 	return nil
 }
 
 // Stop stops the sandbox VM.
 func (s *Sandbox) Stop(ctx context.Context) error {
-	var errs []error
 	if s.lifecycle != nil {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopping); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
 	}
 	if err := s.machine.Stop(ctx); err != nil {
@@ -375,19 +375,15 @@ func (s *Sandbox) Stop(ctx context.Context) error {
 			_ = s.lifecycle.SetLastError(err)
 			_ = s.lifecycle.SetPhase(lifecycle.PhaseStopFailed)
 		}
-		errs = append(errs, err)
-		return errors.Join(errs...)
+		return err
 	}
 	if s.lifecycle != nil {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopped); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
 		if err := s.lifecycle.SetLastError(nil); err != nil {
-			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+			return errx.Wrap(ErrLifecycleUpdate, err)
 		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
 	}
 	return nil
 }
