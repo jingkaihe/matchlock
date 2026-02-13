@@ -229,9 +229,6 @@ func (m *Manager) Remove(id string) error {
 		_, _ = m.db.Exec(`UPDATE vms SET status = ?, updated_at = ? WHERE id = ?`, "crashed", time.Now().UTC().Format(time.RFC3339Nano), id)
 	}
 
-	subnetAlloc := NewSubnetAllocatorWithDir(filepath.Join(filepath.Dir(m.baseDir), "subnets"))
-	_ = subnetAlloc.Release(id)
-
 	tx, err := m.db.Begin()
 	if err != nil {
 		return errx.Wrap(ErrRemoveVM, err)
@@ -268,9 +265,7 @@ func (m *Manager) Prune() ([]string, error) {
 			}
 		}
 	}
-
-	subnetAlloc := NewSubnetAllocatorWithDir(filepath.Join(filepath.Dir(m.baseDir), "subnets"))
-	_ = subnetAlloc.Cleanup(m)
+	_, _ = m.db.Exec(`DELETE FROM subnet_allocations WHERE vm_id NOT IN (SELECT id FROM vms)`)
 	return pruned, nil
 }
 

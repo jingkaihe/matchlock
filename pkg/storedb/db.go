@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -46,11 +47,12 @@ func Open(opts OpenOptions) (*sql.DB, error) {
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(0)
 
-	if err := configure(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	if err := migrate(db, opts.Path, opts.Module, opts.Migrations); err != nil {
+	if err := withInitLock(opts.Path, func() error {
+		if err := configure(db); err != nil {
+			return err
+		}
+		return migrate(db, opts.Path, opts.Module, opts.Migrations)
+	}); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -59,10 +61,10 @@ func Open(opts OpenOptions) (*sql.DB, error) {
 
 func configure(db *sql.DB) error {
 	pragmas := []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 5000",
+		"PRAGMA foreign_keys = ON",
 		"PRAGMA synchronous = NORMAL",
+		"PRAGMA journal_mode = WAL",
 	}
 	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
@@ -224,4 +226,30 @@ func restoreFromBackup(dbPath, backupPath string) error {
 		return errx.Wrap(ErrCopyBackup, err)
 	}
 	return nil
+}
+
+func withInitLock(dbPath string, fn func() error) error {
+	lockPath := dbPath + ".init.lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return errx.Wrap(ErrOpenInitLock, err)
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return errx.Wrap(ErrAcquireInitLock, err)
+	}
+
+	fnErr := fn()
+
+	unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	if unlockErr != nil {
+		unlockWrapped := errx.Wrap(ErrReleaseInitLock, unlockErr)
+		if fnErr != nil {
+			return errors.Join(fnErr, unlockWrapped)
+		}
+		return unlockWrapped
+	}
+
+	return fnErr
 }
