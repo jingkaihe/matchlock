@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
@@ -11,6 +12,35 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
+
+func buildVFSProviders(config *api.Config, workspace string) map[string]vfs.Provider {
+	vfsProviders := make(map[string]vfs.Provider)
+	if config.VFS != nil && config.VFS.Mounts != nil {
+		for path, mount := range config.VFS.Mounts {
+			provider := createProvider(mount)
+			if provider != nil {
+				vfsProviders[path] = provider
+			}
+		}
+	}
+
+	cleanWorkspace := filepath.Clean(workspace)
+	hasWorkspaceMount := false
+	for path := range vfsProviders {
+		if filepath.Clean(path) == cleanWorkspace {
+			hasWorkspaceMount = true
+			break
+		}
+	}
+
+	// Keep a workspace root mount even when only nested mounts are configured.
+	// Without this, guest-fused root lookups on /workspace fail with ENOENT.
+	if !hasWorkspaceMount {
+		vfsProviders[cleanWorkspace] = vfs.NewMemoryProvider()
+	}
+
+	return vfsProviders
+}
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {
 	opts := &api.ExecOptions{

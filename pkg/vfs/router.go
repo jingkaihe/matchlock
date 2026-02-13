@@ -53,11 +53,58 @@ func (r *MountRouter) Stat(path string) (FileInfo, error) {
 }
 
 func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
+	path = filepath.Clean(path)
 	p, rel, err := r.resolve(path)
 	if err != nil {
 		return nil, err
 	}
-	return p.ReadDir(rel)
+	entries, err := p.ReadDir(rel)
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge direct child mountpoints so nested mounts are visible in parent
+	// directory listings (for example a file mount at /workspace/file.txt).
+	byName := make(map[string]DirEntry, len(entries))
+	baseNames := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		name := e.Name()
+		byName[name] = e
+		if !seen[name] {
+			baseNames = append(baseNames, name)
+			seen[name] = true
+		}
+	}
+
+	var mountOnlyNames []string
+	for _, m := range r.mounts {
+		if m.path == path || filepath.Dir(m.path) != path {
+			continue
+		}
+
+		name := filepath.Base(m.path)
+		info, err := m.provider.Stat("/")
+		if err != nil {
+			continue
+		}
+
+		entryInfo := NewFileInfo(name, info.Size(), info.Mode(), info.ModTime(), info.IsDir())
+		byName[name] = NewDirEntry(name, info.IsDir(), info.Mode(), entryInfo)
+		if !seen[name] {
+			mountOnlyNames = append(mountOnlyNames, name)
+			seen[name] = true
+		}
+	}
+
+	sort.Strings(mountOnlyNames)
+	names := append(baseNames, mountOnlyNames...)
+
+	merged := make([]DirEntry, 0, len(names))
+	for _, name := range names {
+		merged = append(merged, byName[name])
+	}
+	return merged, nil
 }
 
 func (r *MountRouter) Open(path string, flags int, mode os.FileMode) (Handle, error) {

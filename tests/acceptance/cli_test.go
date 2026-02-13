@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,77 @@ func TestCLIRunMultiWordCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "foo bar") {
 		t.Errorf("stdout = %q, want to contain 'foo bar'", stdout)
+	}
+}
+
+func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
+	hostDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostDir, "probe.txt"), []byte("mounted-nested-path"), 0644); err != nil {
+		t.Fatalf("write probe file: %v", err)
+	}
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-v", hostDir+":/workspace/not_exist_folder",
+		"cat", "/workspace/not_exist_folder/probe.txt",
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if got := strings.TrimSpace(stdout); got != "mounted-nested-path" {
+		t.Errorf("stdout = %q, want %q", got, "mounted-nested-path")
+	}
+}
+
+func TestCLIRunVolumeMountSingleFile(t *testing.T) {
+	hostDir := t.TempDir()
+	hostFile := filepath.Join(hostDir, "1file.txt")
+	if err := os.WriteFile(hostFile, []byte("single-file-mounted"), 0644); err != nil {
+		t.Fatalf("write host file: %v", err)
+	}
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-v", hostFile+":/workspace/1file.txt",
+		"--", "sh", "-c", "ls /workspace && cat /workspace/1file.txt",
+	)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0\nstdout: %s\nstderr: %s", exitCode, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "1file.txt") {
+		t.Errorf("stdout = %q, want to contain %q", stdout, "1file.txt")
+	}
+	if !strings.Contains(stdout, "single-file-mounted") {
+		t.Errorf("stdout = %q, want to contain %q", stdout, "single-file-mounted")
+	}
+}
+
+func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
+	hostDir := t.TempDir()
+
+	_, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"--workspace", "/workspace/project",
+		"-v", hostDir+":/workspace",
+		"--", "true",
+	)
+	if exitCode == 0 {
+		t.Fatalf("exit code = %d, want non-zero", exitCode)
+	}
+	if !strings.Contains(stderr, "invalid volume mount") {
+		t.Fatalf("stderr = %q, want to contain %q", stderr, "invalid volume mount")
+	}
+	if !strings.Contains(stderr, "must be within workspace") {
+		t.Fatalf("stderr = %q, want to contain %q", stderr, "must be within workspace")
 	}
 }
 

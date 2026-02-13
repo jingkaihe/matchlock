@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -212,5 +213,61 @@ func TestMountRouter_NotReadonly(t *testing.T) {
 
 	if router.Readonly() {
 		t.Error("MountRouter should not be readonly")
+	}
+}
+
+func TestMountRouter_ReadDirIncludesNestedFileMount(t *testing.T) {
+	hostDir := t.TempDir()
+	hostFile := filepath.Join(hostDir, "hello.txt")
+	if err := os.WriteFile(hostFile, []byte("hello"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	router := NewMountRouter(map[string]Provider{
+		"/workspace":           NewMemoryProvider(),
+		"/workspace/hello.txt": NewRealFSProvider(hostFile),
+	})
+
+	entries, err := router.ReadDir("/workspace")
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	var found bool
+	for _, e := range entries {
+		if e.Name() == "hello.txt" {
+			found = true
+			if e.IsDir() {
+				t.Fatal("hello.txt should be a file mount entry")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected hello.txt in /workspace listing, got %v entries", len(entries))
+	}
+}
+
+func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
+	router := NewMountRouter(map[string]Provider{
+		"/workspace":        NewMemoryProvider(),
+		"/workspace/nested": NewMemoryProvider(),
+	})
+
+	entries, err := router.ReadDir("/workspace")
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+
+	var found bool
+	for _, e := range entries {
+		if e.Name() == "nested" {
+			found = true
+			if !e.IsDir() {
+				t.Fatal("nested should be a directory mount entry")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected nested in /workspace listing, got %v entries", len(entries))
 	}
 }

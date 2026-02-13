@@ -8,7 +8,7 @@ import (
 )
 
 // ParseVolumeMount parses a volume mount string in format "host:guest" or "host:guest:ro".
-// Guest paths are relative to the workspace unless they start with the workspace path.
+// Guest paths are resolved within workspace; absolute guest paths must already be under workspace.
 func ParseVolumeMount(vol string, workspace string) (hostPath, guestPath string, readonly bool, err error) {
 	parts := strings.Split(vol, ":")
 	if len(parts) < 2 || len(parts) > 3 {
@@ -40,15 +40,54 @@ func ParseVolumeMount(vol string, workspace string) (hostPath, guestPath string,
 		}
 	}
 
+	cleanWorkspace := filepath.Clean(workspace)
+
 	// Guest path handling:
-	// - If path starts with workspace, use as-is
-	// - If path is absolute but not under workspace, prefix with workspace
-	// - If path is relative, make it relative to workspace
+	// - Relative guest paths are resolved from workspace
+	// - Absolute guest paths must already be within workspace
 	if !filepath.IsAbs(guestPath) {
-		guestPath = filepath.Join(workspace, guestPath)
-	} else if !strings.HasPrefix(guestPath, workspace) {
-		guestPath = filepath.Join(workspace, guestPath)
+		guestPath = filepath.Join(cleanWorkspace, guestPath)
+	} else {
+		guestPath = filepath.Clean(guestPath)
+	}
+
+	if err := ValidateGuestPathWithinWorkspace(guestPath, cleanWorkspace); err != nil {
+		return "", "", false, err
 	}
 
 	return hostPath, guestPath, readonly, nil
+}
+
+// ValidateGuestPathWithinWorkspace checks that guestPath is absolute and inside workspace.
+func ValidateGuestPathWithinWorkspace(guestPath string, workspace string) error {
+	cleanGuestPath := filepath.Clean(guestPath)
+	cleanWorkspace := filepath.Clean(workspace)
+
+	if !filepath.IsAbs(cleanGuestPath) {
+		return fmt.Errorf("guest path %q must be absolute", guestPath)
+	}
+	if !isWithinWorkspace(cleanGuestPath, cleanWorkspace) {
+		return fmt.Errorf("guest path %q must be within workspace %q", cleanGuestPath, cleanWorkspace)
+	}
+	return nil
+}
+
+// ValidateVFSMountsWithinWorkspace checks that all VFS mount paths are valid
+// guest paths under the configured workspace.
+func ValidateVFSMountsWithinWorkspace(mounts map[string]MountConfig, workspace string) error {
+	for guestPath := range mounts {
+		if err := ValidateGuestPathWithinWorkspace(guestPath, workspace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isWithinWorkspace(path string, workspace string) bool {
+	path = filepath.Clean(path)
+	workspace = filepath.Clean(workspace)
+	if workspace == "/" {
+		return filepath.IsAbs(path)
+	}
+	return path == workspace || strings.HasPrefix(path, workspace+"/")
 }

@@ -1,5 +1,12 @@
 # Release Notes
 
+## Unreleased
+
+* Mount fixes ([#35](https://github.com/jingkaihe/matchlock/pull/35)):
+  * Fixes for [#32](https://github.com/jingkaihe/matchlock/issues/32) and [#33](https://github.com/jingkaihe/matchlock/issues/33)
+  * Normalize workspace paths to avoid duplicate VFS mounts
+  * Validate guest mount paths are within the configured workspace
+
 ## 0.1.12
 
 * Added end-to-end context cancellation support across the entire matchlock stack.
