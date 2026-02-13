@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+* Added non-secret environment variable support across CLI and SDKs ([#34](https://github.com/jingkaihe/matchlock/issues/34)): `matchlock run -e/--env`, `--env-file`, persisted visibility via `get`/`inspect`, plus Go/Python SDK create-time `env` support.
 * Mount path validation and normalization fixes for [#32](https://github.com/jingkaihe/matchlock/issues/32) and [#33](https://github.com/jingkaihe/matchlock/issues/33) ([#35](https://github.com/jingkaihe/matchlock/pull/35)).
 * VM lifecycle revamp: append-only lifecycle records in SQLite, reconciliation flow, and new `gc`/`inspect` commands.
 * Metadata migration to SQLite for VM state, subnet allocations, and image metadata.

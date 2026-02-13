@@ -51,6 +51,7 @@ var (
 	ErrBuildingRootfs = errors.New("building rootfs")
 	ErrInvalidVolume  = errors.New("invalid volume mount")
 	ErrInvalidSecret  = errors.New("invalid secret")
+	ErrInvalidEnv     = errors.New("invalid environment variable")
 	ErrCreateSandbox  = errors.New("creating sandbox")
 	ErrStartSandbox   = errors.New("starting sandbox")
 	ErrCloseSandbox   = errors.New("closing sandbox")

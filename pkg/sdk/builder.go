@@ -59,6 +59,26 @@ func (b *SandboxBuilder) WithWorkspace(path string) *SandboxBuilder {
 	return b
 }
 
+// WithEnv sets a non-secret environment variable available to commands.
+func (b *SandboxBuilder) WithEnv(name, value string) *SandboxBuilder {
+	if b.opts.Env == nil {
+		b.opts.Env = make(map[string]string)
+	}
+	b.opts.Env[name] = value
+	return b
+}
+
+// WithEnvMap merges non-secret environment variables into the sandbox config.
+func (b *SandboxBuilder) WithEnvMap(env map[string]string) *SandboxBuilder {
+	if b.opts.Env == nil {
+		b.opts.Env = make(map[string]string)
+	}
+	for k, v := range env {
+		b.opts.Env[k] = v
+	}
+	return b
+}
+
 // AllowHost adds one or more hosts to the network allowlist (supports glob patterns).
 func (b *SandboxBuilder) AllowHost(hosts ...string) *SandboxBuilder {
 	b.opts.AllowedHosts = append(b.opts.AllowedHosts, hosts...)

@@ -118,6 +118,9 @@ class CreateOptions:
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
 
+    env: dict[str, str] = field(default_factory=dict)
+    """Non-secret environment variables available to commands."""
+
     secrets: list[Secret] = field(default_factory=list)
     """Secrets to inject (replaced in HTTP requests to allowed hosts)."""
 

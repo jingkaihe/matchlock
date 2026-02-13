@@ -26,6 +26,15 @@ var runCmd = &cobra.Command{
 	Short: "Run a command in a new sandbox",
 	Long: `Run a command in a new sandbox.
 
+Environment Variables (-e/--env, --env-file):
+  Non-secret environment variables are visible inside the VM and in VM state
+  output (for example 'matchlock get' and 'matchlock inspect').
+
+  Formats:
+    --env KEY=VALUE            Set inline value
+    --env KEY                  Read from host environment ($KEY)
+    --env-file /path/to/.env   Read KEY=VALUE or KEY entries per line
+
 Secrets (--secret):
   Secrets are injected via MITM proxy - the real value never enters the VM.
   The VM sees a placeholder, which is replaced with the real value in HTTP headers.
@@ -51,6 +60,10 @@ Wildcard Patterns for --allow-host:
   matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
   matchlock exec <vm-id> echo hello                # exec into running VM
 
+  # With non-secret env vars
+  matchlock run --image alpine:latest -e FOO=bar -- sh -c 'echo $FOO'
+  matchlock run --image alpine:latest --env-file .env -- printenv
+
   # With secrets (MITM replaces placeholder in HTTP requests)
   export ANTHROPIC_API_KEY=sk-xxx
   matchlock run --image python:3.12-alpine \
@@ -65,6 +78,8 @@ func init() {
 	runCmd.Flags().String("workspace", api.DefaultWorkspace, "Guest mount point for VFS")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, "Volume mount (host:guest or host:guest:ro)")
+	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
+	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
@@ -86,6 +101,8 @@ func init() {
 	viper.BindPFlag("run.workspace", runCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
+	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
+	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
@@ -122,6 +139,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
+	envVars, _ := cmd.Flags().GetStringArray("env")
+	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
 
@@ -233,6 +252,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	parsedEnv, err := api.ParseEnvs(envVars, envFiles)
+	if err != nil {
+		return errx.Wrap(ErrInvalidEnv, err)
+	}
+
 	config := &api.Config{
 		Image:      imageName,
 		Privileged: privileged,
@@ -249,6 +273,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			DNSServers:      dnsServers,
 		},
 		VFS:      vfsConfig,
+		Env:      parsedEnv,
 		ImageCfg: imageCfg,
 	}
 

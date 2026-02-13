@@ -18,7 +18,7 @@ func TestCLILifecycle(t *testing.T) {
 	bin := matchlockBin(t)
 
 	// Start a sandbox with --rm=false (it stays alive)
-	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
+	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false", "-e", "VISIBLE_ENV=from-run")
 	var runStderr strings.Builder
 	cmd.Stderr = &runStderr
 	require.NoError(t, cmd.Start(), "failed to start run")
@@ -79,6 +79,12 @@ func TestCLILifecycle(t *testing.T) {
 		require.NoErrorf(t, err, "get output is not valid JSON: %s", stdout)
 		assert.Equal(t, vmID, state["id"])
 		assert.Equal(t, "running", state["status"])
+
+		cfg, ok := state["config"].(map[string]interface{})
+		require.True(t, ok, "state.config should be an object")
+		env, ok := cfg["env"].(map[string]interface{})
+		require.True(t, ok, "state.config.env should be an object")
+		assert.Equal(t, "from-run", env["VISIBLE_ENV"])
 	})
 
 	// --- inspect ---
@@ -97,6 +103,12 @@ func TestCLILifecycle(t *testing.T) {
 		assert.Equal(t, vmID, out.VM["id"])
 		assert.Equal(t, vmID, out.Lifecycle["vm_id"])
 		assert.NotEmpty(t, out.History)
+
+		cfg, ok := out.VM["config"].(map[string]interface{})
+		require.True(t, ok, "vm.config should be an object")
+		env, ok := cfg["env"].(map[string]interface{})
+		require.True(t, ok, "vm.config.env should be an object")
+		assert.Equal(t, "from-run", env["VISIBLE_ENV"])
 	})
 
 	// --- stat (alias of inspect) ---
