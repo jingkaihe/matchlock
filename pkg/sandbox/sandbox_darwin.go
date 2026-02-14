@@ -24,22 +24,23 @@ import (
 )
 
 type Sandbox struct {
-	id          string
-	config      *api.Config
-	machine     vm.Machine
-	netStack    *sandboxnet.NetworkStack
-	policy      *policy.Engine
-	vfsRoot     vfs.Provider
-	vfsHooks    *vfs.HookEngine
-	vfsServer   *vfs.VFSServer
-	vfsStopFunc func()
-	events      chan api.Event
-	stateMgr    *state.Manager
-	caPool      *sandboxnet.CAPool
-	subnetInfo  *state.SubnetInfo
-	subnetAlloc *state.SubnetAllocator
-	workspace   string
-	lifecycle   *lifecycle.Store
+	id             string
+	config         *api.Config
+	machine        vm.Machine
+	netStack       *sandboxnet.NetworkStack
+	policy         *policy.Engine
+	vfsRoot        vfs.Provider
+	vfsHooks       *vfs.HookEngine
+	vfsServer      *vfs.VFSServer
+	vfsStopFunc    func()
+	upstreamDialer sandboxnet.UpstreamDialer
+	events         chan api.Event
+	stateMgr       *state.Manager
+	caPool         *sandboxnet.CAPool
+	subnetInfo     *state.SubnetInfo
+	subnetAlloc    *state.SubnetAllocator
+	workspace      string
+	lifecycle      *lifecycle.Store
 }
 
 type Options struct {
@@ -103,12 +104,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 	rootfsPath := opts.RootfsPath
 
-	// Determine if we need network interception (calculated before VM creation)
-	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	// Determine networking mode before VM creation.
+	needsL7Interception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsInterception := config.Network != nil && (needsL7Interception || config.Network.IsTailscaleEnabled())
 
-	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
+	// Create CAPool only when HTTPS MITM is required.
 	var caPool *sandboxnet.CAPool
-	if needsInterception {
+	if needsL7Interception {
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
 			subnetAlloc.Release(id)
@@ -217,10 +219,22 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	events := make(chan api.Event, 100)
 
 	var netStack *sandboxnet.NetworkStack
+	var upstreamDialer sandboxnet.UpstreamDialer
 
 	if needsInterception {
+		upstreamDialer, err = createUpstreamDialer(config.Network, stateMgr.Dir(id), id)
+		if err != nil {
+			machine.Close(ctx)
+			subnetAlloc.Release(id)
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrCreateUpstreamDialer, err)
+		}
+
 		networkFile := darwinMachine.NetworkFile()
 		if networkFile == nil {
+			if upstreamDialer != nil {
+				upstreamDialer.Close()
+			}
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
@@ -228,16 +242,21 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
-			File:       networkFile,
-			GatewayIP:  subnetInfo.GatewayIP,
-			GuestIP:    subnetInfo.GuestIP,
-			MTU:        1500,
-			Policy:     policyEngine,
-			Events:     events,
-			CAPool:     caPool,
-			DNSServers: config.Network.GetDNSServers(),
+			File:           networkFile,
+			GatewayIP:      subnetInfo.GatewayIP,
+			GuestIP:        subnetInfo.GuestIP,
+			MTU:            1500,
+			Policy:         policyEngine,
+			Events:         events,
+			CAPool:         caPool,
+			DNSServers:     config.Network.GetDNSServers(),
+			UpstreamDialer: upstreamDialer,
+			InterceptL7:    needsL7Interception,
 		})
 		if err != nil {
+			if upstreamDialer != nil {
+				upstreamDialer.Close()
+			}
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
@@ -260,6 +279,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if err != nil {
 		if netStack != nil {
 			netStack.Close()
+		}
+		if upstreamDialer != nil {
+			upstreamDialer.Close()
 		}
 		machine.Close(ctx)
 		subnetAlloc.Release(id)
@@ -292,22 +314,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}()
 
 	sb = &Sandbox{
-		id:          id,
-		config:      config,
-		machine:     machine,
-		netStack:    netStack,
-		policy:      policyEngine,
-		vfsRoot:     vfsRoot,
-		vfsHooks:    vfsHooks,
-		vfsServer:   vfsServer,
-		vfsStopFunc: vfsStopFunc,
-		events:      events,
-		stateMgr:    stateMgr,
-		caPool:      caPool,
-		subnetInfo:  subnetInfo,
-		subnetAlloc: subnetAlloc,
-		workspace:   workspace,
-		lifecycle:   lifecycleStore,
+		id:             id,
+		config:         config,
+		machine:        machine,
+		netStack:       netStack,
+		policy:         policyEngine,
+		vfsRoot:        vfsRoot,
+		vfsHooks:       vfsHooks,
+		vfsServer:      vfsServer,
+		vfsStopFunc:    vfsStopFunc,
+		upstreamDialer: upstreamDialer,
+		events:         events,
+		stateMgr:       stateMgr,
+		caPool:         caPool,
+		subnetInfo:     subnetInfo,
+		subnetAlloc:    subnetAlloc,
+		workspace:      workspace,
+		lifecycle:      lifecycleStore,
 	}
 	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
 		_ = sb.Close(ctx)
@@ -443,6 +466,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		}
 	} else {
 		markCleanup("netstack_close", nil)
+	}
+	if s.upstreamDialer != nil {
+		if err := s.upstreamDialer.Close(); err != nil {
+			errs = append(errs, errx.Wrap(ErrUpstreamDialerClose, err))
+			markCleanup("upstream_dialer_close", err)
+		} else {
+			markCleanup("upstream_dialer_close", nil)
+		}
+	} else {
+		markCleanup("upstream_dialer_close", nil)
 	}
 
 	if s.subnetAlloc != nil {

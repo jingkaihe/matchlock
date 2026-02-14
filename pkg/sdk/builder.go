@@ -1,5 +1,7 @@
 package sdk
 
+import "github.com/jingkaihe/matchlock/pkg/api"
+
 // SandboxBuilder provides a fluent API for configuring and creating sandboxes.
 //
 // Usage:
@@ -112,6 +114,18 @@ func (b *SandboxBuilder) AddSecret(name, value string, hosts ...string) *Sandbox
 // WithDNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4).
 func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	b.opts.DNSServers = append(b.opts.DNSServers, servers...)
+	return b
+}
+
+// WithTailscale routes outbound traffic through host-side Tailscale.
+// The auth key is read from the named host env var (default: TAILSCALE_AUTH_KEY).
+func (b *SandboxBuilder) WithTailscale(authKeyEnv string) *SandboxBuilder {
+	b.opts.Tailscale = true
+	if authKeyEnv == "" {
+		b.opts.TailscaleAuthKeyEnv = api.DefaultTailscaleAuthKeyEnv
+	} else {
+		b.opts.TailscaleAuthKeyEnv = authKeyEnv
+	}
 	return b
 }
 

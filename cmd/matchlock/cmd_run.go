@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +83,8 @@ func init() {
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
+	runCmd.Flags().Bool("tailscale", false, "Route egress through host-side Tailscale")
+	runCmd.Flags().String("tailscale-auth-key-env", api.DefaultTailscaleAuthKeyEnv, "Host environment variable name for Tailscale auth key")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
@@ -104,6 +107,8 @@ func init() {
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
+	viper.BindPFlag("run.tailscale", runCmd.Flags().Lookup("tailscale"))
+	viper.BindPFlag("run.tailscale-auth-key-env", runCmd.Flags().Lookup("tailscale-auth-key-env"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
@@ -143,6 +148,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
+	tailscale, _ := cmd.Flags().GetBool("tailscale")
+	tailscaleAuthKeyEnv, _ := cmd.Flags().GetString("tailscale-auth-key-env")
+
+	if tailscale && strings.TrimSpace(tailscaleAuthKeyEnv) == "" {
+		return fmt.Errorf("--tailscale-auth-key-env cannot be empty when --tailscale is enabled")
+	}
 
 	// Shutdown
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
@@ -257,6 +268,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return errx.Wrap(ErrInvalidEnv, err)
 	}
 
+	var tailscaleCfg *api.TailscaleConfig
+	if tailscale {
+		tailscaleCfg = &api.TailscaleConfig{
+			Enabled:    true,
+			AuthKeyEnv: tailscaleAuthKeyEnv,
+		}
+	}
+
 	config := &api.Config{
 		Image:      imageName,
 		Privileged: privileged,
@@ -271,6 +290,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			BlockPrivateIPs: true,
 			Secrets:         parsedSecrets,
 			DNSServers:      dnsServers,
+			Tailscale:       tailscaleCfg,
 		},
 		VFS:      vfsConfig,
 		Env:      parsedEnv,

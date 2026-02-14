@@ -92,6 +92,8 @@ class TestCreateOptions:
         assert opts.vfs_interception is None
         assert opts.secrets == []
         assert opts.workspace == ""
+        assert opts.tailscale is False
+        assert opts.tailscale_auth_key_env == ""
 
     def test_with_image(self):
         opts = CreateOptions(image="alpine:latest")

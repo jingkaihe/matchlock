@@ -76,6 +76,7 @@ class TestSandboxChaining:
         assert isinstance(s.block_private_ips(), Sandbox)
         assert isinstance(s.add_secret("k", "v"), Sandbox)
         assert isinstance(s.with_dns_servers("1.1.1.1"), Sandbox)
+        assert isinstance(s.with_tailscale(), Sandbox)
         assert isinstance(s.mount("/p", MountConfig()), Sandbox)
         assert isinstance(s.mount_host_dir("/g", "/h"), Sandbox)
         assert isinstance(s.mount_host_dir_readonly("/g", "/h"), Sandbox)
@@ -129,6 +130,16 @@ class TestSandboxNetwork:
     def test_dns_servers_default_empty(self):
         opts = Sandbox("img").options()
         assert opts.dns_servers == []
+
+    def test_with_tailscale_default_auth_env(self):
+        opts = Sandbox("img").with_tailscale().options()
+        assert opts.tailscale is True
+        assert opts.tailscale_auth_key_env == "TAILSCALE_AUTH_KEY"
+
+    def test_with_tailscale_custom_auth_env(self):
+        opts = Sandbox("img").with_tailscale("MY_TS_KEY").options()
+        assert opts.tailscale is True
+        assert opts.tailscale_auth_key_env == "MY_TS_KEY"
 
 
 class TestSandboxSecrets:

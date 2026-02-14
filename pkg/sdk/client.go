@@ -220,6 +220,11 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// Tailscale routes outbound traffic through host-side Tailscale.
+	Tailscale bool
+	// TailscaleAuthKeyEnv is the host environment variable name containing
+	// the Tailscale auth key. Defaults to TAILSCALE_AUTH_KEY.
+	TailscaleAuthKeyEnv string
 	// ImageConfig holds OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)
 	ImageConfig *ImageConfig
 }
@@ -416,7 +421,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["privileged"] = true
 	}
 
-	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 || len(opts.DNSServers) > 0 {
+	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 || len(opts.DNSServers) > 0 || opts.Tailscale {
 		network := map[string]interface{}{
 			"allowed_hosts":     opts.AllowedHosts,
 			"block_private_ips": opts.BlockPrivateIPs,
@@ -433,6 +438,15 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		}
 		if len(opts.DNSServers) > 0 {
 			network["dns_servers"] = opts.DNSServers
+		}
+		if opts.Tailscale {
+			tailscale := map[string]interface{}{
+				"enabled": true,
+			}
+			if opts.TailscaleAuthKeyEnv != "" {
+				tailscale["auth_key_env"] = opts.TailscaleAuthKeyEnv
+			}
+			network["tailscale"] = tailscale
 		}
 		params["network"] = network
 	}

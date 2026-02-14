@@ -24,12 +24,14 @@ type NFTablesRules struct {
 	httpPort        uint16
 	httpsPort       uint16
 	passthroughPort uint16
+	dnsProxyPort    uint16
+	interceptL7     bool
 	dnsServers      []net.IP
 	conn            *nftables.Conn
 	table           *nftables.Table
 }
 
-func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort, passthroughPort int, dnsServers []string) *NFTablesRules {
+func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort, passthroughPort int, dnsServers []string, dnsProxyPort int, interceptL7 bool) *NFTablesRules {
 	var dnsIPs []net.IP
 	for _, s := range dnsServers {
 		if ip := net.ParseIP(s).To4(); ip != nil {
@@ -42,6 +44,8 @@ func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort, passt
 		httpPort:        uint16(httpPort),
 		httpsPort:       uint16(httpsPort),
 		passthroughPort: uint16(passthroughPort),
+		dnsProxyPort:    uint16(dnsProxyPort),
+		interceptL7:     interceptL7,
 		dnsServers:      dnsIPs,
 	}
 }
@@ -74,34 +78,51 @@ func (r *NFTablesRules) Setup() error {
 		Priority: nftables.ChainPriorityFilter,
 	})
 
-	conn.AddRule(&nftables.Rule{
-		Table: r.table,
-		Chain: preChain,
-		Exprs: r.buildDNATRule(80, r.httpPort),
-	})
+	if r.interceptL7 {
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: preChain,
+			Exprs: r.buildDNATRule(80, r.httpPort, unix.IPPROTO_TCP),
+		})
 
-	conn.AddRule(&nftables.Rule{
-		Table: r.table,
-		Chain: preChain,
-		Exprs: r.buildDNATRule(443, r.httpsPort),
-	})
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: preChain,
+			Exprs: r.buildDNATRule(443, r.httpsPort, unix.IPPROTO_TCP),
+		})
+	}
+
+	// In Tailscale mode, forward guest DNS to the host-side DNS proxy so
+	// lookups are made from the host network namespace (required for quad100).
+	if r.dnsProxyPort > 0 {
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: preChain,
+			Exprs: r.buildDNATRule(53, r.dnsProxyPort, unix.IPPROTO_UDP),
+		})
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: preChain,
+			Exprs: r.buildDNATRule(53, r.dnsProxyPort, unix.IPPROTO_TCP),
+		})
+	} else {
+		// Allow DNS (UDP port 53) from the VM to configured resolvers only.
+		// Must come before the UDP drop rule. Restricting destination IPs
+		// prevents DNS tunneling to attacker-controlled nameservers.
+		for _, dnsIP := range r.dnsServers {
+			conn.AddRule(&nftables.Rule{
+				Table: r.table,
+				Chain: fwdChain,
+				Exprs: r.buildUDPDNSAcceptRule(dnsIP),
+			})
+		}
+	}
 
 	if r.passthroughPort > 0 {
 		conn.AddRule(&nftables.Rule{
 			Table: r.table,
 			Chain: preChain,
 			Exprs: r.buildCatchAllDNATRule(r.passthroughPort),
-		})
-	}
-
-	// Allow DNS (UDP port 53) from the VM to configured resolvers only.
-	// Must come before the UDP drop rule. Restricting destination IPs
-	// prevents DNS tunneling to attacker-controlled nameservers.
-	for _, dnsIP := range r.dnsServers {
-		conn.AddRule(&nftables.Rule{
-			Table: r.table,
-			Chain: fwdChain,
-			Exprs: r.buildUDPDNSAcceptRule(dnsIP),
 		})
 	}
 
@@ -132,7 +153,7 @@ func (r *NFTablesRules) Setup() error {
 	return nil
 }
 
-func (r *NFTablesRules) buildDNATRule(srcPort, dstPort uint16) []expr.Any {
+func (r *NFTablesRules) buildDNATRule(srcPort, dstPort uint16, protocol byte) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
 		&expr.Cmp{
@@ -144,7 +165,7 @@ func (r *NFTablesRules) buildDNATRule(srcPort, dstPort uint16) []expr.Any {
 		&expr.Cmp{
 			Op:       expr.CmpOpEq,
 			Register: 1,
-			Data:     []byte{unix.IPPROTO_TCP},
+			Data:     []byte{protocol},
 		},
 		&expr.Payload{
 			DestRegister: 1,

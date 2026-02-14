@@ -73,6 +73,11 @@ class Sandbox:
         self._opts.dns_servers.extend(servers)
         return self
 
+    def with_tailscale(self, auth_key_env: str = "TAILSCALE_AUTH_KEY") -> Sandbox:
+        self._opts.tailscale = True
+        self._opts.tailscale_auth_key_env = auth_key_env
+        return self
+
     def mount(self, guest_path: str, config: MountConfig) -> Sandbox:
         self._opts.mounts[guest_path] = config
         return self

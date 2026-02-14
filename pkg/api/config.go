@@ -16,6 +16,7 @@ const (
 	DefaultDiskSizeMB             = 5120
 	DefaultTimeoutSeconds         = 300
 	DefaultGracefulShutdownPeriod = 0
+	DefaultTailscaleAuthKeyEnv    = "TAILSCALE_AUTH_KEY"
 )
 
 type ImageConfig struct {
@@ -66,12 +67,17 @@ type Resources struct {
 // DefaultDNSServers are used when no custom DNS servers are configured.
 var DefaultDNSServers = []string{"8.8.8.8", "8.8.4.4"}
 
+// DefaultTailscaleDNSServers are used when Tailscale is enabled and no custom DNS servers are configured.
+// Keep quad100 first for tailnet/MagicDNS, then fall back for public DNS when quad100 returns SERVFAIL.
+var DefaultTailscaleDNSServers = []string{"100.100.100.100", "8.8.8.8", "8.8.4.4"}
+
 type NetworkConfig struct {
 	AllowedHosts    []string          `json:"allowed_hosts,omitempty"`
 	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
+	Tailscale       *TailscaleConfig  `json:"tailscale,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.
@@ -79,7 +85,26 @@ func (n *NetworkConfig) GetDNSServers() []string {
 	if n != nil && len(n.DNSServers) > 0 {
 		return n.DNSServers
 	}
+	if n != nil && n.IsTailscaleEnabled() {
+		return DefaultTailscaleDNSServers
+	}
 	return DefaultDNSServers
+}
+
+func (n *NetworkConfig) IsTailscaleEnabled() bool {
+	return n != nil && n.Tailscale != nil && n.Tailscale.Enabled
+}
+
+func (n *NetworkConfig) GetTailscaleAuthKeyEnv() string {
+	if n != nil && n.Tailscale != nil && n.Tailscale.AuthKeyEnv != "" {
+		return n.Tailscale.AuthKeyEnv
+	}
+	return DefaultTailscaleAuthKeyEnv
+}
+
+type TailscaleConfig struct {
+	Enabled    bool   `json:"enabled,omitempty"`
+	AuthKeyEnv string `json:"auth_key_env,omitempty"`
 }
 
 type Secret struct {

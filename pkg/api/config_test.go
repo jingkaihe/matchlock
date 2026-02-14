@@ -78,3 +78,42 @@ func TestComposeCommand_RepeatedCallsConsistent(t *testing.T) {
 		assert.Equal(t, []string{"python3", "app.py"}, got)
 	}
 }
+
+func TestNetworkConfig_TailscaleHelpers(t *testing.T) {
+	var n *NetworkConfig
+	assert.False(t, n.IsTailscaleEnabled())
+	assert.Equal(t, DefaultTailscaleAuthKeyEnv, n.GetTailscaleAuthKeyEnv())
+
+	n = &NetworkConfig{
+		Tailscale: &TailscaleConfig{
+			Enabled:    true,
+			AuthKeyEnv: "MY_TS_KEY",
+		},
+	}
+	assert.True(t, n.IsTailscaleEnabled())
+	assert.Equal(t, "MY_TS_KEY", n.GetTailscaleAuthKeyEnv())
+}
+
+func TestNetworkConfig_GetDNSServers_Default(t *testing.T) {
+	var n *NetworkConfig
+	assert.Equal(t, DefaultDNSServers, n.GetDNSServers())
+}
+
+func TestNetworkConfig_GetDNSServers_TailscaleDefault(t *testing.T) {
+	n := &NetworkConfig{
+		Tailscale: &TailscaleConfig{
+			Enabled: true,
+		},
+	}
+	assert.Equal(t, DefaultTailscaleDNSServers, n.GetDNSServers())
+}
+
+func TestNetworkConfig_GetDNSServers_CustomOverridesTailscaleDefault(t *testing.T) {
+	n := &NetworkConfig{
+		DNSServers: []string{"1.1.1.1"},
+		Tailscale: &TailscaleConfig{
+			Enabled: true,
+		},
+	}
+	assert.Equal(t, []string{"1.1.1.1"}, n.GetDNSServers())
+}

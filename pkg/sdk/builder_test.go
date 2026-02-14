@@ -115,6 +115,18 @@ func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	require.Empty(t, opts.DNSServers)
 }
 
+func TestBuilderWithTailscaleDefaultAuthEnv(t *testing.T) {
+	opts := New("alpine:latest").WithTailscale("").Options()
+	require.True(t, opts.Tailscale)
+	require.Equal(t, "TAILSCALE_AUTH_KEY", opts.TailscaleAuthKeyEnv)
+}
+
+func TestBuilderWithTailscaleCustomAuthEnv(t *testing.T) {
+	opts := New("alpine:latest").WithTailscale("MY_TS_AUTH_KEY").Options()
+	require.True(t, opts.Tailscale)
+	require.Equal(t, "MY_TS_AUTH_KEY", opts.TailscaleAuthKeyEnv)
+}
+
 func TestBuilderMounts(t *testing.T) {
 	opts := New("alpine:latest").
 		MountHostDir("/data", "/host/data").

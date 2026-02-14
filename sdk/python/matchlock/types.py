@@ -279,6 +279,12 @@ class CreateOptions:
     dns_servers: list[str] = field(default_factory=list)
     """DNS servers to use (default: 8.8.8.8, 8.8.4.4)."""
 
+    tailscale: bool = False
+    """Route outbound traffic through host-side Tailscale."""
+
+    tailscale_auth_key_env: str = ""
+    """Host environment variable containing Tailscale auth key."""
+
     image_config: ImageConfig | None = None
     """OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)."""
 

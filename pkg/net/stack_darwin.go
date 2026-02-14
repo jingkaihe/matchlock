@@ -47,20 +47,24 @@ type NetworkStack struct {
 	linkEP      *socketPairEndpoint
 	dnsServers  []string
 	dnsIndex    atomic.Uint64
+	dialer      UpstreamDialer
+	interceptL7 bool
 	mu          sync.Mutex
 	closed      bool
 }
 
 type Config struct {
-	FD         int
-	File       *os.File // Use this instead of FD when available
-	GatewayIP  string
-	GuestIP    string
-	MTU        uint32
-	Policy     *policy.Engine
-	Events     chan api.Event
-	CAPool     *CAPool
-	DNSServers []string
+	FD             int
+	File           *os.File // Use this instead of FD when available
+	GatewayIP      string
+	GuestIP        string
+	MTU            uint32
+	Policy         *policy.Engine
+	Events         chan api.Event
+	CAPool         *CAPool
+	DNSServers     []string
+	UpstreamDialer UpstreamDialer
+	InterceptL7    bool
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -306,14 +310,19 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 	s.SetSpoofing(1, true)
 
 	ns := &NetworkStack{
-		stack:      s,
-		policy:     cfg.Policy,
-		events:     cfg.Events,
-		linkEP:     linkEP,
-		dnsServers: cfg.DNSServers,
+		stack:       s,
+		policy:      cfg.Policy,
+		events:      cfg.Events,
+		linkEP:      linkEP,
+		dnsServers:  cfg.DNSServers,
+		dialer:      cfg.UpstreamDialer,
+		interceptL7: cfg.InterceptL7,
+	}
+	if ns.dialer == nil {
+		ns.dialer = NewSystemDialer()
 	}
 
-	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
+	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, ns.dialer)
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
@@ -340,20 +349,24 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 
 	dstIP := id.LocalAddress.String()
 
-	switch dstPort {
-	case 80:
-		go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
-	case 443:
-		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
-	default:
-		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
-		if !ns.policy.IsHostAllowed(host) {
-			ns.emitBlockedEvent(host, "host not in allowlist")
-			guestConn.Close()
+	if ns.interceptL7 {
+		switch dstPort {
+		case 80:
+			go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
+			return
+		case 443:
+			go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 			return
 		}
-		go ns.handlePassthrough(guestConn, dstIP, int(dstPort))
 	}
+
+	host := fmt.Sprintf("%s:%d", dstIP, dstPort)
+	if !ns.policy.IsHostAllowed(host) {
+		ns.emitBlockedEvent(host, "host not in allowlist")
+		guestConn.Close()
+		return
+	}
+	go ns.handlePassthrough(guestConn, dstIP, int(dstPort))
 }
 
 func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
@@ -364,7 +377,11 @@ func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstP
 		return
 	}
 
-	realConn, err := net.Dial("tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
+	dialer := ns.dialer
+	if dialer == nil {
+		dialer = NewSystemDialer()
+	}
+	realConn, err := dialer.DialContext(context.Background(), "tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
 	if err != nil {
 		return
 	}
@@ -437,7 +454,11 @@ func (ns *NetworkStack) handleDNS(r *udp.ForwarderRequest) {
 	}
 	idx := ns.dnsIndex.Add(1) - 1
 	server := ns.dnsServers[idx%uint64(len(ns.dnsServers))]
-	dnsConn, err := net.Dial("udp", server+":53")
+	dialer := ns.dialer
+	if dialer == nil {
+		dialer = NewSystemDialer()
+	}
+	dnsConn, err := dialer.DialContext(context.Background(), "udp", server+":53")
 	if err != nil {
 		return
 	}

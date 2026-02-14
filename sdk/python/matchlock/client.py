@@ -710,6 +710,7 @@ class Client:
             or opts.block_private_ips
             or opts.secrets
             or opts.dns_servers
+            or opts.tailscale
         ):
             network: dict[str, Any] = {
                 "allowed_hosts": opts.allowed_hosts,
@@ -721,6 +722,11 @@ class Client:
                 }
             if opts.dns_servers:
                 network["dns_servers"] = opts.dns_servers
+            if opts.tailscale:
+                tailscale: dict[str, Any] = {"enabled": True}
+                if opts.tailscale_auth_key_env:
+                    tailscale["auth_key_env"] = opts.tailscale_auth_key_env
+                network["tailscale"] = tailscale
             params["network"] = network
 
         if opts.mounts or opts.workspace or wire_vfs is not None:

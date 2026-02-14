@@ -2,6 +2,7 @@ package net
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -19,14 +20,19 @@ type HTTPInterceptor struct {
 	events   chan api.Event
 	caPool   *CAPool
 	connPool *upstreamConnPool
+	dialer   UpstreamDialer
 }
 
-func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool) *HTTPInterceptor {
+func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, dialer UpstreamDialer) *HTTPInterceptor {
+	if dialer == nil {
+		dialer = NewSystemDialer()
+	}
 	return &HTTPInterceptor{
 		policy:   pol,
 		events:   events,
 		caPool:   caPool,
 		connPool: newUpstreamConnPool(),
+		dialer:   dialer,
 	}
 }
 
@@ -66,7 +72,9 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		// Try to reuse an existing upstream connection from the pool.
 		pc := i.connPool.get(targetHost)
 		if pc == nil {
-			realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			realConn, err := i.dialer.DialContext(ctx, "tcp", targetHost)
+			cancel()
 			if err != nil {
 				writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 				return
@@ -156,9 +164,9 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		return
 	}
 
-	realConn, err := tls.Dial("tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), &tls.Config{
-		ServerName: serverName,
-	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	realConn, err := dialTLSContext(ctx, i.dialer, "tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), serverName)
+	cancel()
 	if err != nil {
 		return
 	}
@@ -290,6 +298,28 @@ func writeHTTPError(conn net.Conn, status int, message string) {
 	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		status, http.StatusText(status), len(message), message)
 	io.WriteString(conn, resp)
+}
+
+func dialTLSContext(ctx context.Context, dialer UpstreamDialer, network, addr, serverName string) (*tls.Conn, error) {
+	rawConn, err := dialer.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConn := tls.Client(rawConn, &tls.Config{
+		ServerName: serverName,
+	})
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = tlsConn.SetDeadline(deadline)
+	}
+	if err := tlsConn.Handshake(); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	_ = tlsConn.SetDeadline(time.Time{})
+
+	return tlsConn, nil
 }
 
 func writeResponse(conn net.Conn, resp *http.Response) error {

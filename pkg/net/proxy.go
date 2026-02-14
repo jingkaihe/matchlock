@@ -3,6 +3,7 @@
 package net
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ type TransparentProxy struct {
 	interceptor         *HTTPInterceptor
 	policy              *policy.Engine
 	events              chan api.Event
+	dialer              UpstreamDialer
 
 	httpPort        int
 	httpsPort       int
@@ -47,6 +49,7 @@ type ProxyConfig struct {
 	Policy          *policy.Engine
 	Events          chan api.Event
 	CAPool          *CAPool
+	UpstreamDialer  UpstreamDialer
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -82,13 +85,19 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		actualPassthroughPort = passthroughLn.Addr().(*net.TCPAddr).Port
 	}
 
+	dialer := cfg.UpstreamDialer
+	if dialer == nil {
+		dialer = NewSystemDialer()
+	}
+
 	tp := &TransparentProxy{
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
 		passthroughListener: passthroughLn,
-		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
+		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, dialer),
 		policy:              cfg.Policy,
 		events:              cfg.Events,
+		dialer:              dialer,
 		httpPort:            actualHTTPPort,
 		httpsPort:           actualHTTPSPort,
 		passthroughPort:     actualPassthroughPort,
@@ -161,7 +170,14 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 		return
 	}
 
-	realConn, err := net.DialTimeout("tcp", host, 30*time.Second)
+	dialer := tp.dialer
+	if dialer == nil {
+		dialer = NewSystemDialer()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	realConn, err := dialer.DialContext(ctx, "tcp", host)
+	cancel()
 	if err != nil {
 		return
 	}

@@ -31,26 +31,28 @@ type FirewallRules interface {
 
 // Sandbox represents a running sandbox VM with all associated resources.
 type Sandbox struct {
-	id          string
-	config      *api.Config
-	machine     vm.Machine
-	proxy       *sandboxnet.TransparentProxy
-	fwRules     FirewallRules
-	natRules    *sandboxnet.NFTablesNAT
-	policy      *policy.Engine
-	vfsRoot     vfs.Provider
-	vfsHooks    *vfs.HookEngine
-	vfsServer   *vfs.VFSServer
-	vfsStopFunc func()
-	events      chan api.Event
-	stateMgr    *state.Manager
-	tapName     string
-	caPool      *sandboxnet.CAPool
-	subnetInfo  *state.SubnetInfo
-	subnetAlloc *state.SubnetAllocator
-	workspace   string
-	rootfsPath  string
-	lifecycle   *lifecycle.Store
+	id             string
+	config         *api.Config
+	machine        vm.Machine
+	proxy          *sandboxnet.TransparentProxy
+	fwRules        FirewallRules
+	natRules       *sandboxnet.NFTablesNAT
+	policy         *policy.Engine
+	vfsRoot        vfs.Provider
+	vfsHooks       *vfs.HookEngine
+	vfsServer      *vfs.VFSServer
+	vfsStopFunc    func()
+	upstreamDialer sandboxnet.UpstreamDialer
+	dnsProxy       *sandboxnet.DNSProxy
+	events         chan api.Event
+	stateMgr       *state.Manager
+	tapName        string
+	caPool         *sandboxnet.CAPool
+	subnetInfo     *state.SubnetInfo
+	subnetAlloc    *state.SubnetAllocator
+	workspace      string
+	rootfsPath     string
+	lifecycle      *lifecycle.Store
 }
 
 // Options configures sandbox creation.
@@ -115,10 +117,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
 
-	// Create CAPool early and inject cert into rootfs before VM creation
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	// We need a transparent proxy whenever Tailscale dial routing is enabled or
+	// host policy/secret interception is requested.
+	needsL7Interception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := config.Network != nil && (needsL7Interception || config.Network.IsTailscaleEnabled())
+
+	// Create CAPool only when HTTPS MITM is required.
 	var caPool *sandboxnet.CAPool
-	if needsProxy {
+	if needsL7Interception {
 		var err error
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
@@ -223,14 +229,46 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Create event channel
 	events := make(chan api.Event, 100)
 
+	var upstreamDialer sandboxnet.UpstreamDialer
+	if needsProxy {
+		upstreamDialer, err = createUpstreamDialer(config.Network, stateMgr.Dir(id), id)
+		if err != nil {
+			machine.Close(ctx)
+			subnetAlloc.Release(id)
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrCreateUpstreamDialer, err)
+		}
+	}
+
 	// Set up transparent proxy for HTTP/HTTPS interception
 	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0"
 
 	var proxy *sandboxnet.TransparentProxy
+	var dnsProxy *sandboxnet.DNSProxy
 	var fwRules FirewallRules
 
 	if needsProxy {
+		needsDNSProxy := config.Network != nil && config.Network.IsTailscaleEnabled()
+		if needsDNSProxy {
+			dnsProxy, err = sandboxnet.NewDNSProxy(&sandboxnet.DNSProxyConfig{
+				BindAddr:       gatewayIP,
+				Port:           0,
+				UpstreamServer: config.Network.GetDNSServers(),
+				UpstreamDialer: upstreamDialer,
+			})
+			if err != nil {
+				if upstreamDialer != nil {
+					upstreamDialer.Close()
+				}
+				machine.Close(ctx)
+				subnetAlloc.Release(id)
+				stateMgr.Unregister(id)
+				return nil, errx.Wrap(ErrCreateDNSProxy, err)
+			}
+			dnsProxy.Start()
+		}
+
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:        proxyBindAddr,
 			HTTPPort:        0,
@@ -239,8 +277,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Policy:          policyEngine,
 			Events:          events,
 			CAPool:          caPool,
+			UpstreamDialer:  upstreamDialer,
 		})
 		if err != nil {
+			if dnsProxy != nil {
+				dnsProxy.Close()
+			}
+			if upstreamDialer != nil {
+				upstreamDialer.Close()
+			}
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
@@ -249,9 +294,28 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 		proxy.Start()
 
-		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
+		dnsProxyPort := 0
+		if dnsProxy != nil {
+			dnsProxyPort = dnsProxy.Port()
+		}
+		fwRules = sandboxnet.NewNFTablesRules(
+			linuxMachine.TapName(),
+			gatewayIP,
+			proxy.HTTPPort(),
+			proxy.HTTPSPort(),
+			proxy.PassthroughPort(),
+			config.Network.GetDNSServers(),
+			dnsProxyPort,
+			needsL7Interception,
+		)
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
+			if dnsProxy != nil {
+				dnsProxy.Close()
+			}
+			if upstreamDialer != nil {
+				upstreamDialer.Close()
+			}
 			machine.Close(ctx)
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
@@ -286,6 +350,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		if proxy != nil {
 			proxy.Close()
 		}
+		if dnsProxy != nil {
+			dnsProxy.Close()
+		}
+		if upstreamDialer != nil {
+			upstreamDialer.Close()
+		}
 		if fwRules != nil {
 			fwRules.Cleanup()
 		}
@@ -296,26 +366,28 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	sb = &Sandbox{
-		id:          id,
-		config:      config,
-		machine:     machine,
-		proxy:       proxy,
-		fwRules:     fwRules,
-		natRules:    natRules,
-		policy:      policyEngine,
-		vfsRoot:     vfsRoot,
-		vfsHooks:    vfsHooks,
-		vfsServer:   vfsServer,
-		vfsStopFunc: vfsStopFunc,
-		events:      events,
-		stateMgr:    stateMgr,
-		tapName:     linuxMachine.TapName(),
-		caPool:      caPool,
-		subnetInfo:  subnetInfo,
-		subnetAlloc: subnetAlloc,
-		workspace:   workspace,
-		rootfsPath:  vmRootfsPath,
-		lifecycle:   lifecycleStore,
+		id:             id,
+		config:         config,
+		machine:        machine,
+		proxy:          proxy,
+		fwRules:        fwRules,
+		natRules:       natRules,
+		policy:         policyEngine,
+		vfsRoot:        vfsRoot,
+		vfsHooks:       vfsHooks,
+		vfsServer:      vfsServer,
+		vfsStopFunc:    vfsStopFunc,
+		upstreamDialer: upstreamDialer,
+		dnsProxy:       dnsProxy,
+		events:         events,
+		stateMgr:       stateMgr,
+		tapName:        linuxMachine.TapName(),
+		caPool:         caPool,
+		subnetInfo:     subnetInfo,
+		subnetAlloc:    subnetAlloc,
+		workspace:      workspace,
+		rootfsPath:     vmRootfsPath,
+		lifecycle:      lifecycleStore,
 	}
 	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
 		_ = sb.Close(ctx)
@@ -485,6 +557,26 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		}
 	} else {
 		markCleanup("proxy_close", nil)
+	}
+	if s.dnsProxy != nil {
+		if err := s.dnsProxy.Close(); err != nil {
+			errs = append(errs, errx.Wrap(ErrDNSProxyClose, err))
+			markCleanup("dns_proxy_close", err)
+		} else {
+			markCleanup("dns_proxy_close", nil)
+		}
+	} else {
+		markCleanup("dns_proxy_close", nil)
+	}
+	if s.upstreamDialer != nil {
+		if err := s.upstreamDialer.Close(); err != nil {
+			errs = append(errs, errx.Wrap(ErrUpstreamDialerClose, err))
+			markCleanup("upstream_dialer_close", err)
+		} else {
+			markCleanup("upstream_dialer_close", nil)
+		}
+	} else {
+		markCleanup("upstream_dialer_close", nil)
 	}
 
 	// Release subnet allocation
