@@ -36,6 +36,7 @@ type VMConfig struct {
 	UseInterception bool         // Use network interception (MITM proxy)
 	Privileged      bool         // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	DNSServers      []string     // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
+	DNSSearch       []string     // DNS search domains for short-name resolution
 	PrebuiltRootfs  string       // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks      []DiskConfig // Additional block devices to attach
 }
@@ -79,4 +80,10 @@ func KernelIPDNSSuffix(dnsServers []string) string {
 // KernelDNSParam returns a comma-separated DNS list for the matchlock.dns= cmdline param.
 func KernelDNSParam(dnsServers []string) string {
 	return strings.Join(dnsServers, ",")
+}
+
+// KernelDNSSearchParam returns a comma-separated DNS search domain list for
+// the matchlock.dns-search= cmdline param.
+func KernelDNSSearchParam(search []string) string {
+	return strings.Join(search, ",")
 }

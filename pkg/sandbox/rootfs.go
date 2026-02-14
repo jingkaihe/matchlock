@@ -58,6 +58,11 @@ fi
 echo "$DNS_SERVERS" | tr ',' '\n' | while read -r ns; do
     [ -n "$ns" ] && echo "nameserver $ns"
 done > /etc/resolv.conf
+DNS_SEARCH=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.dns-search=' | cut -d= -f2)
+if [ -n "$DNS_SEARCH" ]; then
+    SEARCH_LINE=$(echo "$DNS_SEARCH" | tr ',' ' ')
+    echo "search $SEARCH_LINE" >> /etc/resolv.conf
+fi
 
 # Network setup - bring up interface and get IP via DHCP
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null

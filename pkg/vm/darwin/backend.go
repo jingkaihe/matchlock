@@ -173,6 +173,10 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 		dev := string(rune('b' + i))
 		diskArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
 	}
+	dnsSearchArg := ""
+	if len(config.DNSSearch) > 0 {
+		dnsSearchArg = " matchlock.dns-search=" + vm.KernelDNSSearchParam(config.DNSSearch)
+	}
 
 	if config.UseInterception {
 		guestIP := config.GuestIP
@@ -184,14 +188,14 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s%s%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s%s%s%s",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), workspace, vm.KernelDNSParam(config.DNSServers), dnsSearchArg, privilegedArg, diskArgs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s%s%s",
-		workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s%s%s%s",
+		workspace, vm.KernelDNSParam(config.DNSServers), dnsSearchArg, privilegedArg, diskArgs,
 	)
 }
 

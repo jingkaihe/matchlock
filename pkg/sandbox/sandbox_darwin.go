@@ -164,6 +164,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	dnsSearch := tailscaleSearchDomains(config.Network)
 
 	vmConfig := &vm.VMConfig{
 		ID:              id,
@@ -183,6 +184,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		PrebuiltRootfs:  prebuiltRootfs,
 		ExtraDisks:      extraDisks,
 		DNSServers:      config.Network.GetDNSServers(),
+		DNSSearch:       dnsSearch,
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"

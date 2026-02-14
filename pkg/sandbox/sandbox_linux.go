@@ -173,6 +173,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	dnsSearch := tailscaleSearchDomains(config.Network)
 
 	vmConfig := &vm.VMConfig{
 		ID:         id,
@@ -191,6 +192,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Privileged: config.Privileged,
 		ExtraDisks: extraDisks,
 		DNSServers: config.Network.GetDNSServers(),
+		DNSSearch:  dnsSearch,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
