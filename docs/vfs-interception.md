@@ -13,6 +13,46 @@ Behavior by phase:
 - `before`: supports wire `action=block`, SDK `action_hook` callbacks, and SDK `mutate_hook` callbacks
 - `after`: supports SDK `hook` callbacks
 
+## Host Rules vs SDK-Local Hooks
+
+There are two different enforcement paths:
+
+- Host wire rules (`action=block`) are sent to the sandbox and evaluated inside host VFS interception.
+- SDK-local callbacks (`action_hook`, `mutate_hook`, `hook`, `dangerous_hook`) run in your SDK process.
+
+For `action_hook`, matching is based on the SDK API operation:
+
+- `WriteFile`/`WriteFileMode` -> `op=write`
+- `ReadFile` -> `op=read`
+- `ListFiles` -> `op=readdir`
+
+So an `action_hook` with `ops=[create]` will not match `WriteFile`.
+If you want to block create of a file, use a host wire rule with `action=block` and `ops=[create]`.
+If you want to block SDK write calls directly, use `action_hook` with `ops=[write]`.
+
+Example:
+
+```go
+Rules: []sdk.VFSHookRule{
+	// Host-side VFS create enforcement.
+	{
+		Phase:  sdk.VFSHookPhaseBefore,
+		Ops:    []sdk.VFSHookOp{sdk.VFSHookOpCreate},
+		Path:   "/workspace/blocked-create.txt",
+		Action: sdk.VFSHookActionBlock,
+	},
+	// SDK-local write call enforcement.
+	{
+		Phase: sdk.VFSHookPhaseBefore,
+		Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
+		Path:  "/workspace/blocked-write.txt",
+		ActionHook: func(ctx context.Context, req sdk.VFSActionRequest) sdk.VFSHookAction {
+			return sdk.VFSHookActionBlock
+		},
+	},
+}
+```
+
 ## Go SDK
 
 Use typed constants for phases and ops:
@@ -24,9 +64,7 @@ sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConf
 			Phase:  sdk.VFSHookPhaseBefore,
 			Ops:    []sdk.VFSHookOp{sdk.VFSHookOpCreate},
 			Path:   "/workspace/blocked.txt",
-			ActionHook: func(ctx context.Context, req sdk.VFSActionRequest) sdk.VFSHookAction {
-				return sdk.VFSHookActionBlock
-			},
+			Action: sdk.VFSHookActionBlock,
 		},
 		{
 			Phase: sdk.VFSHookPhaseBefore,
@@ -49,7 +87,7 @@ sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConf
 		{
 			Phase: sdk.VFSHookPhaseAfter,
 			Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
-			Path:  "/workspace/*",
+			Path:  "/workspace/trigger.txt",
 			DangerousHook: func(ctx context.Context, client *sdk.Client, event sdk.VFSHookEvent) error {
 				_, err := client.Exec(ctx, "echo hook >> /workspace/hook.log")
 				return err
@@ -72,7 +110,6 @@ from matchlock import (
     Sandbox,
     VFSInterceptionConfig,
     VFSHookRule,
-    VFSActionRequest,
     VFSMutateRequest,
     VFS_HOOK_ACTION_BLOCK,
     VFS_HOOK_PHASE_BEFORE,
@@ -93,9 +130,6 @@ def dangerous_after_write(client, event):
 def mutate_write(req: VFSMutateRequest) -> bytes:
     return b"mutated-by-hook"
 
-def block_create(req: VFSActionRequest) -> str:
-    return VFS_HOOK_ACTION_BLOCK
-
 sandbox = Sandbox("alpine:latest").with_vfs_interception(
     VFSInterceptionConfig(
         rules=[
@@ -103,7 +137,7 @@ sandbox = Sandbox("alpine:latest").with_vfs_interception(
                 phase=VFS_HOOK_PHASE_BEFORE,
                 ops=[VFS_HOOK_OP_CREATE],
                 path="/workspace/blocked.txt",
-                action_hook=block_create,
+                action=VFS_HOOK_ACTION_BLOCK,
             ),
             VFSHookRule(
                 phase=VFS_HOOK_PHASE_BEFORE,
@@ -120,7 +154,7 @@ sandbox = Sandbox("alpine:latest").with_vfs_interception(
             VFSHookRule(
                 phase=VFS_HOOK_PHASE_AFTER,
                 ops=[VFS_HOOK_OP_WRITE],
-                path="/workspace/*",
+                path="/workspace/trigger.txt",
                 dangerous_hook=dangerous_after_write,
             ),
         ],

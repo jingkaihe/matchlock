@@ -46,10 +46,17 @@ func run() error {
 	sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
 		Rules: []sdk.VFSHookRule{
 			{
-				Name:  "block-create",
+				Name:   "host-block-create",
+				Phase:  sdk.VFSHookPhaseBefore,
+				Ops:    []sdk.VFSHookOp{sdk.VFSHookOpCreate},
+				Path:   "/workspace/blocked-create.txt",
+				Action: sdk.VFSHookActionBlock,
+			},
+			{
+				Name:  "sdk-block-write",
 				Phase: sdk.VFSHookPhaseBefore,
-				Ops:   []sdk.VFSHookOp{sdk.VFSHookOpCreate},
-				Path:  "/workspace/blocked.txt",
+				Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
+				Path:  "/workspace/blocked-write.txt",
 				ActionHook: func(ctx context.Context, req sdk.VFSActionRequest) sdk.VFSHookAction {
 					return sdk.VFSHookActionBlock
 				},
@@ -71,7 +78,7 @@ func run() error {
 				Name:      "audit-after-write",
 				Phase:     sdk.VFSHookPhaseAfter,
 				Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
-				Path:      "/workspace/*",
+				Path:      "/workspace/trigger.txt",
 				TimeoutMS: 2000,
 				DangerousHook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
 					line := fmt.Sprintf(
@@ -93,12 +100,18 @@ func run() error {
 	slog.Info("sandbox ready", "vm", vmID)
 
 	ctx := context.Background()
-	_, _ = client.Exec(ctx, "rm -f /tmp/hook_runs /workspace/hook.log /workspace/blocked.txt /workspace/mutated.txt /workspace/trigger.txt")
+	_, _ = client.Exec(ctx, "rm -f /tmp/hook_runs /workspace/hook.log /workspace/blocked-create.txt /workspace/blocked-write.txt /workspace/mutated.txt /workspace/trigger.txt")
 
-	if err := client.WriteFile(ctx, "/workspace/blocked.txt", []byte("blocked")); err != nil {
-		fmt.Printf("blocked write rejected as expected: %v\n", err)
+	if err := client.WriteFile(ctx, "/workspace/blocked-create.txt", []byte("blocked")); err != nil {
+		fmt.Printf("host create block rejected as expected: %v\n", err)
 	} else {
-		fmt.Println("blocked write unexpectedly succeeded")
+		fmt.Println("host create block unexpectedly succeeded")
+	}
+
+	if err := client.WriteFile(ctx, "/workspace/blocked-write.txt", []byte("blocked")); err != nil {
+		fmt.Printf("local write block rejected as expected: %v\n", err)
+	} else {
+		fmt.Println("local write block unexpectedly succeeded")
 	}
 
 	if err := client.WriteFileMode(ctx, "/workspace/mutated.txt", []byte("original-content"), 0640); err != nil {
