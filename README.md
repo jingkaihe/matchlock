@@ -102,9 +102,6 @@ func main() {
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
        "messages":[{"role":"user","content":"Explain TCP to me"}]}'`
 	client.ExecStream(curlCmd, os.Stdout, os.Stderr)
-
-	// Start local port forwarding via RPC owner process
-	client.PortForward(context.Background(), "8080:8080")
 }
 ```
 

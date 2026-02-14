@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+* Added port forward support with `matchlock run -p LOCAL_PORT:REMOTE_PORT ...`
+
 ## 0.1.19
 
 * Added support for vfs interception [#7](https://github.com/jingkaihe/matchlock/issues/7) 
