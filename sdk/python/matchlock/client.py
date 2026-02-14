@@ -328,7 +328,9 @@ class Client:
             )
             t.start()
 
-    def _run_vfs_hook(self, hook: _LocalVFSHook, event: VFSHookEvent, max_depth: int) -> None:
+    def _run_vfs_hook(
+        self, hook: _LocalVFSHook, event: VFSHookEvent, max_depth: int
+    ) -> None:
         with self._vfs_hook_lock:
             self._vfs_hook_depth += 1
             depth = self._vfs_hook_depth
@@ -345,7 +347,9 @@ class Client:
             with self._vfs_hook_lock:
                 self._vfs_hook_depth -= 1
 
-    def _apply_local_write_mutations(self, path: str, content: bytes, mode: int) -> bytes:
+    def _apply_local_write_mutations(
+        self, path: str, content: bytes, mode: int
+    ) -> bytes:
         with self._vfs_hook_lock:
             hooks = list(self._vfs_mutate_hooks)
 
@@ -364,7 +368,9 @@ class Client:
             if hook.path and not fnmatch.fnmatch(path, hook.path):
                 continue
 
-            request = VFSMutateRequest(path=path, size=len(current), mode=mode, uid=uid, gid=gid)
+            request = VFSMutateRequest(
+                path=path, size=len(current), mode=mode, uid=uid, gid=gid
+            )
             mutated = hook.hook(request)
             if mutated is None:
                 continue
@@ -379,7 +385,9 @@ class Client:
 
         return current
 
-    def _apply_local_action_hooks(self, op: str, path: str, size: int, mode: int) -> None:
+    def _apply_local_action_hooks(
+        self, op: str, path: str, size: int, mode: int
+    ) -> None:
         with self._vfs_hook_lock:
             hooks = list(self._vfs_action_hooks)
 
@@ -456,7 +464,11 @@ class Client:
                     f"invalid vfs hook {rule.name!r}: cannot set more than one callback hook"
                 )
 
-            if rule.hook is None and rule.mutate_hook is None and rule.action_hook is None:
+            if (
+                rule.hook is None
+                and rule.mutate_hook is None
+                and rule.action_hook is None
+            ):
                 action = (rule.action or "").strip().lower()
                 if action == "mutate_write":
                     raise MatchlockError(
@@ -522,6 +534,7 @@ class Client:
                 raise MatchlockError(
                     f"invalid vfs hook {rule.name!r}: mutate_hook must use phase=before"
                 )
+            assert rule.mutate_hook is not None
             ops = {op.lower() for op in rule.ops if op}
             local_mutate.append(
                 _LocalVFSMutateHook(
@@ -534,9 +547,10 @@ class Client:
 
         if local:
             wire.emit_events = True
+        wire_out: VFSInterceptionConfig | None = wire
         if not wire.rules and not wire.emit_events:
-            wire = None
-        return wire, local, local_mutate, local_action, max_depth
+            wire_out = None
+        return wire_out, local, local_mutate, local_action, max_depth
 
     # ── RPC transport ────────────────────────────────────────────────
 
@@ -629,9 +643,13 @@ class Client:
         if not opts.image:
             raise MatchlockError("image is required (e.g., alpine:latest)")
 
-        wire_vfs, local_hooks, local_mutate_hooks, local_action_hooks, hook_max_depth = (
-            self._compile_vfs_hooks(opts.vfs_interception)
-        )
+        (
+            wire_vfs,
+            local_hooks,
+            local_mutate_hooks,
+            local_action_hooks,
+            hook_max_depth,
+        ) = self._compile_vfs_hooks(opts.vfs_interception)
         self._set_local_vfs_hooks([], [], [], 1)
 
         params: dict[str, Any] = {"image": opts.image}

@@ -6,6 +6,7 @@
 go = "1.25"
 golangci-lint = "latest"
 gh = "latest"
+uv = "latest"
 "go:github.com/google/go-containerregistry/cmd/crane" = "latest"
 
 [env]
@@ -139,8 +140,62 @@ description = "Run go mod tidy"
 run = "go mod tidy"
 
 [tasks.check]
-description = "Run all checks (fmt, vet, lint, test)"
-depends = ["fmt", "vet", "lint", "test", "check:errx"]
+description = "Run all checks (Go + Python SDK)"
+depends = ["fmt", "vet", "lint", "test", "check:errx", "check:python-sdk"]
+
+# =============================================================================
+# Python SDK tasks
+# =============================================================================
+
+[tasks."python-sdk:test:3.10"]
+description = "Run Python SDK tests on Python 3.10"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd sdk/python
+uv python install 3.10
+UV_PROJECT_ENVIRONMENT=".venv-py310" uv run --python 3.10 --with pytest pytest tests/ -v
+"""
+
+[tasks."python-sdk:test:3.11"]
+description = "Run Python SDK tests on Python 3.11"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd sdk/python
+uv python install 3.11
+UV_PROJECT_ENVIRONMENT=".venv-py311" uv run --python 3.11 --with pytest pytest tests/ -v
+"""
+
+[tasks."python-sdk:test:3.12"]
+description = "Run Python SDK tests on Python 3.12"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd sdk/python
+uv python install 3.12
+UV_PROJECT_ENVIRONMENT=".venv-py312" uv run --python 3.12 --with pytest pytest tests/ -v
+"""
+
+[tasks."python-sdk:test"]
+description = "Run Python SDK tests on supported CI Python versions"
+depends = ["python-sdk:test:3.10", "python-sdk:test:3.11", "python-sdk:test:3.12"]
+
+[tasks."python-sdk:lint"]
+description = "Run Python SDK type and lint checks"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+cd sdk/python
+uv python install 3.12
+UV_PROJECT_ENVIRONMENT=".venv-lint" uv run --python 3.12 --with mypy mypy matchlock/ --ignore-missing-imports
+UV_PROJECT_ENVIRONMENT=".venv-lint" uv run --python 3.12 --with ruff ruff check matchlock/
+UV_PROJECT_ENVIRONMENT=".venv-lint" uv run --python 3.12 --with ruff ruff format --check matchlock/
+"""
+
+[tasks."check:python-sdk"]
+description = "Run Python SDK checks (tests + lint)"
+depends = ["python-sdk:test", "python-sdk:lint"]
 
 # =============================================================================
 # Kernel tasks

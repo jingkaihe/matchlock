@@ -96,7 +96,7 @@ class VFSHookRule:
     path: str = ""
     """filepath-style glob pattern (empty = all)."""
 
-    action: VFSHookAction = VFS_HOOK_ACTION_ALLOW
+    action: VFSHookAction = "allow"
     """Wire action: allow or block."""
 
     timeout_ms: int = 0
