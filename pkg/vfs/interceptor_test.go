@@ -54,6 +54,27 @@ func TestInterceptProvider_BeforeActionFuncBlock(t *testing.T) {
 	assert.True(t, os.IsPermission(err))
 }
 
+func TestInterceptProvider_OpenWithCreateFlagsUsesCreateHook(t *testing.T) {
+	hooks := NewHookEngine([]HookRule{
+		{
+			Phase:       HookPhaseBefore,
+			Ops:         []HookOp{HookOpCreate},
+			PathPattern: "/blocked-open-create.txt",
+			ActionFunc: func(ctx context.Context, req HookRequest) HookAction {
+				assert.Equal(t, HookOpCreate, req.Op)
+				return HookActionBlock
+			},
+		},
+	}, 1)
+	defer hooks.Close()
+
+	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
+
+	_, err := provider.Open("/blocked-open-create.txt", os.O_CREATE|os.O_RDWR, 0644)
+	require.Error(t, err)
+	assert.True(t, os.IsPermission(err))
+}
+
 func TestInterceptProvider_BeforeMutateWrite(t *testing.T) {
 	hooks := NewHookEngine([]HookRule{
 		{

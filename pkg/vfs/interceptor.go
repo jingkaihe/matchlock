@@ -68,7 +68,11 @@ func (p *interceptProvider) ReadDir(path string) ([]DirEntry, error) {
 }
 
 func (p *interceptProvider) Open(path string, flags int, mode os.FileMode) (Handle, error) {
-	req := p.baseRequest(HookOpOpen, path)
+	op := HookOpOpen
+	if flags&os.O_CREATE != 0 {
+		op = HookOpCreate
+	}
+	req := p.baseRequest(op, path)
 	req.Flags = flags
 	req.Mode = mode
 	if err := p.hooks.Before(&req); err != nil {
