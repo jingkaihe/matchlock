@@ -1,5 +1,7 @@
 package sdk
 
+import "github.com/jingkaihe/matchlock/pkg/api"
+
 // SandboxBuilder provides a fluent API for configuring and creating sandboxes.
 //
 // Usage:
@@ -112,6 +114,21 @@ func (b *SandboxBuilder) AddSecret(name, value string, hosts ...string) *Sandbox
 // WithDNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4).
 func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	b.opts.DNSServers = append(b.opts.DNSServers, servers...)
+	return b
+}
+
+// WithPortForward adds a host-to-guest port mapping.
+func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuilder {
+	b.opts.PortForwards = append(b.opts.PortForwards, api.PortForward{
+		LocalPort:  localPort,
+		RemotePort: remotePort,
+	})
+	return b
+}
+
+// WithPortForwardAddresses sets host bind addresses for configured mappings.
+func (b *SandboxBuilder) WithPortForwardAddresses(addresses ...string) *SandboxBuilder {
+	b.opts.PortForwardAddresses = append(b.opts.PortForwardAddresses, addresses...)
 	return b
 }
 

@@ -11,6 +11,7 @@ var (
 	ErrRelayUnexpected = errors.New("unexpected message type")
 	ErrRelayDecode     = errors.New("decode exec result")
 	ErrRelayListen     = errors.New("listen on relay socket")
+	ErrRelayProxy      = errors.New("relay port-forward proxy")
 
 	// Rootfs errors
 	ErrGuestAgent   = errors.New("guest-agent not found")
@@ -47,6 +48,11 @@ var (
 	ErrProxyClose      = errors.New("proxy close")
 	ErrLifecycleInit   = errors.New("initialize lifecycle record")
 	ErrLifecycleUpdate = errors.New("update lifecycle record")
+	ErrPortForwardDial = errors.New("dial guest port-forward service")
+	ErrPortForwardInit = errors.New("initialize guest port-forward")
+	ErrPortForwardBind = errors.New("bind local port-forward listener")
+	ErrPortForwardCopy = errors.New("proxy port-forward stream")
+	ErrNoVsockDialer   = errors.New("vm backend does not support vsock dial")
 
 	// copyRootfs errors (linux only)
 	ErrOpenSource = errors.New("open source")

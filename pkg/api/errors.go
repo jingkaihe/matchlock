@@ -23,4 +23,7 @@ var (
 	ErrEnvVarNotSet   = errors.New("environment variable is not set")
 	ErrReadEnvFile    = errors.New("read env file")
 	ErrEnvFileLine    = errors.New("parse env file line")
+
+	ErrPortForwardSpecFormat = errors.New("invalid port-forward spec format")
+	ErrPortForwardPort       = errors.New("invalid port")
 )

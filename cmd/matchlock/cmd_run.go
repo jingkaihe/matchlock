@@ -82,6 +82,8 @@ func init() {
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
+	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
+	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
@@ -104,6 +106,8 @@ func init() {
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
+	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
+	viper.BindPFlag("run.address", runCmd.Flags().Lookup("address"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
@@ -143,6 +147,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
+	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
+	addresses, _ := cmd.Flags().GetStringSlice("address")
 
 	// Shutdown
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
@@ -257,6 +263,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return errx.Wrap(ErrInvalidEnv, err)
 	}
 
+	portForwards, err := api.ParsePortForwards(publishSpecs)
+	if err != nil {
+		return errx.Wrap(ErrInvalidPortForward, err)
+	}
+	if len(portForwards) > 0 {
+		addresses, err = normalizePortForwardAddresses(addresses)
+		if err != nil {
+			return errx.Wrap(ErrInvalidPortForwardAddr, err)
+		}
+	}
+
 	config := &api.Config{
 		Image:      imageName,
 		Privileged: privileged,
@@ -326,6 +343,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errors.Join(errs...)
 		}
 		return nil
+	}
+
+	var pfManager *sandbox.PortForwardManager
+	if len(portForwards) > 0 {
+		pfManager, err = sb.StartPortForwards(ctx, addresses, portForwards)
+		if err != nil {
+			pfErr := errx.Wrap(ErrPortForwardListen, err)
+			if rm {
+				if cleanupErr := cleanupSandbox(true); cleanupErr != nil {
+					return errors.Join(pfErr, cleanupErr)
+				}
+			}
+			return pfErr
+		}
+		defer pfManager.Close()
+		for _, b := range pfManager.Bindings() {
+			fmt.Fprintf(os.Stderr, "Forwarding %s:%d -> sandbox:%d\n", b.Address, b.LocalPort, b.RemotePort)
+		}
 	}
 
 	if interactiveMode {

@@ -48,15 +48,18 @@ var (
 
 // Run errors
 var (
-	ErrBuildingRootfs = errors.New("building rootfs")
-	ErrInvalidVolume  = errors.New("invalid volume mount")
-	ErrInvalidSecret  = errors.New("invalid secret")
-	ErrInvalidEnv     = errors.New("invalid environment variable")
-	ErrCreateSandbox  = errors.New("creating sandbox")
-	ErrStartSandbox   = errors.New("starting sandbox")
-	ErrCloseSandbox   = errors.New("closing sandbox")
-	ErrRemoveSandbox  = errors.New("removing sandbox")
-	ErrExecCommand    = errors.New("executing command")
+	ErrBuildingRootfs         = errors.New("building rootfs")
+	ErrInvalidVolume          = errors.New("invalid volume mount")
+	ErrInvalidSecret          = errors.New("invalid secret")
+	ErrInvalidEnv             = errors.New("invalid environment variable")
+	ErrInvalidPortForward     = errors.New("invalid port-forward specification")
+	ErrInvalidPortForwardAddr = errors.New("invalid port-forward bind address")
+	ErrPortForwardListen      = errors.New("start port-forward listener")
+	ErrCreateSandbox          = errors.New("creating sandbox")
+	ErrStartSandbox           = errors.New("starting sandbox")
+	ErrCloseSandbox           = errors.New("closing sandbox")
+	ErrRemoveSandbox          = errors.New("removing sandbox")
+	ErrExecCommand            = errors.New("executing command")
 )
 
 // Setup errors (Linux)

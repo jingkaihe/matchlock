@@ -11,7 +11,7 @@ Each rule has:
 
 Behavior by phase:
 - `before`: supports wire `action=block`, SDK `action_hook` callbacks, and SDK `mutate_hook` callbacks
-- `after`: supports SDK `hook` callbacks
+- `after`: supports SDK `hook` and `dangerous_hook` callbacks
 
 ## Host Rules vs SDK-Local Hooks
 
@@ -170,7 +170,7 @@ See full runnable examples:
 
 - `hook` callbacks are `after`-only and run with recursion suppression enabled.
 - `dangerous_hook` callbacks are `after`-only and bypass recursion suppression.
-- When SDK callbacks are present, event emission is enabled automatically for interception.
+- When SDK after-event callbacks (`hook`/`dangerous_hook`) are present, event emission is enabled automatically for interception.
 
 ## Host-Side Dynamic Mutate (Go, In-Process)
 

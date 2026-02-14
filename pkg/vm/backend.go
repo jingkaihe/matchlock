@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"io"
+	"net"
 	"strings"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -60,6 +61,12 @@ type Machine interface {
 type InteractiveMachine interface {
 	Machine
 	ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
+}
+
+// VsockDialer is implemented by backends that can establish host-initiated
+// vsock connections to guest service ports.
+type VsockDialer interface {
+	DialVsock(port uint32) (net.Conn, error)
 }
 
 // KernelIPDNSSuffix returns the DNS portion of the kernel ip= parameter.

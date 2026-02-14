@@ -220,6 +220,12 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// PortForwards maps local host ports to remote sandbox ports.
+	// These are applied after VM creation via the port_forward RPC.
+	PortForwards []api.PortForward
+	// PortForwardAddresses controls host bind addresses used when applying
+	// PortForwards (default: 127.0.0.1).
+	PortForwardAddresses []string
 	// ImageConfig holds OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)
 	ImageConfig *ImageConfig
 }
@@ -473,6 +479,12 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 
 	c.vmID = createResult.ID
 	c.setVFSHooks(localHooks, localMutateHooks, localActionHooks)
+
+	if len(opts.PortForwards) > 0 {
+		if _, err := c.portForwardMappings(context.Background(), opts.PortForwardAddresses, opts.PortForwards); err != nil {
+			return "", err
+		}
+	}
 	return c.vmID, nil
 }
 
@@ -827,6 +839,50 @@ func (c *Client) applyLocalWriteMutations(ctx context.Context, path string, cont
 	}
 
 	return current, nil
+}
+
+// PortForward applies one or more [LOCAL_PORT:]REMOTE_PORT mappings with the
+// default bind address (127.0.0.1).
+func (c *Client) PortForward(ctx context.Context, specs ...string) ([]api.PortForwardBinding, error) {
+	return c.PortForwardWithAddresses(ctx, nil, specs...)
+}
+
+// PortForwardWithAddresses applies one or more [LOCAL_PORT:]REMOTE_PORT
+// mappings bound on the provided host addresses.
+func (c *Client) PortForwardWithAddresses(ctx context.Context, addresses []string, specs ...string) ([]api.PortForwardBinding, error) {
+	forwards, err := api.ParsePortForwards(specs)
+	if err != nil {
+		return nil, errx.Wrap(ErrParsePortForwards, err)
+	}
+	return c.portForwardMappings(ctx, addresses, forwards)
+}
+
+func (c *Client) portForwardMappings(ctx context.Context, addresses []string, forwards []api.PortForward) ([]api.PortForwardBinding, error) {
+	if len(forwards) == 0 {
+		return nil, nil
+	}
+
+	if len(addresses) == 0 {
+		addresses = []string{"127.0.0.1"}
+	}
+	addrCopy := append([]string(nil), addresses...)
+
+	params := map[string]interface{}{
+		"forwards":  forwards,
+		"addresses": addrCopy,
+	}
+	result, err := c.sendRequestCtx(ctx, "port_forward", params, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed struct {
+		Bindings []api.PortForwardBinding `json:"bindings"`
+	}
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		return nil, errx.Wrap(ErrParsePortBindings, err)
+	}
+	return parsed.Bindings, nil
 }
 
 // ExecResult holds the result of command execution

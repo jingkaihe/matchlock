@@ -24,4 +24,9 @@ var (
 	ErrWriteRequest       = errors.New("write request")
 	ErrReadResponseHeader = errors.New("read response header")
 	ErrReadResponseData   = errors.New("read response data")
+
+	ErrEncodePortForwardRequest = errors.New("encode port-forward request")
+	ErrReadPortForwardResponse  = errors.New("read port-forward response")
+	ErrPortForwardRejected      = errors.New("port-forward rejected")
+	ErrUnexpectedPortForwardMsg = errors.New("unexpected port-forward response message")
 )

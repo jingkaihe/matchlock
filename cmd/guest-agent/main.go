@@ -11,9 +11,12 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -33,18 +36,19 @@ const (
 	VsockPortVFS   = 5001
 	VsockPortReady = 5002
 
-	MsgTypeExec       uint8 = 1
-	MsgTypeExecResult uint8 = 2
-	MsgTypeStdout     uint8 = 3
-	MsgTypeStderr     uint8 = 4
-	MsgTypeSignal     uint8 = 5
-	MsgTypeReady      uint8 = 6
-	MsgTypeStdin      uint8 = 7
-	MsgTypeResize     uint8 = 8
-	MsgTypeExecTTY    uint8 = 9
-	MsgTypeExit       uint8 = 10
-	MsgTypeExecStream uint8 = 11
-	MsgTypeExecPipe   uint8 = 12
+	MsgTypeExec        uint8 = 1
+	MsgTypeExecResult  uint8 = 2
+	MsgTypeStdout      uint8 = 3
+	MsgTypeStderr      uint8 = 4
+	MsgTypeSignal      uint8 = 5
+	MsgTypeReady       uint8 = 6
+	MsgTypeStdin       uint8 = 7
+	MsgTypeResize      uint8 = 8
+	MsgTypeExecTTY     uint8 = 9
+	MsgTypeExit        uint8 = 10
+	MsgTypeExecStream  uint8 = 11
+	MsgTypeExecPipe    uint8 = 12
+	MsgTypePortForward uint8 = 13
 )
 
 type sockaddrVM struct {
@@ -79,6 +83,11 @@ type ExecResponse struct {
 	Stdout   []byte `json:"stdout"`
 	Stderr   []byte `json:"stderr"`
 	Error    string `json:"error"`
+}
+
+type PortForwardRequest struct {
+	Host string `json:"host,omitempty"`
+	Port uint16 `json:"port"`
 }
 
 func main() {
@@ -208,10 +217,91 @@ func handleExec(fd int) {
 		syscall.Close(fd)
 	case MsgTypeExecPipe:
 		handleExecPipe(fd, data)
+	case MsgTypePortForward:
+		handlePortForward(fd, data)
 	case MsgTypeExecTTY:
 		handleExecTTY(fd, data)
 	default:
 		syscall.Close(fd)
+	}
+}
+
+func handlePortForward(fd int, data []byte) {
+	var req PortForwardRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("invalid port-forward request: %v", err)))
+		syscall.Close(fd)
+		return
+	}
+
+	host := req.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if req.Port == 0 {
+		sendMessage(fd, MsgTypeStderr, []byte("invalid remote port 0"))
+		syscall.Close(fd)
+		return
+	}
+
+	target, err := net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(int(req.Port))))
+	if err != nil {
+		sendMessage(fd, MsgTypeStderr, []byte(fmt.Sprintf("connect %s:%d failed: %v", host, req.Port, err)))
+		syscall.Close(fd)
+		return
+	}
+	defer target.Close()
+
+	sendMessage(fd, MsgTypeReady, nil)
+
+	done := make(chan struct{}, 2)
+	go func() {
+		copyFDToConn(fd, target)
+		if cw, ok := target.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		copyConnToFD(target, fd)
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+	syscall.Close(fd)
+}
+
+func copyFDToConn(fd int, dst net.Conn) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := syscall.Read(fd, buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				return
+			}
+		}
+		if err != nil || n == 0 {
+			return
+		}
+	}
+}
+
+func copyConnToFD(src net.Conn, fd int) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := syscall.Write(fd, buf[:n]); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				return
+			}
+			return
+		}
 	}
 }
 

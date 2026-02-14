@@ -248,6 +248,11 @@ func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
 	return conn, nil
 }
 
+// DialVsock opens a host-initiated vsock stream to a guest service port.
+func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
+	return m.dialVsock(port)
+}
+
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {

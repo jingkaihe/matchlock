@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,6 +114,20 @@ func TestBuilderDNSServersChained(t *testing.T) {
 func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	opts := New("alpine:latest").Options()
 	require.Empty(t, opts.DNSServers)
+}
+
+func TestBuilderPortForwards(t *testing.T) {
+	opts := New("alpine:latest").
+		WithPortForward(18080, 8080).
+		WithPortForward(18443, 8443).
+		WithPortForwardAddresses("127.0.0.1", "0.0.0.0").
+		Options()
+
+	require.Equal(t, []api.PortForward{
+		{LocalPort: 18080, RemotePort: 8080},
+		{LocalPort: 18443, RemotePort: 8443},
+	}, opts.PortForwards)
+	require.Equal(t, []string{"127.0.0.1", "0.0.0.0"}, opts.PortForwardAddresses)
 }
 
 func TestBuilderMounts(t *testing.T) {

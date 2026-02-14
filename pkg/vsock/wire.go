@@ -52,6 +52,46 @@ func SendMessage(conn net.Conn, msgType uint8, data []byte) error {
 	return nil
 }
 
+// OpenPortForward sends a port-forward request on an already-connected guest-agent
+// vsock stream and waits for an ACK before switching to raw proxy mode.
+func OpenPortForward(conn net.Conn, host string, port uint16) error {
+	req := PortForwardRequest{
+		Host: host,
+		Port: port,
+	}
+
+	reqData, err := json.Marshal(req)
+	if err != nil {
+		return errx.Wrap(ErrEncodePortForwardRequest, err)
+	}
+
+	if err := SendMessage(conn, MsgTypePortForward, reqData); err != nil {
+		return err
+	}
+
+	header := make([]byte, 5)
+	if _, err := ReadFull(conn, header); err != nil {
+		return errx.Wrap(ErrReadPortForwardResponse, err)
+	}
+	msgType := header[0]
+	length := binary.BigEndian.Uint32(header[1:])
+
+	data := make([]byte, length)
+	if length > 0 {
+		if _, err := ReadFull(conn, data); err != nil {
+			return errx.Wrap(ErrReadPortForwardResponse, err)
+		}
+	}
+
+	if msgType == MsgTypeReady {
+		return nil
+	}
+	if msgType == MsgTypeStderr {
+		return errx.With(ErrPortForwardRejected, ": %s", string(data))
+	}
+	return errx.With(ErrUnexpectedPortForwardMsg, ": type=%d", msgType)
+}
+
 // ExecPipe executes a command over a vsock connection with bidirectional
 // stdin/stdout/stderr piping (no PTY). The caller must supply an already-dialed
 // conn; ExecPipe takes ownership and closes it when done.

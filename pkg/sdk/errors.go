@@ -24,6 +24,8 @@ var (
 	ErrParseCreateResult = errors.New("parse create result")
 	ErrInvalidVFSHook    = errors.New("invalid vfs hook")
 	ErrVFSHookBlocked    = errors.New("vfs hook blocked operation")
+	ErrParsePortForwards = errors.New("parse port-forward spec")
+	ErrParsePortBindings = errors.New("parse port-forward result")
 )
 
 // Exec errors

@@ -43,6 +43,10 @@ matchlock run --image python:3.12-alpine \
 # Long-lived sandboxes
 matchlock run --image alpine:latest --rm=false   # prints VM ID
 matchlock exec vm-abc12345 -it sh                # attach to it
+matchlock port-forward vm-abc12345 8080:8080     # forward host:8080 -> guest:8080
+
+# Publish ports at startup
+matchlock run --image alpine:latest --rm=false -p 8080:8080
 
 # Lifecycle
 matchlock list | kill | rm | prune
@@ -69,6 +73,7 @@ Matchlock also ships with Go and Python SDKs for embedding sandboxes directly in
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -97,6 +102,9 @@ func main() {
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
        "messages":[{"role":"user","content":"Explain TCP to me"}]}'`
 	client.ExecStream(curlCmd, os.Stdout, os.Stderr)
+
+	// Start local port forwarding via RPC owner process
+	client.PortForward(context.Background(), "8080:8080")
 }
 ```
 

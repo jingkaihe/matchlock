@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +25,7 @@ const (
 	relayMsgStdin           uint8 = 6
 	relayMsgExit            uint8 = 7
 	relayMsgExecPipe        uint8 = 8
+	relayMsgPortForward     uint8 = 9
 )
 
 type relayExecRequest struct {
@@ -38,6 +40,10 @@ type relayExecInteractiveRequest struct {
 	User       string `json:"user,omitempty"`
 	Rows       uint16 `json:"rows"`
 	Cols       uint16 `json:"cols"`
+}
+
+type relayPortForwardRequest struct {
+	RemotePort int `json:"remote_port"`
 }
 
 type relayExecResult struct {
@@ -111,6 +117,8 @@ func (r *ExecRelay) handleConn(conn net.Conn) {
 		r.handleExecInteractive(conn, data)
 	case relayMsgExecPipe:
 		r.handleExecPipe(conn, data)
+	case relayMsgPortForward:
+		r.handlePortForward(conn, data)
 	}
 }
 
@@ -259,9 +267,65 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 		exitCode = result.ExitCode
 	}
 
-	exitData := make([]byte, 4)
-	binary.BigEndian.PutUint32(exitData, uint32(exitCode))
-	sendRelayMsg(conn, relayMsgExit, exitData)
+	sendRelayExit(conn, exitCode)
+}
+
+func (r *ExecRelay) handlePortForward(conn net.Conn, data []byte) {
+	var req relayPortForwardRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		_ = sendRelayMsg(conn, relayMsgStderr, []byte(err.Error()))
+		sendRelayExit(conn, 1)
+		return
+	}
+
+	guestConn, err := r.sb.openGuestPort(req.RemotePort)
+	if err != nil {
+		_ = sendRelayMsg(conn, relayMsgStderr, []byte(err.Error()))
+		sendRelayExit(conn, 1)
+		return
+	}
+	defer guestConn.Close()
+
+	go func() {
+		for {
+			msgType, msgData, err := readRelayMsg(conn)
+			if err != nil {
+				_ = guestConn.Close()
+				return
+			}
+			if msgType != relayMsgStdin {
+				continue
+			}
+			if len(msgData) == 0 {
+				if cw, ok := guestConn.(interface{ CloseWrite() error }); ok {
+					_ = cw.CloseWrite()
+				}
+				return
+			}
+			if _, err := guestConn.Write(msgData); err != nil {
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := guestConn.Read(buf)
+		if n > 0 {
+			if err := sendRelayMsg(conn, relayMsgStdout, buf[:n]); err != nil {
+				return
+			}
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, net.ErrClosed) {
+				_ = sendRelayMsg(conn, relayMsgStderr, []byte(readErr.Error()))
+				sendRelayExit(conn, 1)
+				return
+			}
+			sendRelayExit(conn, 0)
+			return
+		}
+	}
 }
 
 // relayWriter forwards writes to the relay connection as messages.
@@ -316,6 +380,12 @@ func sendRelayMsg(conn net.Conn, msgType uint8, data []byte) error {
 func sendRelayResult(conn net.Conn, result *relayExecResult) {
 	data, _ := json.Marshal(result)
 	sendRelayMsg(conn, relayMsgExecResult, data)
+}
+
+func sendRelayExit(conn net.Conn, code int) {
+	exitData := make([]byte, 4)
+	binary.BigEndian.PutUint32(exitData, uint32(code))
+	sendRelayMsg(conn, relayMsgExit, exitData)
 }
 
 // ExecViaRelay connects to an exec relay socket and runs a command.

@@ -31,6 +31,15 @@ const (
 	IOCTL_VM_SOCKETS_GET_LOCAL_CID = 0x7B9
 )
 
+const (
+	// ServicePortExec is the guest-agent exec and stream service port.
+	ServicePortExec = 5000
+	// ServicePortVFS is the guest VFS service port.
+	ServicePortVFS = 5001
+	// ServicePortReady is the guest ready-check service port.
+	ServicePortReady = 5002
+)
+
 // sockaddrVM is the sockaddr_vm structure for vsock
 type sockaddrVM struct {
 	Family    uint16
@@ -218,18 +227,19 @@ func GetLocalCID() (uint32, error) {
 
 // Protocol for command execution over vsock
 const (
-	MsgTypeExec       uint8 = 1
-	MsgTypeExecResult uint8 = 2
-	MsgTypeStdout     uint8 = 3
-	MsgTypeStderr     uint8 = 4
-	MsgTypeSignal     uint8 = 5
-	MsgTypeReady      uint8 = 6
-	MsgTypeStdin      uint8 = 7  // TTY: stdin data from host
-	MsgTypeResize     uint8 = 8  // TTY: window resize
-	MsgTypeExecTTY    uint8 = 9  // TTY: exec with PTY
-	MsgTypeExit       uint8 = 10 // TTY: process exited
-	MsgTypeExecStream uint8 = 11 // Streaming batch: stdout/stderr sent as chunks, then ExecResult
-	MsgTypeExecPipe   uint8 = 12 // Pipe mode: like ExecStream but also accepts MsgTypeStdin, sends MsgTypeExit
+	MsgTypeExec        uint8 = 1
+	MsgTypeExecResult  uint8 = 2
+	MsgTypeStdout      uint8 = 3
+	MsgTypeStderr      uint8 = 4
+	MsgTypeSignal      uint8 = 5
+	MsgTypeReady       uint8 = 6
+	MsgTypeStdin       uint8 = 7  // TTY: stdin data from host
+	MsgTypeResize      uint8 = 8  // TTY: window resize
+	MsgTypeExecTTY     uint8 = 9  // TTY: exec with PTY
+	MsgTypeExit        uint8 = 10 // TTY: process exited
+	MsgTypeExecStream  uint8 = 11 // Streaming batch: stdout/stderr sent as chunks, then ExecResult
+	MsgTypeExecPipe    uint8 = 12 // Pipe mode: like ExecStream but also accepts MsgTypeStdin, sends MsgTypeExit
+	MsgTypePortForward uint8 = 13 // Request guest-agent to proxy raw TCP to an in-guest address
 )
 
 // ExecRequest is sent from host to guest to execute a command
@@ -251,6 +261,13 @@ type ExecTTYRequest struct {
 	Rows       uint16            `json:"rows"`
 	Cols       uint16            `json:"cols"`
 	User       string            `json:"user,omitempty"` // "uid", "uid:gid", or username
+}
+
+// PortForwardRequest asks the guest agent to dial a TCP destination in guest
+// network namespace and then switch the vsock stream into raw proxy mode.
+type PortForwardRequest struct {
+	Host string `json:"host,omitempty"`
+	Port uint16 `json:"port"`
 }
 
 // WindowSize represents terminal dimensions

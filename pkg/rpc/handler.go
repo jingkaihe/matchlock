@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
@@ -62,9 +63,14 @@ type VM interface {
 
 type VMFactory func(ctx context.Context, config *api.Config) (VM, error)
 
+type portForwardVM interface {
+	StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error)
+}
+
 type Handler struct {
 	factory   VMFactory
 	vm        VM
+	pfManager *sandbox.PortForwardManager
 	vmMu      sync.RWMutex // protects vm field
 	events    chan api.Event
 	stdin     io.Reader
@@ -146,7 +152,15 @@ func (h *Handler) Run(ctx context.Context) error {
 				}()
 			}
 
-			resp := h.handleRequest(reqCtx, &r)
+			handleCtx := reqCtx
+			if r.Method == "port_forward" {
+				// Port-forward listeners should outlive the request lifetime.
+				// They are explicitly closed by a subsequent port_forward call
+				// or during close.
+				handleCtx = ctx
+			}
+
+			resp := h.handleRequest(handleCtx, &r)
 			if resp != nil {
 				h.sendResponse(resp)
 			}
@@ -171,6 +185,8 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleReadFile(ctx, req)
 	case "list_files":
 		return h.handleListFiles(ctx, req)
+	case "port_forward":
+		return h.handlePortForward(ctx, req)
 	case "close":
 		return h.handleClose(ctx, req)
 	default:
@@ -239,6 +255,10 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	}
 
 	h.vmMu.Lock()
+	if h.pfManager != nil {
+		_ = h.pfManager.Close()
+		h.pfManager = nil
+	}
 	h.vm = vm
 	h.vmMu.Unlock()
 
@@ -565,7 +585,19 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.vmMu.Lock()
 	vm := h.vm
 	h.vm = nil
+	pfManager := h.pfManager
+	h.pfManager = nil
 	h.vmMu.Unlock()
+
+	if pfManager != nil {
+		if err := pfManager.Close(); err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+				ID:      req.ID,
+			}
+		}
+	}
 
 	if vm != nil {
 		if err := vm.Close(ctx); err != nil {
@@ -585,6 +617,77 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 		JSONRPC: "2.0",
 		Result:  map[string]interface{}{},
 		ID:      req.ID,
+	}
+}
+
+func (h *Handler) handlePortForward(ctx context.Context, req *Request) *Response {
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	pfvm, ok := vm.(portForwardVM)
+	if !ok {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM backend does not support port-forward"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Forwards  []api.PortForward `json:"forwards"`
+		Addresses []string          `json:"addresses,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	if len(params.Forwards) == 0 {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "forwards is required"},
+			ID:      req.ID,
+		}
+	}
+	if len(params.Addresses) == 0 {
+		params.Addresses = []string{"127.0.0.1"}
+	}
+
+	h.vmMu.Lock()
+	old := h.pfManager
+	h.pfManager = nil
+	h.vmMu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+
+	manager, err := pfvm.StartPortForwards(ctx, params.Addresses, params.Forwards)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	h.vmMu.Lock()
+	h.pfManager = manager
+	h.vmMu.Unlock()
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"bindings": manager.Bindings(),
+		},
+		ID: req.ID,
 	}
 }
 

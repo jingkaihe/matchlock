@@ -126,6 +126,7 @@ if err != nil {
 - `write_file`
 - `read_file`
 - `list_files`
+- `port_forward`
 - `cancel`
 - `close`
 

@@ -85,6 +85,11 @@ func (m *DarwinMachine) dialVsock(port uint32) (net.Conn, error) {
 	return socketDevices[0].Connect(port)
 }
 
+// DialVsock opens a host-initiated vsock stream to a guest service port.
+func (m *DarwinMachine) DialVsock(port uint32) (net.Conn, error) {
+	return m.dialVsock(port)
+}
+
 func (m *DarwinMachine) Stop(ctx context.Context) error {
 	return m.stop(ctx, false)
 }
