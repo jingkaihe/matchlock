@@ -71,6 +71,7 @@ type Handler struct {
 	factory   VMFactory
 	vm        VM
 	pfManager *sandbox.PortForwardManager
+	pfMu      sync.Mutex   // serializes port-forward manager replacement
 	vmMu      sync.RWMutex // protects vm field
 	events    chan api.Event
 	stdin     io.Reader
@@ -660,6 +661,9 @@ func (h *Handler) handlePortForward(ctx context.Context, req *Request) *Response
 	if len(params.Addresses) == 0 {
 		params.Addresses = []string{"127.0.0.1"}
 	}
+
+	h.pfMu.Lock()
+	defer h.pfMu.Unlock()
 
 	h.vmMu.Lock()
 	old := h.pfManager

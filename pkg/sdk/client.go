@@ -385,7 +385,9 @@ type compiledVFSActionHook struct {
 	callback VFSActionHookFunc
 }
 
-// Create creates and starts a new sandbox VM
+// Create creates and starts a new sandbox VM.
+// If post-create setup fails (for example, port-forward bind errors), it
+// returns the created VM ID with a non-nil error so callers can clean up.
 func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.Image == "" {
 		return "", ErrImageRequired
@@ -482,7 +484,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 
 	if len(opts.PortForwards) > 0 {
 		if _, err := c.portForwardMappings(context.Background(), opts.PortForwardAddresses, opts.PortForwards); err != nil {
-			return "", err
+			return c.vmID, err
 		}
 	}
 	return c.vmID, nil
