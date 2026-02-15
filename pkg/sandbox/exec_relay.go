@@ -297,9 +297,9 @@ func (r *ExecRelay) handlePortForward(conn net.Conn, data []byte) {
 				continue
 			}
 			if len(msgData) == 0 {
-				if cw, ok := guestConn.(interface{ CloseWrite() error }); ok {
-					_ = cw.CloseWrite()
-				}
+				// Keep the guest stream open for reading response data.
+				// Firecracker's host-side UDS transport can treat CloseWrite
+				// as a full close, which drops the reverse direction.
 				return
 			}
 			if _, err := guestConn.Write(msgData); err != nil {

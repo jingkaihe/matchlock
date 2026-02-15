@@ -167,9 +167,9 @@ func (m *PortForwardManager) proxyConn(ctx context.Context, clientConn net.Conn,
 	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(guestConn, clientConn)
-		if cw, ok := guestConn.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		}
+		// Do not propagate half-close onto guestConn. On Linux/Firecracker the
+		// host-side UDS transport does not preserve TCP half-close semantics
+		// reliably, which can cut off guest->host response data.
 		done <- struct{}{}
 	}()
 	go func() {
