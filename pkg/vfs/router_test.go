@@ -216,3 +216,57 @@ func TestMountRouter_ReadDirIncludesNestedDirMount(t *testing.T) {
 	}
 	require.True(t, found, "expected nested in /workspace listing, got %v entries", len(entries))
 }
+
+func TestMountRouter_ReadDirIncludesIntermediateMountDirs(t *testing.T) {
+	router := NewMountRouter(map[string]Provider{
+		"/workspace":                 NewMemoryProvider(),
+		"/workspace/.host/example":   NewMemoryProvider(),
+		"/workspace/.cache/nested/x": NewMemoryProvider(),
+	})
+
+	entries, err := router.ReadDir("/workspace")
+	require.NoError(t, err, "ReadDir /workspace failed")
+
+	found := map[string]bool{}
+	for _, e := range entries {
+		if e.Name() == ".host" || e.Name() == ".cache" {
+			found[e.Name()] = true
+			require.True(t, e.IsDir(), "intermediate mount dir %q should be a directory", e.Name())
+		}
+	}
+	require.True(t, found[".host"], "expected .host in /workspace listing")
+	require.True(t, found[".cache"], "expected .cache in /workspace listing")
+
+	hostEntries, err := router.ReadDir("/workspace/.host")
+	require.NoError(t, err, "ReadDir /workspace/.host failed")
+	var hostExampleFound bool
+	for _, e := range hostEntries {
+		if e.Name() == "example" {
+			hostExampleFound = true
+			require.True(t, e.IsDir(), "example should be a directory mount entry")
+		}
+	}
+	require.True(t, hostExampleFound, "expected example in /workspace/.host listing")
+
+	cacheEntries, err := router.ReadDir("/workspace/.cache")
+	require.NoError(t, err, "ReadDir /workspace/.cache failed")
+	var nestedFound bool
+	for _, e := range cacheEntries {
+		if e.Name() == "nested" {
+			nestedFound = true
+			require.True(t, e.IsDir(), "nested should be a directory mount entry")
+		}
+	}
+	require.True(t, nestedFound, "expected nested in /workspace/.cache listing")
+}
+
+func TestMountRouter_StatIntermediateMountDir(t *testing.T) {
+	router := NewMountRouter(map[string]Provider{
+		"/workspace":               NewMemoryProvider(),
+		"/workspace/.host/example": NewMemoryProvider(),
+	})
+
+	info, err := router.Stat("/workspace/.host")
+	require.NoError(t, err, "Stat /workspace/.host failed")
+	assert.True(t, info.IsDir(), "intermediate mount dir should be a directory")
+}
