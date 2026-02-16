@@ -261,6 +261,9 @@ class CreateOptions:
     block_private_ips: bool = False
     """Whether to block access to private IP ranges."""
 
+    block_private_ips_set: bool = False
+    """Whether block_private_ips was explicitly set by the caller."""
+
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
 
@@ -278,6 +281,9 @@ class CreateOptions:
 
     dns_servers: list[str] = field(default_factory=list)
     """DNS servers to use (default: 8.8.8.8, 8.8.4.4)."""
+
+    network_mtu: int = 0
+    """Network MTU override (0 = use default)."""
 
     image_config: ImageConfig | None = None
     """OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)."""

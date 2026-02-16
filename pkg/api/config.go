@@ -15,6 +15,7 @@ const (
 	DefaultMemoryMB               = 512
 	DefaultDiskSizeMB             = 5120
 	DefaultTimeoutSeconds         = 300
+	DefaultNetworkMTU             = 1500
 	DefaultGracefulShutdownPeriod = 0
 )
 
@@ -72,6 +73,7 @@ type NetworkConfig struct {
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
+	MTU             int               `json:"mtu,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.
@@ -80,6 +82,14 @@ func (n *NetworkConfig) GetDNSServers() []string {
 		return n.DNSServers
 	}
 	return DefaultDNSServers
+}
+
+// GetMTU returns the configured network MTU or the default.
+func (n *NetworkConfig) GetMTU() int {
+	if n != nil && n.MTU > 0 {
+		return n.MTU
+	}
+	return DefaultNetworkMTU
 }
 
 type Secret struct {
@@ -134,6 +144,7 @@ func DefaultConfig() *Config {
 		},
 		Network: &NetworkConfig{
 			BlockPrivateIPs: true,
+			MTU:             DefaultNetworkMTU,
 		},
 		VFS: &VFSConfig{
 			Mounts: map[string]MountConfig{

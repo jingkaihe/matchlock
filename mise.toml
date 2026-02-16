@@ -54,19 +54,17 @@ ENTITLEMENTS
   codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
 fi
 
-# Build guest binaries (auto-detect arch)
+# Build guest runtime binary (auto-detect arch)
 GOARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-fused ./cmd/guest-fused
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-init ./cmd/guest-init
 
-# Cache guest binaries on macOS
+# Cache guest runtime binary on macOS
 if [ "$(uname -s)" = "Darwin" ]; then
   mkdir -p "$OUTPUT_DIR"
-  cp bin/guest-agent "$OUTPUT_DIR/guest-agent"
-  cp bin/guest-fused "$OUTPUT_DIR/guest-fused"
+  cp bin/guest-init "$OUTPUT_DIR/guest-init"
 fi
 
-echo "Built: bin/matchlock, bin/guest-agent, bin/guest-fused ($GOARCH)"
+echo "Built: bin/matchlock, bin/guest-init ($GOARCH)"
 """
 
 [tasks.clean]
@@ -233,8 +231,7 @@ run = """
 set -e
 IMAGE=${IMAGE:-standard}
 mkdir -p $OUTPUT_DIR
-cp bin/guest-agent /tmp/guest-agent
-cp bin/guest-fused /tmp/guest-fused
+cp bin/guest-init /tmp/guest-init
 docker run --rm --privileged \
     -v /tmp:/tmp \
     -v $PWD/scripts:/scripts:ro \
@@ -337,10 +334,9 @@ run = """
 set -e
 mkdir -p bin
 for ARCH in amd64 arm64; do
-  CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath -o bin/guest-agent-linux-${ARCH} ./cmd/guest-agent
-  CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath -o bin/guest-fused-linux-${ARCH} ./cmd/guest-fused
+  CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH go build -trimpath -o bin/guest-init-linux-${ARCH} ./cmd/guest-init
 done
-echo "Built guest binaries for amd64 and arm64"
+echo "Built guest runtime binaries for amd64 and arm64"
 """
 
 # =============================================================================
@@ -358,7 +354,7 @@ echo "Creating GitHub release v$VERSION..."
 
 # Collect all release artifacts
 ARTIFACTS=()
-for f in bin/matchlock-linux-amd64 bin/matchlock-linux-arm64 bin/matchlock-darwin-* bin/guest-agent-linux-* bin/guest-fused-linux-*; do
+for f in bin/matchlock-linux-amd64 bin/matchlock-linux-arm64 bin/matchlock-darwin-* bin/guest-init-linux-*; do
   [ -f "$f" ] && ARTIFACTS+=("$f")
 done
 

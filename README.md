@@ -105,6 +105,23 @@ func main() {
 }
 ```
 
+Go SDK private-IP behavior (`10/8`, `172.16/12`, `192.168/16`):
+
+- Default (unset): private IPs are blocked whenever a network config is sent.
+- Explicit block: call `.WithBlockPrivateIPs(true)` (or `.BlockPrivateIPs()`).
+- Explicit allow: call `.AllowPrivateIPs()` or `.WithBlockPrivateIPs(false)`.
+
+```go
+sandbox := sdk.New("alpine:latest").
+	AllowHost("api.openai.com").
+	WithNetworkMTU(1200).
+	AllowPrivateIPs() // explicit override: block_private_ips=false
+```
+
+If you use `client.Create(...)` directly (without the builder), set:
+- `BlockPrivateIPsSet: true`
+- `BlockPrivateIPs: false` (or `true`)
+
 **Python** ([PyPI](https://pypi.org/project/matchlock/))
 
 ```bash

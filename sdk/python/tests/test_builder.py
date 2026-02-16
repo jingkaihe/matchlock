@@ -5,7 +5,6 @@ from matchlock.types import (
     CreateOptions,
     ImageConfig,
     MountConfig,
-    Secret,
     VFSHookRule,
     VFSInterceptionConfig,
 )
@@ -74,8 +73,12 @@ class TestSandboxChaining:
         assert isinstance(s.with_env_map({"K": "V"}), Sandbox)
         assert isinstance(s.allow_host("x.com"), Sandbox)
         assert isinstance(s.block_private_ips(), Sandbox)
+        assert isinstance(s.with_block_private_ips(False), Sandbox)
+        assert isinstance(s.allow_private_ips(), Sandbox)
+        assert isinstance(s.unset_block_private_ips(), Sandbox)
         assert isinstance(s.add_secret("k", "v"), Sandbox)
         assert isinstance(s.with_dns_servers("1.1.1.1"), Sandbox)
+        assert isinstance(s.with_network_mtu(1200), Sandbox)
         assert isinstance(s.mount("/p", MountConfig()), Sandbox)
         assert isinstance(s.mount_host_dir("/g", "/h"), Sandbox)
         assert isinstance(s.mount_host_dir_readonly("/g", "/h"), Sandbox)
@@ -112,6 +115,22 @@ class TestSandboxNetwork:
     def test_block_private_ips(self):
         opts = Sandbox("img").block_private_ips().options()
         assert opts.block_private_ips is True
+        assert opts.block_private_ips_set is True
+
+    def test_with_block_private_ips_false(self):
+        opts = Sandbox("img").with_block_private_ips(False).options()
+        assert opts.block_private_ips is False
+        assert opts.block_private_ips_set is True
+
+    def test_allow_private_ips(self):
+        opts = Sandbox("img").allow_private_ips().options()
+        assert opts.block_private_ips is False
+        assert opts.block_private_ips_set is True
+
+    def test_unset_block_private_ips(self):
+        opts = Sandbox("img").block_private_ips().unset_block_private_ips().options()
+        assert opts.block_private_ips is False
+        assert opts.block_private_ips_set is False
 
     def test_dns_servers(self):
         opts = Sandbox("img").with_dns_servers("1.1.1.1", "1.0.0.1").options()
@@ -129,6 +148,10 @@ class TestSandboxNetwork:
     def test_dns_servers_default_empty(self):
         opts = Sandbox("img").options()
         assert opts.dns_servers == []
+
+    def test_network_mtu(self):
+        opts = Sandbox("img").with_network_mtu(1200).options()
+        assert opts.network_mtu == 1200
 
 
 class TestSandboxSecrets:

@@ -82,6 +82,7 @@ func init() {
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
+	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
@@ -106,6 +107,7 @@ func init() {
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
+	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
 	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
 	viper.BindPFlag("run.address", runCmd.Flags().Lookup("address"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
@@ -147,8 +149,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
+	networkMTU, _ := cmd.Flags().GetInt("mtu")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
+
+	if networkMTU <= 0 {
+		return fmt.Errorf("--mtu must be > 0")
+	}
 
 	// Shutdown
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
@@ -288,6 +295,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			BlockPrivateIPs: true,
 			Secrets:         parsedSecrets,
 			DNSServers:      dnsServers,
+			MTU:             networkMTU,
 		},
 		VFS:      vfsConfig,
 		Env:      parsedEnv,

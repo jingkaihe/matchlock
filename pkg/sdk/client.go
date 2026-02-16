@@ -205,8 +205,12 @@ type CreateOptions struct {
 	TimeoutSeconds int
 	// AllowedHosts is a list of allowed network hosts (supports wildcards)
 	AllowedHosts []string
-	// BlockPrivateIPs blocks access to private IP ranges
+	// BlockPrivateIPs controls access to private IP ranges.
+	// Use together with BlockPrivateIPsSet to express explicit true/false.
 	BlockPrivateIPs bool
+	// BlockPrivateIPsSet marks whether BlockPrivateIPs was explicitly set.
+	// When false, the SDK preserves API defaults for private IP blocking.
+	BlockPrivateIPsSet bool
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
 	// Env defines non-secret environment variables for command execution.
@@ -220,6 +224,8 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// NetworkMTU overrides the guest interface/network stack MTU (default: 1500).
+	NetworkMTU int
 	// PortForwards maps local host ports to remote sandbox ports.
 	// These are applied after VM creation via the port_forward RPC.
 	PortForwards []api.PortForward
@@ -404,6 +410,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.TimeoutSeconds == 0 {
 		opts.TimeoutSeconds = api.DefaultTimeoutSeconds
 	}
+	if opts.NetworkMTU < 0 {
+		return "", ErrInvalidNetworkMTU
+	}
 
 	wireVFS, localHooks, localMutateHooks, localActionHooks, err := compileVFSHooks(opts.VFSInterception)
 	if err != nil {
@@ -424,24 +433,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["privileged"] = true
 	}
 
-	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 || len(opts.DNSServers) > 0 {
-		network := map[string]interface{}{
-			"allowed_hosts":     opts.AllowedHosts,
-			"block_private_ips": opts.BlockPrivateIPs,
-		}
-		if len(opts.Secrets) > 0 {
-			secrets := make(map[string]interface{})
-			for _, s := range opts.Secrets {
-				secrets[s.Name] = map[string]interface{}{
-					"value": s.Value,
-					"hosts": s.Hosts,
-				}
-			}
-			network["secrets"] = secrets
-		}
-		if len(opts.DNSServers) > 0 {
-			network["dns_servers"] = opts.DNSServers
-		}
+	if network := buildCreateNetworkParams(opts); network != nil {
 		params["network"] = network
 	}
 
@@ -488,6 +480,58 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		}
 	}
 	return c.vmID, nil
+}
+
+func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
+	hasAllowedHosts := len(opts.AllowedHosts) > 0
+	hasSecrets := len(opts.Secrets) > 0
+	hasDNSServers := len(opts.DNSServers) > 0
+	hasMTU := opts.NetworkMTU > 0
+	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
+
+	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasMTU || hasBlockPrivateIPsOverride
+	if !includeNetwork {
+		return nil
+	}
+
+	// Create config merges replace network defaults wholesale. Preserve default
+	// private-IP blocking unless explicitly overridden.
+	if !hasBlockPrivateIPsOverride {
+		blockPrivateIPs = true
+	}
+
+	network := map[string]interface{}{
+		"allowed_hosts":     opts.AllowedHosts,
+		"block_private_ips": blockPrivateIPs,
+	}
+	if hasSecrets {
+		secrets := make(map[string]interface{})
+		for _, s := range opts.Secrets {
+			secrets[s.Name] = map[string]interface{}{
+				"value": s.Value,
+				"hosts": s.Hosts,
+			}
+		}
+		network["secrets"] = secrets
+	}
+	if hasDNSServers {
+		network["dns_servers"] = opts.DNSServers
+	}
+	if hasMTU {
+		network["mtu"] = opts.NetworkMTU
+	}
+	return network
+}
+
+func resolveCreateBlockPrivateIPs(opts CreateOptions) (value bool, hasOverride bool) {
+	if opts.BlockPrivateIPsSet {
+		return opts.BlockPrivateIPs, true
+	}
+	// Backward compatibility: old callers could only express explicit true.
+	if opts.BlockPrivateIPs {
+		return true, true
+	}
+	return false, false
 }
 
 func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []compiledVFSHook, []compiledVFSMutateHook, []compiledVFSActionHook, error) {

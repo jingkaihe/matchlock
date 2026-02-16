@@ -24,8 +24,9 @@ Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
 ## Repo Map (High Signal)
 
 - `cmd/matchlock`: CLI
-- `cmd/guest-agent`: in-VM exec agent
-- `cmd/guest-fused`: in-VM FUSE daemon
+- `cmd/guest-init`: unified in-VM runtime entrypoint (init/agent/fused dispatch)
+- `internal/guestruntime/agent`: in-VM exec agent runtime
+- `internal/guestruntime/fused`: in-VM FUSE daemon runtime
 - `pkg/sandbox`: sandbox lifecycle + exec relay
 - `pkg/image`: image pull/import/build + rootfs prep
 - `pkg/net`: interception, MITM, policy plumbing

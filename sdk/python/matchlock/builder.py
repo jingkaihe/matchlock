@@ -62,7 +62,23 @@ class Sandbox:
         return self
 
     def block_private_ips(self) -> Sandbox:
-        self._opts.block_private_ips = True
+        return self.with_block_private_ips(True)
+
+    def with_block_private_ips(self, enabled: bool) -> Sandbox:
+        self._opts.block_private_ips = enabled
+        self._opts.block_private_ips_set = True
+        return self
+
+    def allow_private_ips(self) -> Sandbox:
+        return self.with_block_private_ips(False)
+
+    def unset_block_private_ips(self) -> Sandbox:
+        self._opts.block_private_ips = False
+        self._opts.block_private_ips_set = False
+        return self
+
+    def with_network_mtu(self, mtu: int) -> Sandbox:
+        self._opts.network_mtu = mtu
         return self
 
     def add_secret(self, name: str, value: str, *hosts: str) -> Sandbox:

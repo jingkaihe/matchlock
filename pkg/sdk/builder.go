@@ -95,7 +95,25 @@ func (b *SandboxBuilder) AllowHost(hosts ...string) *SandboxBuilder {
 
 // BlockPrivateIPs blocks access to private IP ranges (10.x, 172.16.x, 192.168.x).
 func (b *SandboxBuilder) BlockPrivateIPs() *SandboxBuilder {
-	b.opts.BlockPrivateIPs = true
+	return b.WithBlockPrivateIPs(true)
+}
+
+// WithBlockPrivateIPs explicitly configures private IP range blocking.
+func (b *SandboxBuilder) WithBlockPrivateIPs(enabled bool) *SandboxBuilder {
+	b.opts.BlockPrivateIPs = enabled
+	b.opts.BlockPrivateIPsSet = true
+	return b
+}
+
+// AllowPrivateIPs explicitly allows access to private IP ranges.
+func (b *SandboxBuilder) AllowPrivateIPs() *SandboxBuilder {
+	return b.WithBlockPrivateIPs(false)
+}
+
+// UnsetBlockPrivateIPs resets private IP blocking to API defaults.
+func (b *SandboxBuilder) UnsetBlockPrivateIPs() *SandboxBuilder {
+	b.opts.BlockPrivateIPs = false
+	b.opts.BlockPrivateIPsSet = false
 	return b
 }
 
@@ -114,6 +132,12 @@ func (b *SandboxBuilder) AddSecret(name, value string, hosts ...string) *Sandbox
 // WithDNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4).
 func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	b.opts.DNSServers = append(b.opts.DNSServers, servers...)
+	return b
+}
+
+// WithNetworkMTU overrides the guest interface/network stack MTU.
+func (b *SandboxBuilder) WithNetworkMTU(mtu int) *SandboxBuilder {
+	b.opts.NetworkMTU = mtu
 	return b
 }
 

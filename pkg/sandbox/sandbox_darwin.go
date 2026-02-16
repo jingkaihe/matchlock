@@ -181,6 +181,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		PrebuiltRootfs:  prebuiltRootfs,
 		ExtraDisks:      extraDisks,
 		DNSServers:      config.Network.GetDNSServers(),
+		MTU:             config.Network.GetMTU(),
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
@@ -231,7 +232,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			File:       networkFile,
 			GatewayIP:  subnetInfo.GatewayIP,
 			GuestIP:    subnetInfo.GuestIP,
-			MTU:        1500,
+			MTU:        uint32(config.Network.GetMTU()),
 			Policy:     policyEngine,
 			Events:     events,
 			CAPool:     caPool,

@@ -42,6 +42,7 @@ func init() {
 	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
 	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
 	buildCmd.Flags().Int("build-cache-size", 10240, "BuildKit cache disk size in MB")
+	buildCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for BuildKit guest interface")
 
 	rootCmd.AddCommand(buildCmd)
 }
@@ -166,6 +167,11 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	disk, _ := cmd.Flags().GetInt("build-disk")
 	noCache, _ := cmd.Flags().GetBool("no-cache")
 	buildCacheSize, _ := cmd.Flags().GetInt("build-cache-size")
+	networkMTU, _ := cmd.Flags().GetInt("mtu")
+
+	if networkMTU <= 0 {
+		return fmt.Errorf("--mtu must be > 0")
+	}
 
 	if cpus == 0 {
 		cpus = runtime.NumCPU()
@@ -265,7 +271,9 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 			DiskSizeMB:     disk,
 			TimeoutSeconds: 1800,
 		},
-		Network:    &api.NetworkConfig{},
+		Network: &api.NetworkConfig{
+			MTU: networkMTU,
+		},
 		ExtraDisks: extraDisks,
 		VFS: &api.VFSConfig{
 			Workspace: "/workspace",

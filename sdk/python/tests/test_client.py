@@ -97,7 +97,9 @@ class TestPendingRequest:
         assert pr.on_notification is None
 
     def test_with_notification_callback(self):
-        cb = lambda m, p: None
+        def cb(method, params):
+            return None
+
         pr = _PendingRequest(on_notification=cb)
         assert pr.on_notification is cb
 
@@ -249,7 +251,156 @@ class TestClientCreate:
             )
             vm_id = client.create(opts)
             assert vm_id == "vm-net"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"] == {
+                "allowed_hosts": ["a.com"],
+                "block_private_ips": True,
+                "secrets": {"K": {"value": "V", "hosts": ["a.com"]}},
+            }
             t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_defaults_block_private_ips_when_network_is_set(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-default-private"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                allowed_hosts=["api.openai.com"],
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-default-private"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["block_private_ips"] is True
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_sends_network_mtu_with_default_private_ip_blocking(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-mtu"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_mtu=1200,
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-mtu"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["mtu"] == 1200
+            assert req["params"]["network"]["block_private_ips"] is True
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_respects_explicit_disable_block_private_ips(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-private-off"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_mtu=1200,
+                block_private_ips=False,
+                block_private_ips_set=True,
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-private-off"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["block_private_ips"] is False
+            assert req["params"]["network"]["mtu"] == 1200
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_omits_network_when_no_network_overrides(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-no-net"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(CreateOptions(image="img"))
+            assert vm_id == "vm-no-net"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert "network" not in req["params"]
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_negative_network_mtu(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(MatchlockError, match="network mtu must be > 0"):
+                client.create(CreateOptions(image="img", network_mtu=-1))
         finally:
             fake.close_stdout()
 

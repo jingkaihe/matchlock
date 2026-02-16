@@ -35,8 +35,7 @@ jobs:
           name: linux-binaries
           path: |
             bin/matchlock-linux-*
-            bin/guest-agent-linux-*
-            bin/guest-fused-linux-*
+            bin/guest-init-linux-*
 
   build-darwin:
     name: Build macOS (arm64)
@@ -91,9 +90,7 @@ jobs:
             bin/matchlock-linux-amd64 \
             bin/matchlock-linux-arm64 \
             bin/matchlock-darwin-arm64 \
-            bin/guest-agent-linux-amd64 \
-            bin/guest-agent-linux-arm64 \
-            bin/guest-fused-linux-amd64 \
-            bin/guest-fused-linux-arm64
+            bin/guest-init-linux-amd64 \
+            bin/guest-init-linux-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

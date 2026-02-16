@@ -4,7 +4,7 @@
 // 1. Command execution requests from the host
 // 2. Ready signal to indicate VM is ready
 // 3. VFS client connection to host for FUSE
-package main
+package guestagent
 
 import (
 	"bytes"
@@ -90,7 +90,7 @@ type PortForwardRequest struct {
 	Port uint16 `json:"port"`
 }
 
-func main() {
+func Run() {
 	// If re-execed as sandbox launcher, apply seccomp + drop caps + exec real command
 	if isSandboxLauncher() {
 		runSandboxLauncher()

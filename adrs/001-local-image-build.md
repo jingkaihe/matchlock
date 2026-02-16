@@ -97,7 +97,7 @@ Add a `--privileged` flag that skips in-guest security restrictions, enabling Bu
 
 1. **`pkg/api/config.go`** — Add `Privileged bool` to `Config`
 2. **Guest agent protocol** — Pass privileged flag via kernel cmdline (`matchlock.privileged=1`)
-3. **`cmd/guest-agent/sandbox_proc.go`** — When privileged, skip capability drops, seccomp filter, and `no_new_privs`
+3. **`internal/guestruntime/agent/sandbox_proc.go`** — When privileged, skip capability drops, seccomp filter, and `no_new_privs`
 4. ~~**Kernel config** — Add `CONFIG_USER_NS=y` to both `arm64.config` and `x86_64.config` for rootless BuildKit support~~ ✅ Done
 
 **Usage:**

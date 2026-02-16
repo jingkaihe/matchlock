@@ -1,4 +1,4 @@
-package main
+package guestfused
 
 import "errors"
 

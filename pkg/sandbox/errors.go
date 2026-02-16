@@ -16,6 +16,7 @@ var (
 	// Rootfs errors
 	ErrGuestAgent   = errors.New("guest-agent not found")
 	ErrGuestFused   = errors.New("guest-fused not found")
+	ErrGuestInit    = errors.New("guest-init not found")
 	ErrResizeRootfs = errors.New("resize rootfs")
 	ErrCreateTemp   = errors.New("create temp file")
 	ErrWriteTemp    = errors.New("write temp file")

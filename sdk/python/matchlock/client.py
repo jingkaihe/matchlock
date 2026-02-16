@@ -682,6 +682,8 @@ class Client:
 
         if not opts.image:
             raise MatchlockError("image is required (e.g., alpine:latest)")
+        if opts.network_mtu < 0:
+            raise MatchlockError("network mtu must be > 0")
 
         (
             wire_vfs,
@@ -705,22 +707,8 @@ class Client:
         if resources:
             params["resources"] = resources
 
-        if (
-            opts.allowed_hosts
-            or opts.block_private_ips
-            or opts.secrets
-            or opts.dns_servers
-        ):
-            network: dict[str, Any] = {
-                "allowed_hosts": opts.allowed_hosts,
-                "block_private_ips": opts.block_private_ips,
-            }
-            if opts.secrets:
-                network["secrets"] = {
-                    s.name: {"value": s.value, "hosts": s.hosts} for s in opts.secrets
-                }
-            if opts.dns_servers:
-                network["dns_servers"] = opts.dns_servers
+        network = self._build_create_network_params(opts)
+        if network is not None:
             params["network"] = network
 
         if opts.mounts or opts.workspace or wire_vfs is not None:
@@ -743,6 +731,58 @@ class Client:
         self._vm_id = result["id"]
         self._set_local_vfs_hooks(local_hooks, local_mutate_hooks, local_action_hooks)
         return self._vm_id
+
+    def _build_create_network_params(
+        self, opts: CreateOptions
+    ) -> dict[str, Any] | None:
+        has_allowed_hosts = bool(opts.allowed_hosts)
+        has_secrets = bool(opts.secrets)
+        has_dns_servers = bool(opts.dns_servers)
+        has_mtu = opts.network_mtu > 0
+
+        block_private_ips, has_block_private_override = (
+            self._resolve_create_block_private_ips(opts)
+        )
+
+        include_network = (
+            has_allowed_hosts
+            or has_secrets
+            or has_dns_servers
+            or has_mtu
+            or has_block_private_override
+        )
+        if not include_network:
+            return None
+
+        # Create config merges replace network defaults wholesale. Preserve
+        # default private-IP blocking unless explicitly overridden.
+        if not has_block_private_override:
+            block_private_ips = True
+
+        network: dict[str, Any] = {
+            "allowed_hosts": opts.allowed_hosts,
+            "block_private_ips": block_private_ips,
+        }
+        if has_secrets:
+            network["secrets"] = {
+                s.name: {"value": s.value, "hosts": s.hosts} for s in opts.secrets
+            }
+        if has_dns_servers:
+            network["dns_servers"] = opts.dns_servers
+        if has_mtu:
+            network["mtu"] = opts.network_mtu
+
+        return network
+
+    def _resolve_create_block_private_ips(
+        self, opts: CreateOptions
+    ) -> tuple[bool, bool]:
+        if opts.block_private_ips_set:
+            return opts.block_private_ips, True
+        # Backward compatibility: older callers could only express explicit true.
+        if opts.block_private_ips:
+            return True, True
+        return False, False
 
     def launch(self, sandbox: Sandbox) -> str:
         return self.create(sandbox.options())

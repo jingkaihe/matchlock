@@ -10,162 +10,15 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-const initScript = `#!/bin/sh
-# Matchlock minimal init - runs as PID 1
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-# Remount root read-write (may be mounted ro by initramfs)
-mount -o remount,rw / 2>/dev/null || true
-
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sys /sys 2>/dev/null || true
-mount -t devtmpfs dev /dev 2>/dev/null || true
-
-mkdir -p /dev/pts /dev/shm /dev/mqueue
-mount -t devpts devpts /dev/pts 2>/dev/null || true
-mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
-mount -t mqueue mqueue /dev/mqueue 2>/dev/null || true
-mount -t tmpfs tmpfs /run 2>/dev/null || true
-mount -t tmpfs tmpfs /tmp 2>/dev/null || true
-
-# Mount BPF filesystem (required for runc cgroup device management)
-mkdir -p /sys/fs/bpf
-mount -t bpf bpf /sys/fs/bpf 2>/dev/null || true
-
-# Mount cgroup2 unified hierarchy and enable controller delegation
-mkdir -p /sys/fs/cgroup
-mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
-# Enable subtree delegation for BuildKit/runc. Cgroup v2 requires that no
-# processes live in a cgroup before its subtree_control can be written.
-# Move our PID to a child cgroup ("init"), then enable controllers on root.
-if [ -f /sys/fs/cgroup/cgroup.subtree_control ] && [ -f /sys/fs/cgroup/cgroup.controllers ]; then
-    mkdir -p /sys/fs/cgroup/init
-    echo $$ > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true
-    for c in $(cat /sys/fs/cgroup/cgroup.controllers); do
-        echo "+$c" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
-    done
-fi
-
-hostname matchlock
-
-# Cache kernel cmdline once for later parsing.
-CMDLINE=""
-read -r CMDLINE < /proc/cmdline 2>/dev/null || true
-
-# Parse kernel cmdline params used by init.
-DNS_SERVERS=""
-WORKSPACE=""
-for param in $CMDLINE; do
-    case "$param" in
-        matchlock.dns=*)
-            DNS_SERVERS=${param#matchlock.dns=}
-            ;;
-        matchlock.workspace=*)
-            WORKSPACE=${param#matchlock.workspace=}
-            ;;
-    esac
-done
-[ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
-
-# Configure DNS from kernel cmdline (matchlock.dns=ip1,ip2,...)
-rm -f /etc/resolv.conf
-if [ -z "$DNS_SERVERS" ]; then
-    echo "FATAL: matchlock.dns= not found in kernel cmdline" >&2
-    exit 1
-fi
-OLD_IFS=$IFS
-IFS=,
-set -- $DNS_SERVERS
-IFS=$OLD_IFS
-for ns in "$@"; do
-    [ -n "$ns" ] && echo "nameserver $ns"
-done > /etc/resolv.conf
-
-# Network setup - bring up interface and get IP via DHCP
-ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
-
-# Try DHCP if kernel didn't configure IP (NAT mode)
-ETH0_HAS_INET=1
-if command -v ip >/dev/null 2>&1; then
-    IP_OUTPUT=$(ip addr show eth0 2>/dev/null || true)
-    case "$IP_OUTPUT" in
-        *" inet "*) ETH0_HAS_INET=0 ;;
-    esac
-fi
-if [ "$ETH0_HAS_INET" -ne 0 ]; then
-    # Alpine/busybox udhcpc
-    if command -v udhcpc >/dev/null 2>&1; then
-        udhcpc -i eth0 -n -q 2>/dev/null &
-    # Debian/Ubuntu dhclient
-    elif command -v dhclient >/dev/null 2>&1; then
-        dhclient eth0 2>/dev/null &
-    fi
-    sleep 2
-fi
-
-# Mount extra block devices from kernel cmdline (matchlock.disk.vdX=/mount/path)
-for param in $CMDLINE; do
-    case "$param" in
-        matchlock.disk.*)
-            DISK_SPEC=${param#matchlock.disk.}
-            DEV=${DISK_SPEC%%=*}
-            MNTPATH=${param#*=}
-            mkdir -p "$MNTPATH"
-            if ! mount -t ext4 "/dev/$DEV" "$MNTPATH"; then
-                echo "WARNING: failed to mount /dev/$DEV at $MNTPATH" >&2
-            fi
-            ;;
-    esac
-done
-
-# Start FUSE daemon for VFS
-/opt/matchlock/guest-fused &
-
-# Wait for VFS mount before starting agent.
-# If we start commands before /workspace is mounted, they may run in the
-# underlying rootfs directory and then lose cwd when the FUSE mount arrives.
-workspace_mount_ready() {
-    while read -r source target fstype _; do
-        [ "$target" = "$WORKSPACE" ] || continue
-        [ "$source" = "matchlock" ] || continue
-        case "$fstype" in
-            fuse.*) return 0 ;;
-        esac
-    done < /proc/mounts
-    return 1
-}
-i=0
-while [ "$i" -lt 300 ]; do
-    if workspace_mount_ready; then
-        break
-    fi
-    i=$((i + 1))
-    sleep 0.1
-done
-if ! workspace_mount_ready; then
-    echo "FATAL: workspace mount $WORKSPACE is not ready" >&2
-    exit 1
-fi
-
-# CA cert is injected directly into rootfs at /etc/ssl/certs/matchlock-ca.crt
-# No VFS-based injection needed
-
-exec /opt/matchlock/guest-agent
-`
-
-// prepareRootfs injects matchlock components into an ext4 rootfs image using debugfs.
-// This includes the guest-agent binary, guest-fused binary, and init scripts.
-// DNS config is written at runtime by the init script to handle symlinked resolv.conf.
+// prepareRootfs injects matchlock guest runtime components into an ext4 rootfs
+// image using debugfs. A single guest-init host binary is installed to multiple
+// in-guest entrypoints (/init, guest-agent, guest-fused) and dispatches by argv[0].
 // It also optionally resizes the rootfs if diskSizeMB > 0.
 func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
-	guestAgentPath := DefaultGuestAgentPath()
-	guestFusedPath := DefaultGuestFusedPath()
+	guestInitPath := DefaultGuestInitPath()
 
-	if _, err := os.Stat(guestAgentPath); err != nil {
-		return errx.With(ErrGuestAgent, " at %s: %w", guestAgentPath, err)
-	}
-	if _, err := os.Stat(guestFusedPath); err != nil {
-		return errx.With(ErrGuestFused, " at %s: %w", guestFusedPath, err)
+	if _, err := os.Stat(guestInitPath); err != nil {
+		return errx.With(ErrGuestInit, " at %s: %w", guestInitPath, err)
 	}
 
 	// Resize BEFORE injecting components so that the filesystem has free space.
@@ -176,18 +29,6 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 			return errx.Wrap(ErrResizeRootfs, err)
 		}
 	}
-
-	// Write init script to temp file for debugfs injection
-	initTmp, err := os.CreateTemp("", "matchlock-init-*")
-	if err != nil {
-		return errx.Wrap(ErrCreateTemp, err)
-	}
-	defer os.Remove(initTmp.Name())
-	if _, err := initTmp.WriteString(initScript); err != nil {
-		initTmp.Close()
-		return errx.Wrap(ErrWriteTemp, err)
-	}
-	initTmp.Close()
 
 	// Build debugfs commands to inject all components.
 	// debugfs cannot traverse symlinks, so we write to both /sbin/ and /usr/sbin/
@@ -216,15 +57,17 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	}
 
 	injections := []injection{
-		{guestAgentPath, "/opt/matchlock/guest-agent"},
-		{guestFusedPath, "/opt/matchlock/guest-fused"},
-		// Write init to both real and usr-merged paths for cross-distro compat
-		{initTmp.Name(), "/sbin/matchlock-init"},
-		{initTmp.Name(), "/usr/sbin/matchlock-init"},
-		{initTmp.Name(), "/init"},
+		{guestInitPath, "/opt/matchlock/guest-init"},
+		{guestInitPath, "/opt/matchlock/guest-agent"},
+		{guestInitPath, "/opt/matchlock/guest-fused"},
+		// Write init binary to both real and usr-merged paths for cross-distro compat.
+		{guestInitPath, "/sbin/matchlock-init"},
+		{guestInitPath, "/usr/sbin/matchlock-init"},
+		// The kernel cmdline uses init=/init to boot guest-init directly.
+		{guestInitPath, "/init"},
 		// NOTE: We intentionally do NOT overwrite /sbin/init or /usr/sbin/init.
 		// Images with ENTRYPOINT ["/sbin/init"] (e.g. systemd) would re-execute
-		// The kernel cmdline uses init=/init to boot our script directly.
+		// the image's init, while matchlock boots through init=/init.
 	}
 
 	for _, inj := range injections {

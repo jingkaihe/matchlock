@@ -87,11 +87,14 @@ class TestCreateOptions:
         assert opts.timeout_seconds == 0
         assert opts.allowed_hosts == []
         assert opts.block_private_ips is False
+        assert opts.block_private_ips_set is False
         assert opts.mounts == {}
         assert opts.env == {}
         assert opts.vfs_interception is None
         assert opts.secrets == []
         assert opts.workspace == ""
+        assert opts.dns_servers == []
+        assert opts.network_mtu == 0
 
     def test_with_image(self):
         opts = CreateOptions(image="alpine:latest")

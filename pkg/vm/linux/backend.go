@@ -63,7 +63,7 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 		return nil, errx.Wrap(ErrTAPConfigure, err)
 	}
 
-	if err := SetMTU(tapName, 1500); err != nil {
+	if err := SetMTU(tapName, effectiveMTU(config.MTU)); err != nil {
 		syscall.Close(tapFD)
 		DeleteInterface(tapName)
 		return nil, errx.Wrap(ErrTAPSetMTU, err)
@@ -150,7 +150,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		subnetCIDR = "192.168.100.1/24"
 	}
 	ConfigureInterface(m.tapName, subnetCIDR)
-	SetMTU(m.tapName, 1500)
+	SetMTU(m.tapName, effectiveMTU(m.config.MTU))
 
 	// Wait for VM to be ready
 	if m.config.VsockCID > 0 {
@@ -268,8 +268,10 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if workspace == "" {
 			workspace = "/workspace"
 		}
+		mtu := effectiveMTU(m.config.MTU)
 		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s",
 			guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), workspace, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs += fmt.Sprintf(" matchlock.mtu=%d", mtu)
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
@@ -348,6 +350,13 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		panic(fmt.Sprintf("failed to marshal firecracker config: %v", err))
 	}
 	return data
+}
+
+func effectiveMTU(mtu int) int {
+	if mtu > 0 {
+		return mtu
+	}
+	return api.DefaultNetworkMTU
 }
 
 func (m *LinuxMachine) Stop(ctx context.Context) error {

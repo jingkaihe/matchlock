@@ -74,6 +74,11 @@ func DefaultGuestFusedPath() string {
 	return findGuestBinary("guest-fused", "MATCHLOCK_GUEST_FUSED")
 }
 
+// DefaultGuestInitPath returns the default path to guest-init binary.
+func DefaultGuestInitPath() string {
+	return findGuestBinary("guest-init", "MATCHLOCK_GUEST_INIT")
+}
+
 func findGuestBinary(name, envVar string) string {
 	home, _ := os.UserHomeDir()
 	sudoHome := ""

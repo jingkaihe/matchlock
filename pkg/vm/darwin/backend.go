@@ -11,6 +11,7 @@ import (
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
@@ -161,6 +162,7 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	if workspace == "" {
 		workspace = "/workspace"
 	}
+	mtu := effectiveMTU(config.MTU)
 
 	// Root device is /dev/vda (first virtio block device)
 	privilegedArg := ""
@@ -184,15 +186,22 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s%s%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s%s%s",
-		workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
+		workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
 	)
+}
+
+func effectiveMTU(mtu int) int {
+	if mtu > 0 {
+		return mtu
+	}
+	return api.DefaultNetworkMTU
 }
 
 func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {

@@ -16,6 +16,12 @@ func TestCLIRunHelpShowsDNSServersFlag(t *testing.T) {
 	assert.Contains(t, stdout, "--dns-servers")
 }
 
+func TestCLIRunHelpShowsNetworkMTUFlag(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "run", "--help")
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "--mtu")
+}
+
 func TestCLIDNSServersResolvConf(t *testing.T) {
 	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", "alpine:latest",
