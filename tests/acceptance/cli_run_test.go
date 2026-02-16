@@ -3,12 +3,16 @@
 package acceptance
 
 import (
+	"bytes"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,6 +81,52 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
 	assert.Contains(t, stdout, "1file.txt")
 	assert.Contains(t, stdout, "single-file-mounted")
+}
+
+func TestCLIRunInteractiveGitInitInWorkspace(t *testing.T) {
+	cmd := exec.Command(matchlockBin(t), "run", "--image", "alpine:latest", "--rm", "-it", "sh")
+	ptmx, err := pty.Start(cmd)
+	require.NoError(t, err, "failed to start interactive matchlock run")
+	defer ptmx.Close()
+
+	var output bytes.Buffer
+	copyDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&output, ptmx)
+		close(copyDone)
+	}()
+
+	commands := strings.Join([]string{
+		"apk add --no-cache git >/dev/null",
+		"cd /workspace",
+		"rm -rf repo",
+		"mkdir repo",
+		"cd repo",
+		"git init",
+		"echo GIT_INIT_EXIT:$?",
+		"exit",
+	}, "\n") + "\n"
+	_, err = ptmx.Write([]byte(commands))
+	require.NoError(t, err, "failed to send interactive commands")
+
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
+	select {
+	case waitErr := <-waitDone:
+		_ = ptmx.Close()
+		<-copyDone
+		out := output.String()
+		require.NoError(t, waitErr, "output:\n%s", out)
+		require.Contains(t, out, "Initialized empty Git repository", "output:\n%s", out)
+		require.Contains(t, out, "GIT_INIT_EXIT:0", "output:\n%s", out)
+		require.NotContains(t, out, "unable to get current working directory", "output:\n%s", out)
+	case <-time.After(4 * time.Minute):
+		_ = cmd.Process.Kill()
+		_ = ptmx.Close()
+		<-copyDone
+		require.FailNow(t, "interactive run timed out")
+	}
 }
 
 func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {

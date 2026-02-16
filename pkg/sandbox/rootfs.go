@@ -48,14 +48,36 @@ fi
 
 hostname matchlock
 
+# Cache kernel cmdline once for later parsing.
+CMDLINE=""
+read -r CMDLINE < /proc/cmdline 2>/dev/null || true
+
+# Parse kernel cmdline params used by init.
+DNS_SERVERS=""
+WORKSPACE=""
+for param in $CMDLINE; do
+    case "$param" in
+        matchlock.dns=*)
+            DNS_SERVERS=${param#matchlock.dns=}
+            ;;
+        matchlock.workspace=*)
+            WORKSPACE=${param#matchlock.workspace=}
+            ;;
+    esac
+done
+[ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
+
 # Configure DNS from kernel cmdline (matchlock.dns=ip1,ip2,...)
 rm -f /etc/resolv.conf
-DNS_SERVERS=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.dns=' | cut -d= -f2)
 if [ -z "$DNS_SERVERS" ]; then
     echo "FATAL: matchlock.dns= not found in kernel cmdline" >&2
     exit 1
 fi
-echo "$DNS_SERVERS" | tr ',' '\n' | while read -r ns; do
+OLD_IFS=$IFS
+IFS=,
+set -- $DNS_SERVERS
+IFS=$OLD_IFS
+for ns in "$@"; do
     [ -n "$ns" ] && echo "nameserver $ns"
 done > /etc/resolv.conf
 
@@ -63,7 +85,14 @@ done > /etc/resolv.conf
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
 
 # Try DHCP if kernel didn't configure IP (NAT mode)
-if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
+ETH0_HAS_INET=1
+if command -v ip >/dev/null 2>&1; then
+    IP_OUTPUT=$(ip addr show eth0 2>/dev/null || true)
+    case "$IP_OUTPUT" in
+        *" inet "*) ETH0_HAS_INET=0 ;;
+    esac
+fi
+if [ "$ETH0_HAS_INET" -ne 0 ]; then
     # Alpine/busybox udhcpc
     if command -v udhcpc >/dev/null 2>&1; then
         udhcpc -i eth0 -n -q 2>/dev/null &
@@ -75,11 +104,12 @@ if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
 fi
 
 # Mount extra block devices from kernel cmdline (matchlock.disk.vdX=/mount/path)
-for param in $(cat /proc/cmdline); do
+for param in $CMDLINE; do
     case "$param" in
         matchlock.disk.*)
-            DEV=$(echo "$param" | sed 's/matchlock\.disk\.//;s/=.*//')
-            MNTPATH=$(echo "$param" | cut -d= -f2)
+            DISK_SPEC=${param#matchlock.disk.}
+            DEV=${DISK_SPEC%%=*}
+            MNTPATH=${param#*=}
             mkdir -p "$MNTPATH"
             if ! mount -t ext4 "/dev/$DEV" "$MNTPATH"; then
                 echo "WARNING: failed to mount /dev/$DEV at $MNTPATH" >&2
@@ -91,17 +121,31 @@ done
 # Start FUSE daemon for VFS
 /opt/matchlock/guest-fused &
 
-# Get workspace path from kernel cmdline
-WORKSPACE=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.workspace=' | cut -d= -f2)
-[ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
-
-# Wait for VFS mount before starting agent
-for i in $(seq 1 50); do
-    if mount | grep -q "$WORKSPACE"; then
+# Wait for VFS mount before starting agent.
+# If we start commands before /workspace is mounted, they may run in the
+# underlying rootfs directory and then lose cwd when the FUSE mount arrives.
+workspace_mount_ready() {
+    while read -r source target fstype _; do
+        [ "$target" = "$WORKSPACE" ] || continue
+        [ "$source" = "matchlock" ] || continue
+        case "$fstype" in
+            fuse.*) return 0 ;;
+        esac
+    done < /proc/mounts
+    return 1
+}
+i=0
+while [ "$i" -lt 300 ]; do
+    if workspace_mount_ready; then
         break
     fi
+    i=$((i + 1))
     sleep 0.1
 done
+if ! workspace_mount_ready; then
+    echo "FATAL: workspace mount $WORKSPACE is not ready" >&2
+    exit 1
+fi
 
 # CA cert is injected directly into rootfs at /etc/ssl/certs/matchlock-ca.crt
 # No VFS-based injection needed
