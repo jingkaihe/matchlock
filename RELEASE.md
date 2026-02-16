@@ -5,6 +5,7 @@
 * Added port forward support with `matchlock run -p LOCAL_PORT:REMOTE_PORT ...`
 * Updated default working directory semantics for `run`/`exec`: when `--workdir` is not set, Matchlock now uses the image `WORKDIR` first, then falls back to workspace path ([#40](https://github.com/jingkaihe/matchlock/issues/40)).
 * Fixed Alpine/musl `git` failures in `/workspace` (`unable to get current working directory`) by returning full stat metadata for FUSE `mkdir`/`create` entries and hardening workspace mount readiness checks (observed on macOS) ([#43](https://github.com/jingkaihe/matchlock/issues/43)).
+* Fixed nested guest volume mount paths (for example `-v host:.host/example`) so intermediate directories are synthesized and mounts resolve correctly ([#42](https://github.com/jingkaihe/matchlock/issues/42)).
 * Added configurable guest network MTU (CLI `--mtu` and SDK `NetworkMTU`) to mitigate path-MTU/TLS handshake issues on some VM networking paths.
 * Refactored guest runtime startup to a unified `guest-init` binary that dispatches init/agent/fused roles, replacing separate guest binaries and simplifying rootfs injection.
 

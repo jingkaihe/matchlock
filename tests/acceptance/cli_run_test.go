@@ -65,6 +65,22 @@ func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
 	assert.Equal(t, "mounted-nested-path", strings.TrimSpace(stdout))
 }
 
+func TestCLIRunVolumeMountNestedGuestPathMultiLevelRelative(t *testing.T) {
+	hostDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "TEST.md"), []byte("mounted-multi-level-path"), 0644), "write probe file")
+
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-v", hostDir+":.host/example:ro",
+		"--", "sh", "-c", "cd /workspace/.host && cat example/TEST.md",
+	)
+	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+	assert.Equal(t, "mounted-multi-level-path", strings.TrimSpace(stdout))
+}
+
 func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 	hostDir := t.TempDir()
 	hostFile := filepath.Join(hostDir, "1file.txt")

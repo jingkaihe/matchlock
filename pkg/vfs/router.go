@@ -1,11 +1,13 @@
 package vfs
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type MountRouter struct {
@@ -45,11 +47,19 @@ func (r *MountRouter) resolve(path string) (Provider, string, error) {
 }
 
 func (r *MountRouter) Stat(path string) (FileInfo, error) {
+	path = filepath.Clean(path)
 	p, rel, err := r.resolve(path)
 	if err != nil {
 		return FileInfo{}, err
 	}
-	return p.Stat(rel)
+	info, err := p.Stat(rel)
+	if err == nil {
+		return info, nil
+	}
+	if !isMissingPathError(err) || !r.hasDescendantMount(path) {
+		return FileInfo{}, err
+	}
+	return syntheticDirInfo(filepath.Base(path)), nil
 }
 
 func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
@@ -58,16 +68,25 @@ func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := p.ReadDir(rel)
-	if err != nil {
-		return nil, err
+	entries, readErr := p.ReadDir(rel)
+	if readErr != nil && !isMissingPathError(readErr) {
+		return nil, readErr
+	}
+	if readErr != nil {
+		entries = nil
 	}
 
-	// Merge direct child mountpoints so nested mounts are visible in parent
-	// directory listings (for example a file mount at /workspace/file.txt).
-	byName := make(map[string]DirEntry, len(entries))
+	mountEntries := r.descendantMountEntries(path)
+	if readErr != nil && len(mountEntries) == 0 {
+		return nil, readErr
+	}
+
+	// Merge mountpoint entries so nested mounts are visible in directory
+	// listings even when intermediate directories don't exist in the base
+	// provider (for example /workspace/.host/example).
+	byName := make(map[string]DirEntry, len(entries)+len(mountEntries))
 	baseNames := make([]string, 0, len(entries))
-	seen := make(map[string]bool, len(entries))
+	seen := make(map[string]bool, len(entries)+len(mountEntries))
 	for _, e := range entries {
 		name := e.Name()
 		byName[name] = e
@@ -78,19 +97,8 @@ func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
 	}
 
 	var mountOnlyNames []string
-	for _, m := range r.mounts {
-		if m.path == path || filepath.Dir(m.path) != path {
-			continue
-		}
-
-		name := filepath.Base(m.path)
-		info, err := m.provider.Stat("/")
-		if err != nil {
-			continue
-		}
-
-		entryInfo := NewFileInfo(name, info.Size(), info.Mode(), info.ModTime(), info.IsDir())
-		byName[name] = NewDirEntry(name, info.IsDir(), info.Mode(), entryInfo)
+	for name, entry := range mountEntries {
+		byName[name] = entry
 		if !seen[name] {
 			mountOnlyNames = append(mountOnlyNames, name)
 			seen[name] = true
@@ -105,6 +113,93 @@ func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
 		merged = append(merged, byName[name])
 	}
 	return merged, nil
+}
+
+func (r *MountRouter) descendantMountEntries(path string) map[string]DirEntry {
+	entries := make(map[string]DirEntry)
+	for _, m := range r.mounts {
+		rel, ok := relativeDescendantPath(m.path, path)
+		if !ok {
+			continue
+		}
+
+		name := rel
+		hasNested := false
+		if idx := strings.Index(rel, "/"); idx >= 0 {
+			name = rel[:idx]
+			hasNested = true
+		}
+		if name == "" {
+			continue
+		}
+
+		if hasNested {
+			entries[name] = syntheticDirEntry(name)
+			continue
+		}
+
+		if existing, ok := entries[name]; ok && existing.IsDir() {
+			continue
+		}
+
+		info, err := m.provider.Stat("/")
+		if err != nil {
+			entries[name] = syntheticDirEntry(name)
+			continue
+		}
+		entryInfo := NewFileInfo(name, info.Size(), info.Mode(), info.ModTime(), info.IsDir())
+		entries[name] = NewDirEntry(name, info.IsDir(), info.Mode(), entryInfo)
+	}
+	return entries
+}
+
+func (r *MountRouter) hasDescendantMount(path string) bool {
+	for _, m := range r.mounts {
+		if _, ok := relativeDescendantPath(m.path, path); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func relativeDescendantPath(path, parent string) (string, bool) {
+	path = filepath.Clean(path)
+	parent = filepath.Clean(parent)
+
+	if path == parent {
+		return "", false
+	}
+
+	if parent == "/" {
+		rel := strings.TrimPrefix(path, "/")
+		if rel == "" {
+			return "", false
+		}
+		return rel, true
+	}
+
+	prefix := parent + "/"
+	if !strings.HasPrefix(path, prefix) {
+		return "", false
+	}
+	rel := strings.TrimPrefix(path, prefix)
+	if rel == "" {
+		return "", false
+	}
+	return rel, true
+}
+
+func isMissingPathError(err error) bool {
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR)
+}
+
+func syntheticDirEntry(name string) DirEntry {
+	info := syntheticDirInfo(name)
+	return NewDirEntry(name, true, info.Mode(), info)
+}
+
+func syntheticDirInfo(name string) FileInfo {
+	return NewFileInfo(name, 0, os.ModeDir|0755, time.Now(), true)
 }
 
 func (r *MountRouter) Open(path string, flags int, mode os.FileMode) (Handle, error) {
