@@ -171,9 +171,14 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
+		info, err := h.Stat()
+		if err != nil {
+			_ = h.Close()
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
 		fh := atomic.AddUint64(&s.nextFH, 1)
 		s.handles.Store(fh, h)
-		return &VFSResponse{Handle: fh}
+		return &VFSResponse{Handle: fh, Stat: statFromInfo(info)}
 
 	case OpRead:
 		hi, ok := s.handles.Load(req.Handle)
@@ -217,7 +222,11 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err := provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
-		return &VFSResponse{}
+		info, err := provider.Stat(req.Path)
+		if err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		return &VFSResponse{Stat: statFromInfo(info)}
 
 	case OpMkdirAll:
 		mp, ok := provider.(*MemoryProvider)

@@ -83,7 +83,7 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 	assert.Contains(t, stdout, "single-file-mounted")
 }
 
-func TestCLIRunInteractiveGitInitInWorkspace(t *testing.T) {
+func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 	cmd := exec.Command(matchlockBin(t), "run", "--image", "alpine:latest", "--rm", "-it", "sh")
 	ptmx, err := pty.Start(cmd)
 	require.NoError(t, err, "failed to start interactive matchlock run")
@@ -98,11 +98,13 @@ func TestCLIRunInteractiveGitInitInWorkspace(t *testing.T) {
 
 	commands := strings.Join([]string{
 		"apk add --no-cache git >/dev/null",
-		"cd /workspace",
+		"cd workspace/",
 		"rm -rf repo",
 		"mkdir repo",
 		"cd repo",
 		"git init",
+		"pwd -P",
+		"echo PWD_PHYS_EXIT:$?",
 		"echo GIT_INIT_EXIT:$?",
 		"exit",
 	}, "\n") + "\n"
@@ -119,6 +121,8 @@ func TestCLIRunInteractiveGitInitInWorkspace(t *testing.T) {
 		out := output.String()
 		require.NoError(t, waitErr, "output:\n%s", out)
 		require.Contains(t, out, "Initialized empty Git repository", "output:\n%s", out)
+		require.Contains(t, out, "/workspace/repo", "output:\n%s", out)
+		require.Contains(t, out, "PWD_PHYS_EXIT:0", "output:\n%s", out)
 		require.Contains(t, out, "GIT_INIT_EXIT:0", "output:\n%s", out)
 		require.NotContains(t, out, "unable to get current working directory", "output:\n%s", out)
 	case <-time.After(4 * time.Minute):

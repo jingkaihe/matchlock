@@ -39,6 +39,7 @@ const (
 	defaultNetworkMTU = 1500
 	workspaceWaitStep = 100 * time.Millisecond
 	workspaceWaitMax  = 30 * time.Second
+	fuseSuperMagic    = 0x65735546
 )
 
 type diskMount struct {
@@ -392,7 +393,12 @@ func waitForWorkspaceMount(mountsPath, workspace string, timeout time.Duration) 
 		if err != nil {
 			warnf("workspace mount check failed: %v", err)
 		} else if mounted {
-			return nil
+			fuseReady, fuseErr := workspaceIsFUSE(workspace)
+			if fuseErr != nil {
+				warnf("workspace fs type check failed: %v", fuseErr)
+			} else if fuseReady {
+				return nil
+			}
 		}
 		if time.Now().After(deadline) {
 			return errx.With(ErrWorkspaceMountWait, ": %s", workspace)
@@ -423,6 +429,14 @@ func workspaceMounted(mountsPath, workspace string) (bool, error) {
 		return false, errx.Wrap(ErrWorkspaceMount, err)
 	}
 	return false, nil
+}
+
+func workspaceIsFUSE(workspace string) (bool, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(workspace, &st); err != nil {
+		return false, errx.Wrap(ErrWorkspaceMount, err)
+	}
+	return uint64(st.Type) == fuseSuperMagic, nil
 }
 
 func mountIgnore(source, target, fstype string, flags uintptr, data string) {

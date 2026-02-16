@@ -246,7 +246,7 @@ func (r *VFSRoot) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 		return nil, syscall.Errno(-resp.Err)
 	}
 
-	out.Attr.Mode = syscall.S_IFDIR | mode
+	fillEntryAttr(out, resp.Stat, syscall.S_IFDIR|mode, true)
 	node := &VFSNode{client: r.client, path: path, isDir: true}
 	stable := fs.StableAttr{Mode: out.Attr.Mode}
 	child := r.NewInode(ctx, node, stable)
@@ -263,7 +263,7 @@ func (r *VFSRoot) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, syscall.Errno(-resp.Err)
 	}
 
-	out.Attr.Mode = syscall.S_IFREG | mode
+	fillEntryAttr(out, resp.Stat, syscall.S_IFREG|mode, false)
 	node := &VFSNode{client: r.client, path: path, isDir: false}
 	stable := fs.StableAttr{Mode: out.Attr.Mode}
 	child := r.NewInode(ctx, node, stable)
@@ -430,7 +430,7 @@ func (n *VFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 		return nil, syscall.Errno(-resp.Err)
 	}
 
-	out.Attr.Mode = syscall.S_IFDIR | mode
+	fillEntryAttr(out, resp.Stat, syscall.S_IFDIR|mode, true)
 	node := &VFSNode{client: n.client, path: path, isDir: true}
 	stable := fs.StableAttr{Mode: out.Attr.Mode}
 	child := n.NewInode(ctx, node, stable)
@@ -447,7 +447,7 @@ func (n *VFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, syscall.Errno(-resp.Err)
 	}
 
-	out.Attr.Mode = syscall.S_IFREG | mode
+	fillEntryAttr(out, resp.Stat, syscall.S_IFREG|mode, false)
 	node := &VFSNode{client: n.client, path: path, isDir: false}
 	stable := fs.StableAttr{Mode: out.Attr.Mode}
 	child := n.NewInode(ctx, node, stable)
@@ -587,6 +587,20 @@ func fillAttr(attr *fuse.Attr, stat *VFSStat) {
 	} else {
 		attr.Mode = syscall.S_IFREG | (stat.Mode & 0777)
 		attr.Nlink = 1
+	}
+}
+
+func fillEntryAttr(out *fuse.EntryOut, stat *VFSStat, fallbackMode uint32, isDir bool) {
+	if stat != nil {
+		fillAttr(&out.Attr, stat)
+		return
+	}
+	out.Attr.Mode = fallbackMode
+	out.Attr.Blksize = 4096
+	if isDir {
+		out.Attr.Nlink = 2
+	} else {
+		out.Attr.Nlink = 1
 	}
 }
 
