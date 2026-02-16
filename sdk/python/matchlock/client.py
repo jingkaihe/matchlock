@@ -774,7 +774,9 @@ class Client:
 
         return network
 
-    def _resolve_create_block_private_ips(self, opts: CreateOptions) -> tuple[bool, bool]:
+    def _resolve_create_block_private_ips(
+        self, opts: CreateOptions
+    ) -> tuple[bool, bool]:
         if opts.block_private_ips_set:
             return opts.block_private_ips, True
         # Backward compatibility: older callers could only express explicit true.
