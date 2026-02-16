@@ -44,6 +44,7 @@ func buildVFSProviders(config *api.Config, workspace string) map[string]vfs.Prov
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {
 	opts := &api.ExecOptions{
+		// Matchlock defaults execution to image WORKDIR, falling back to workspace.
 		WorkingDir: config.GetWorkspace(),
 		Env:        make(map[string]string),
 	}

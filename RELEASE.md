@@ -3,6 +3,7 @@
 ## Unreleased
 
 * Added port forward support with `matchlock run -p LOCAL_PORT:REMOTE_PORT ...`
+* Updated default working directory semantics for `run`/`exec`: when `--workdir` is not set, Matchlock now uses the image `WORKDIR` first, then falls back to workspace path ([#40](https://github.com/jingkaihe/matchlock/issues/40)).
 
 ## 0.1.19
 

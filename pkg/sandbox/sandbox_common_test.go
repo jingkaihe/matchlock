@@ -86,6 +86,32 @@ func TestPrepareExecEnv_ConfigEnvOverridesImageEnv(t *testing.T) {
 	require.Equal(t, "from-image", opts.Env["BAR"])
 }
 
+func TestPrepareExecEnv_DefaultWorkingDirUsesImageWorkdir(t *testing.T) {
+	config := &api.Config{
+		VFS: &api.VFSConfig{Workspace: "/workspace/project"},
+		ImageCfg: &api.ImageConfig{
+			WorkingDir: "/app",
+		},
+	}
+
+	opts := prepareExecEnv(config, nil, nil)
+
+	require.Equal(t, "/app", opts.WorkingDir)
+}
+
+func TestPrepareExecEnv_DefaultWorkingDirFallsBackToWorkspace(t *testing.T) {
+	config := &api.Config{
+		VFS: &api.VFSConfig{Workspace: "/workspace/project"},
+		ImageCfg: &api.ImageConfig{
+			WorkingDir: "",
+		},
+	}
+
+	opts := prepareExecEnv(config, nil, nil)
+
+	require.Equal(t, "/workspace/project", opts.WorkingDir)
+}
+
 func TestPrepareExecEnv_SecretPlaceholderOverridesConfigEnv(t *testing.T) {
 	config := &api.Config{
 		VFS: &api.VFSConfig{Workspace: "/workspace"},
