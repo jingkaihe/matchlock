@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"time"
 
@@ -139,13 +138,10 @@ func (c *Config) GetID() string {
 	return c.ID
 }
 
-// GetHostname returns hostname from config, or MATCHLOCK_HOSTNAME, or default to ID if not set
+// GetHostname returns hostname from config or default to ID if not set
 func (c *Config) GetHostname() string {
 	if c.Network.Hostname != "" {
 		return c.Network.Hostname
-	}
-	if hostname := os.Getenv("MATCHLOCK_HOSTNAME"); hostname != "" {
-		return hostname
 	}
 	return c.GetID()
 }

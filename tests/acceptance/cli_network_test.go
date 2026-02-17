@@ -61,20 +61,18 @@ func TestCLIHostnameDefaultHostname(t *testing.T) {
 	assert.Contains(t, stdout, "vm-")
 }
 
-func TestCLIHostnameEnvOverrideEtcHostname(t *testing.T) {
-	stdout, _, exitCode := runCLIEnvWithTimeout(t, 2*time.Minute,
-		[]string{"MATCHLOCK_HOSTNAME=override.internal"},
-		"run", "--image", "alpine:latest",
+func TestCLIHostnameOverrideEtcHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
 		"cat", "/etc/hostname",
 	)
 	require.Equal(t, 0, exitCode)
 	assert.Contains(t, stdout, "override.internal")
 }
 
-func TestCLIHostnameEnvOverrideHostname(t *testing.T) {
-	stdout, _, exitCode := runCLIEnvWithTimeout(t, 2*time.Minute,
-		[]string{"MATCHLOCK_HOSTNAME=override.internal"},
-		"run", "--image", "alpine:latest",
+func TestCLIHostnameOverrideHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
 		"hostname",
 	)
 	require.Equal(t, 0, exitCode)
