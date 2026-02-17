@@ -162,6 +162,12 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	if workspace == "" {
 		workspace = "/workspace"
 	}
+
+	hostname := config.Hostname
+	if hostname == "" {
+		hostname = config.ID
+	}
+
 	mtu := effectiveMTU(config.MTU)
 
 	// Root device is /dev/vda (first virtio block device)
@@ -186,14 +192,14 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
-		workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s",
+		hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs,
 	)
 }
 

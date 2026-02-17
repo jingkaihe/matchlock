@@ -37,6 +37,7 @@ type VMConfig struct {
 	UseInterception bool         // Use network interception (MITM proxy)
 	Privileged      bool         // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	DNSServers      []string     // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
+	Hostname        string       // Hostname for the guest (default: vm's ID)
 	MTU             int          // Guest interface/network stack MTU (default: 1500)
 	PrebuiltRootfs  string       // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks      []DiskConfig // Additional block devices to attach

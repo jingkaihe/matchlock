@@ -62,3 +62,23 @@ func TestParseBootConfigRejectsInvalidMTU(t *testing.T) {
 	assert.Nil(t, cfg)
 	assert.ErrorIs(t, err, ErrInvalidMTU)
 }
+
+func TestRenderEtcHosts(t *testing.T) {
+	got := renderEtcHosts("override.internal")
+
+	assert.Contains(t, got, "127.0.0.1 localhost localhost.localdomain override.internal\n")
+	assert.Contains(t, got, "::1 localhost ip6-localhost ip6-loopback\n")
+	assert.Contains(t, got, "ff02::1 ip6-allnodes\n")
+	assert.Contains(t, got, "ff02::2 ip6-allrouters\n")
+}
+
+func TestWriteEtcHostsCreatesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+
+	err := writeEtcHosts(path, "vm-12345678")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, renderEtcHosts("vm-12345678"), string(data))
+}

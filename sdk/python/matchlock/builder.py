@@ -89,6 +89,10 @@ class Sandbox:
         self._opts.dns_servers.extend(servers)
         return self
 
+    def with_hostname(self, hostname: str) -> Sandbox:
+        self._opts.hostname = hostname
+        return self
+
     def mount(self, guest_path: str, config: MountConfig) -> Sandbox:
         self._opts.mounts[guest_path] = config
         return self

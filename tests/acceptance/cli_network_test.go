@@ -43,6 +43,60 @@ func TestCLIDNSServersDefaultResolvConf(t *testing.T) {
 	assert.Contains(t, stdout, "8.8.4.4")
 }
 
+func TestCLIHostnameDefaultEtcHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"cat", "/etc/hostname",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "vm-")
+}
+
+func TestCLIHostnameDefaultHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"hostname",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "vm-")
+}
+
+func TestCLIHostnameOverrideEtcHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
+		"cat", "/etc/hostname",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "override.internal")
+}
+
+func TestCLIHostnameOverrideHostname(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
+		"hostname",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "override.internal")
+}
+
+func TestCLIHostnameDefaultEtcHosts(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "localhost localhost.localdomain vm-")
+}
+
+func TestCLIHostnameOverrideEtcHosts(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "localhost localhost.localdomain override.internal")
+}
+
 func TestCLIAllowedHostHTTP(t *testing.T) {
 	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", "alpine:latest",

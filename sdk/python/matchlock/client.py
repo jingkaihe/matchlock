@@ -738,6 +738,7 @@ class Client:
         has_allowed_hosts = bool(opts.allowed_hosts)
         has_secrets = bool(opts.secrets)
         has_dns_servers = bool(opts.dns_servers)
+        has_hostname = bool(opts.hostname)
         has_mtu = opts.network_mtu > 0
 
         block_private_ips, has_block_private_override = (
@@ -748,6 +749,7 @@ class Client:
             has_allowed_hosts
             or has_secrets
             or has_dns_servers
+            or has_hostname
             or has_mtu
             or has_block_private_override
         )
@@ -769,6 +771,8 @@ class Client:
             }
         if has_dns_servers:
             network["dns_servers"] = opts.dns_servers
+        if has_hostname:
+            network["hostname"] = opts.hostname
         if has_mtu:
             network["mtu"] = opts.network_mtu
 

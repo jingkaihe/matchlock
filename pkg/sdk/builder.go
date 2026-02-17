@@ -135,6 +135,12 @@ func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	return b
 }
 
+// WithHostname sets the sandbox's hostname
+func (b *SandboxBuilder) WithHostname(hostname string) *SandboxBuilder {
+	b.opts.Hostname = hostname
+	return b
+}
+
 // WithNetworkMTU overrides the guest interface/network stack MTU.
 func (b *SandboxBuilder) WithNetworkMTU(mtu int) *SandboxBuilder {
 	b.opts.NetworkMTU = mtu

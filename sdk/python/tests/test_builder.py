@@ -149,6 +149,10 @@ class TestSandboxNetwork:
         opts = Sandbox("img").options()
         assert opts.dns_servers == []
 
+    def test_hostname(self):
+        opts = Sandbox("img").with_hostname("override.internal").options()
+        assert opts.hostname == "override.internal"
+
     def test_network_mtu(self):
         opts = Sandbox("img").with_network_mtu(1200).options()
         assert opts.network_mtu == 1200

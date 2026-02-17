@@ -78,3 +78,19 @@ func TestComposeCommand_RepeatedCallsConsistent(t *testing.T) {
 		assert.Equal(t, []string{"python3", "app.py"}, got)
 	}
 }
+
+func TestGetHostname_UsesConfiguredNetworkHostname(t *testing.T) {
+	cfg := &Config{
+		Network: &NetworkConfig{Hostname: "override.internal"},
+	}
+
+	assert.Equal(t, "override.internal", cfg.GetHostname())
+}
+
+func TestGetHostname_NilNetworkFallsBackToGeneratedID(t *testing.T) {
+	cfg := &Config{}
+
+	hostname := cfg.GetHostname()
+	assert.Regexp(t, `^vm-[0-9a-f]{8}$`, hostname)
+	assert.Equal(t, hostname, cfg.ID)
+}

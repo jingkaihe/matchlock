@@ -96,9 +96,18 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 
 // runCLIWithTimeout runs the CLI with a timeout and returns stdout, stderr, exit code.
 func runCLIWithTimeout(t *testing.T, timeout time.Duration, args ...string) (string, string, int) {
+	return runCLIEnvWithTimeout(t, timeout, nil, args...)
+}
+
+// runCLIEnvWithTimeout runs the CLI with optional env and a timeout and returns stdout, stderr, exit code.
+func runCLIEnvWithTimeout(t *testing.T, timeout time.Duration, env []string, args ...string) (string, string, int) {
 	t.Helper()
 	bin := matchlockBin(t)
 	cmd := exec.Command(bin, args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
+
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

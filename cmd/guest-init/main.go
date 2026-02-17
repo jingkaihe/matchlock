@@ -25,9 +25,11 @@ import (
 )
 
 const (
-	procCmdlinePath = "/proc/cmdline"
-	procMountsPath  = "/proc/mounts"
-	resolvConfPath  = "/etc/resolv.conf"
+	procCmdlinePath   = "/proc/cmdline"
+	procMountsPath    = "/proc/mounts"
+	etcHostnamePath   = "/etc/hostname"
+	etcHostsPath      = "/etc/hosts"
+	etcResolvConfPath = "/etc/resolv.conf"
 
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
@@ -49,6 +51,7 @@ type diskMount struct {
 
 type bootConfig struct {
 	DNSServers []string
+	Hostname   string
 	Workspace  string
 	MTU        int
 	Disks      []diskMount
@@ -86,9 +89,12 @@ func runInit() {
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
-	setHostname("matchlock")
 
-	if err := writeResolvConf(resolvConfPath, cfg.DNSServers); err != nil {
+	if err := configureHostname(cfg.Hostname); err != nil {
+		fatal(err)
+	}
+
+	if err := writeResolvConf(etcResolvConfPath, cfg.DNSServers); err != nil {
 		fatal(err)
 	}
 
@@ -136,6 +142,12 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				if ns != "" {
 					cfg.DNSServers = append(cfg.DNSServers, ns)
 				}
+			}
+
+		case strings.HasPrefix(field, "hostname="):
+			v := strings.TrimPrefix(field, "hostname=")
+			if v != "" {
+				cfg.Hostname = v
 			}
 
 		case strings.HasPrefix(field, "matchlock.workspace="):
@@ -217,10 +229,40 @@ func configureCgroupDelegation() {
 	}
 }
 
-func setHostname(name string) {
-	if err := unix.Sethostname([]byte(name)); err != nil {
+// configureHostname calls sethostname and writes /etc/hostname.
+//
+// Hostname is set before user-space via the `hostname=` kernel arg, but we set
+// it here too to keep /etc/hostname in sync for tools that read the file.
+func configureHostname(hostname string) error {
+	if hostname == "" {
+		hostname = "matchlock"
+	}
+	if err := unix.Sethostname([]byte(hostname)); err != nil {
 		warnf("set hostname failed: %v", err)
 	}
+	if err := os.WriteFile(etcHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
+		return errx.With(ErrWriteHostname, " write %s: %w", etcHostnamePath, err)
+	}
+	if err := writeEtcHosts(etcHostsPath, hostname); err != nil {
+		return errx.With(ErrWriteHosts, " write %s: %w", etcHostsPath, err)
+	}
+
+	return nil
+}
+
+func writeEtcHosts(path, hostname string) error {
+	return os.WriteFile(path, []byte(renderEtcHosts(hostname)), 0644)
+}
+
+func renderEtcHosts(hostname string) string {
+	var b strings.Builder
+	b.WriteString("127.0.0.1 localhost localhost.localdomain ")
+	b.WriteString(hostname)
+	b.WriteByte('\n')
+	b.WriteString("::1 localhost ip6-localhost ip6-loopback\n")
+	b.WriteString("ff02::1 ip6-allnodes\n")
+	b.WriteString("ff02::2 ip6-allrouters\n")
+	return b.String()
 }
 
 func writeResolvConf(path string, servers []string) error {

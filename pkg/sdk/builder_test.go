@@ -132,6 +132,14 @@ func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	require.Empty(t, opts.DNSServers)
 }
 
+func TestBuilderHostname(t *testing.T) {
+	opts := New("alpine:latest").
+		WithHostname("override.internal").
+		Options()
+
+	require.Equal(t, "override.internal", opts.Hostname)
+}
+
 func TestBuilderNetworkMTU(t *testing.T) {
 	opts := New("alpine:latest").
 		WithNetworkMTU(1200).

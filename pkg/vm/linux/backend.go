@@ -268,9 +268,14 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if workspace == "" {
 			workspace = "/workspace"
 		}
+		hostname := m.config.Hostname
+		if hostname == "" {
+			hostname = m.config.ID
+		}
+
 		mtu := effectiveMTU(m.config.MTU)
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init ip=%s::%s:255.255.255.0::eth0:off%s matchlock.workspace=%s matchlock.dns=%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), workspace, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s matchlock.workspace=%s matchlock.dns=%s",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), hostname, workspace, vm.KernelDNSParam(m.config.DNSServers))
 		kernelArgs += fmt.Sprintf(" matchlock.mtu=%d", mtu)
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"

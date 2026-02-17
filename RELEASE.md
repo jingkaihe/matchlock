@@ -9,6 +9,7 @@
 * Added configurable guest network MTU (CLI `--mtu` and SDK `NetworkMTU`) to mitigate path-MTU/TLS handshake issues on some VM networking paths.
 * Refactored guest runtime startup to a unified `guest-init` binary that dispatches init/agent/fused roles, replacing separate guest binaries and simplifying rootfs injection.
 * Stabilised FUSE inode propagation for workspace paths to eliminate intermittent Alpine/musl `getcwd` failures during `git init` in `/workspace` ([#43](https://github.com/jingkaihe/matchlock/issues/43)).
+* Added configurable guest hostname support (CLI `--hostname` and Go/Python SDKs), with safe defaults and deterministic `/etc/hostname` + `/etc/hosts` setup in guest init ([#48](https://github.com/jingkaihe/matchlock/pull/48) by [@comunidadio](https://github.com/comunidadio).
 
 ## 0.1.19
 

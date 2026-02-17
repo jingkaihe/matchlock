@@ -224,6 +224,8 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// Hostname overrides the default guest hostname (sandbox's ID)
+	Hostname string
 	// NetworkMTU overrides the guest interface/network stack MTU (default: 1500).
 	NetworkMTU int
 	// PortForwards maps local host ports to remote sandbox ports.
@@ -486,10 +488,11 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasAllowedHosts := len(opts.AllowedHosts) > 0
 	hasSecrets := len(opts.Secrets) > 0
 	hasDNSServers := len(opts.DNSServers) > 0
+	hasHostname := len(opts.Hostname) > 0
 	hasMTU := opts.NetworkMTU > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasMTU || hasBlockPrivateIPsOverride
+	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride
 	if !includeNetwork {
 		return nil
 	}
@@ -516,6 +519,9 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	}
 	if hasDNSServers {
 		network["dns_servers"] = opts.DNSServers
+	}
+	if hasHostname {
+		network["hostname"] = opts.Hostname
 	}
 	if hasMTU {
 		network["mtu"] = opts.NetworkMTU

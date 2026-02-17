@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
@@ -70,7 +69,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, fmt.Errorf("RootfsPath is required")
 	}
 
-	id := "vm-" + uuid.New().String()[:8]
+	id := config.GetID()
+	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
 
 	stateMgr := state.NewManager()
@@ -185,6 +185,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Privileged: config.Privileged,
 		ExtraDisks: extraDisks,
 		DNSServers: config.Network.GetDNSServers(),
+		Hostname:   hostname,
 		MTU:        config.Network.GetMTU(),
 	}
 
