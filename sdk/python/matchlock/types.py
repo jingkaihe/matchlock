@@ -240,6 +240,9 @@ class ImageConfig:
 class CreateOptions:
     """Options for creating a sandbox."""
 
+    id: str = ""
+    """ID for the sandbox (default: vm-{randomchars})"""
+
     image: str = ""
     """Container image reference (required, e.g., alpine:latest)."""
 
@@ -281,6 +284,9 @@ class CreateOptions:
 
     dns_servers: list[str] = field(default_factory=list)
     """DNS servers to use (default: 8.8.8.8, 8.8.4.4)."""
+
+    hostname: str = ""
+    """Guest hostname (default: sandbox's id)."""
 
     network_mtu: int = 0
     """Network MTU override (0 = use default)."""

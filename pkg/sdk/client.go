@@ -191,6 +191,8 @@ func (c *Client) Remove() error {
 
 // CreateOptions holds options for creating a sandbox
 type CreateOptions struct {
+	// ID is the sandbox's identifier (default: vm-{randomchars})
+	ID string
 	// Image is the container image reference (required, e.g., alpine:latest)
 	Image string
 	// Privileged skips in-guest security restrictions (seccomp, cap drop, no_new_privs)
@@ -224,6 +226,8 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// Hostname overrides the default guest hostname (sandbox's ID)
+	Hostname string
 	// NetworkMTU overrides the guest interface/network stack MTU (default: 1500).
 	NetworkMTU int
 	// PortForwards maps local host ports to remote sandbox ports.
@@ -429,6 +433,10 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		},
 	}
 
+	if opts.ID != "" {
+		params["id"] = opts.ID
+	}
+
 	if opts.Privileged {
 		params["privileged"] = true
 	}
@@ -486,10 +494,11 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasAllowedHosts := len(opts.AllowedHosts) > 0
 	hasSecrets := len(opts.Secrets) > 0
 	hasDNSServers := len(opts.DNSServers) > 0
+	hasHostname := len(opts.Hostname) > 0
 	hasMTU := opts.NetworkMTU > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasMTU || hasBlockPrivateIPsOverride
+	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride
 	if !includeNetwork {
 		return nil
 	}
@@ -516,6 +525,9 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	}
 	if hasDNSServers {
 		network["dns_servers"] = opts.DNSServers
+	}
+	if hasHostname {
+		network["hostname"] = opts.Hostname
 	}
 	if hasMTU {
 		network["mtu"] = opts.NetworkMTU

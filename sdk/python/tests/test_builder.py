@@ -42,6 +42,10 @@ class TestSandboxResources:
         opts = Sandbox("img").with_workspace("/code").options()
         assert opts.workspace == "/code"
 
+    def test_with_id(self):
+        opts = Sandbox("img").with_id("dev-server").options()
+        assert opts.id == "dev-server"
+
 
 class TestSandboxChaining:
     def test_fluent_chaining(self):
@@ -148,6 +152,10 @@ class TestSandboxNetwork:
     def test_dns_servers_default_empty(self):
         opts = Sandbox("img").options()
         assert opts.dns_servers == []
+
+    def test_hostname(self):
+        opts = Sandbox("img").with_hostname("override.internal").options()
+        assert opts.hostname == "override.internal"
 
     def test_network_mtu(self):
         opts = Sandbox("img").with_network_mtu(1200).options()

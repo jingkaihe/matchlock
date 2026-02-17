@@ -80,6 +80,14 @@ func TestBuilderUnsetBlockPrivateIPs(t *testing.T) {
 	require.False(t, opts.BlockPrivateIPsSet)
 }
 
+func TestBuilderID(t *testing.T) {
+	opts := New("alpine:latest").
+		WithID("dev-server").
+		Options()
+
+	require.Equal(t, "dev-server", opts.ID)
+}
+
 func TestBuilderWorkspace(t *testing.T) {
 	opts := New("alpine:latest").WithWorkspace("/home/user/code").Options()
 	require.Equal(t, "/home/user/code", opts.Workspace)
@@ -130,6 +138,14 @@ func TestBuilderDNSServersChained(t *testing.T) {
 func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	opts := New("alpine:latest").Options()
 	require.Empty(t, opts.DNSServers)
+}
+
+func TestBuilderHostname(t *testing.T) {
+	opts := New("alpine:latest").
+		WithHostname("override.internal").
+		Options()
+
+	require.Equal(t, "override.internal", opts.Hostname)
 }
 
 func TestBuilderNetworkMTU(t *testing.T) {

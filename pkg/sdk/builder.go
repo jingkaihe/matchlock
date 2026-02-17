@@ -25,6 +25,12 @@ func New(image string) *SandboxBuilder {
 	}
 }
 
+// WithID sets the sandbox's ID
+func (b *SandboxBuilder) WithID(id string) *SandboxBuilder {
+	b.opts.ID = id
+	return b
+}
+
 // WithPrivileged enables privileged mode, skipping in-guest security restrictions.
 func (b *SandboxBuilder) WithPrivileged() *SandboxBuilder {
 	b.opts.Privileged = true
@@ -132,6 +138,12 @@ func (b *SandboxBuilder) AddSecret(name, value string, hosts ...string) *Sandbox
 // WithDNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4).
 func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	b.opts.DNSServers = append(b.opts.DNSServers, servers...)
+	return b
+}
+
+// WithHostname sets the sandbox's hostname
+func (b *SandboxBuilder) WithHostname(hostname string) *SandboxBuilder {
+	b.opts.Hostname = hostname
 	return b
 }
 
