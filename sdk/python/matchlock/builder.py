@@ -25,10 +25,6 @@ class Sandbox:
     def __init__(self, image: str) -> None:
         self._opts = CreateOptions(image=image)
 
-    def with_id(self, id: str) -> Sandbox:
-        self._opts.id = id
-        return self
-
     def with_cpus(self, cpus: int) -> Sandbox:
         self._opts.cpus = cpus
         return self

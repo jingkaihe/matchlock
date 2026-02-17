@@ -140,7 +140,7 @@ func (c *Config) GetID() string {
 
 // GetHostname returns hostname from config or default to ID if not set
 func (c *Config) GetHostname() string {
-	if c.Network.Hostname != "" {
+	if c.Network != nil && c.Network.Hostname != "" {
 		return c.Network.Hostname
 	}
 	return c.GetID()

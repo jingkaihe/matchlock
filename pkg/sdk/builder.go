@@ -25,12 +25,6 @@ func New(image string) *SandboxBuilder {
 	}
 }
 
-// WithID sets the sandbox's ID
-func (b *SandboxBuilder) WithID(id string) *SandboxBuilder {
-	b.opts.ID = id
-	return b
-}
-
 // WithPrivileged enables privileged mode, skipping in-guest security restrictions.
 func (b *SandboxBuilder) WithPrivileged() *SandboxBuilder {
 	b.opts.Privileged = true

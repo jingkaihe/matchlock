@@ -224,6 +224,13 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 			ID:      req.ID,
 		}
 	}
+	if params.ID != "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "id is internal-only and cannot be set"},
+			ID:      req.ID,
+		}
+	}
 
 	config := api.DefaultConfig().Merge(&params)
 	if config.VFS != nil && len(config.VFS.Mounts) > 0 {

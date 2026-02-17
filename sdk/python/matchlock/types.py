@@ -240,9 +240,6 @@ class ImageConfig:
 class CreateOptions:
     """Options for creating a sandbox."""
 
-    id: str = ""
-    """ID for the sandbox (default: vm-{randomchars})"""
-
     image: str = ""
     """Container image reference (required, e.g., alpine:latest)."""
 

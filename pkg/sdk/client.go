@@ -191,8 +191,6 @@ func (c *Client) Remove() error {
 
 // CreateOptions holds options for creating a sandbox
 type CreateOptions struct {
-	// ID is the sandbox's identifier (default: vm-{randomchars})
-	ID string
 	// Image is the container image reference (required, e.g., alpine:latest)
 	Image string
 	// Privileged skips in-guest security restrictions (seccomp, cap drop, no_new_privs)
@@ -431,10 +429,6 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 			"disk_size_mb":    opts.DiskSizeMB,
 			"timeout_seconds": opts.TimeoutSeconds,
 		},
-	}
-
-	if opts.ID != "" {
-		params["id"] = opts.ID
 	}
 
 	if opts.Privileged {

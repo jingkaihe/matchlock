@@ -42,10 +42,6 @@ class TestSandboxResources:
         opts = Sandbox("img").with_workspace("/code").options()
         assert opts.workspace == "/code"
 
-    def test_with_id(self):
-        opts = Sandbox("img").with_id("dev-server").options()
-        assert opts.id == "dev-server"
-
 
 class TestSandboxChaining:
     def test_fluent_chaining(self):

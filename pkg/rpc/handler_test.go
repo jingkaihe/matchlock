@@ -276,6 +276,26 @@ func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }
 
+func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
+	factoryCalls := 0
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"id":    "dev-server",
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail for user-provided id")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "id is internal-only")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
 func TestHandlerPortForwardUnsupported(t *testing.T) {
 	vm := &mockVM{id: "vm-test"}
 	rpc := newTestRPC(vm)

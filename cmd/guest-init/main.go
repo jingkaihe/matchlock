@@ -90,7 +90,9 @@ func runInit() {
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
 
-	configureHostname(cfg.Hostname)
+	if err := configureHostname(cfg.Hostname); err != nil {
+		fatal(err)
+	}
 
 	if err := writeResolvConf(etcResolvConfPath, cfg.DNSServers); err != nil {
 		fatal(err)
@@ -244,30 +246,26 @@ func configureHostname(hostname string) error {
 	if err := os.WriteFile(etcHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
 		return errx.With(ErrWriteHostname, " write %s: %w", etcHostnamePath, err)
 	}
-	if err := patchEtcHostsWithHostname(etcHostsPath, hostname); err != nil {
-		return errx.With(ErrWriteHosts, " write %s: %w", etcHostnamePath, err)
+	if err := writeEtcHosts(etcHostsPath, hostname); err != nil {
+		return errx.With(ErrWriteHosts, " write %s: %w", etcHostsPath, err)
 	}
 
 	return nil
 }
 
-func patchEtcHostsWithHostname(path string, hostname string) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
+func writeEtcHosts(path, hostname string) error {
+	return os.WriteFile(path, []byte(renderEtcHosts(hostname)), 0644)
+}
 
-	// inject guest hostname on localhost lines, we do this instead of writing file
-	// from scratch so that we do not overwrite potential custom /etc/hosts in OCI image
-	lines := strings.Split(string(content), "\n")
-	for i := range lines {
-		if strings.Contains(lines[i], "localhost") {
-			lines[i] = fmt.Sprintf("%s %s", lines[i], hostname)
-		}
-	}
-
-	patched := strings.Join(lines, "\n")
-	return os.WriteFile(path, []byte(patched), 0644)
+func renderEtcHosts(hostname string) string {
+	var b strings.Builder
+	b.WriteString("127.0.0.1 localhost localhost.localdomain ")
+	b.WriteString(hostname)
+	b.WriteByte('\n')
+	b.WriteString("::1 localhost ip6-localhost ip6-loopback\n")
+	b.WriteString("ff02::1 ip6-allnodes\n")
+	b.WriteString("ff02::2 ip6-allrouters\n")
+	return b.String()
 }
 
 func writeResolvConf(path string, servers []string) error {

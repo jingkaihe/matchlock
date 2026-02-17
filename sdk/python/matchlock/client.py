@@ -721,9 +721,6 @@ class Client:
                 vfs["interception"] = wire_vfs.to_dict()
             params["vfs"] = vfs
 
-        if opts.id:
-            params["id"] = opts.id
-
         if opts.env:
             params["env"] = opts.env
 

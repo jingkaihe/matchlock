@@ -80,14 +80,6 @@ func TestBuilderUnsetBlockPrivateIPs(t *testing.T) {
 	require.False(t, opts.BlockPrivateIPsSet)
 }
 
-func TestBuilderID(t *testing.T) {
-	opts := New("alpine:latest").
-		WithID("dev-server").
-		Options()
-
-	require.Equal(t, "dev-server", opts.ID)
-}
-
 func TestBuilderWorkspace(t *testing.T) {
 	opts := New("alpine:latest").WithWorkspace("/home/user/code").Options()
 	require.Equal(t, "/home/user/code", opts.Workspace)
