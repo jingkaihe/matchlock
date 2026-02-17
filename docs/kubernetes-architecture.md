@@ -24,22 +24,24 @@ This document designs a Kubernetes-native architecture that preserves matchlock'
 | TAP device creation | `pkg/vm/linux/tap.go` | Pods need `NET_ADMIN` capability |
 | nftables rules (DNAT, NAT, forward) | `pkg/net/nftables.go` | Pods need `NET_ADMIN` + `NET_RAW` capabilities |
 | Subnet allocation (192.168.X.0/24, X=100-254) | `pkg/state/subnet.go` | Max 155 VMs per allocation domain; needs per-node scoping |
-| vsock UDS communication | `pkg/vm/linux/backend.go:217-248` | Host-guest comms are local Unix sockets; not networkable |
+| vsock UDS communication | `pkg/vm/linux/backend.go` | Host-guest comms are local Unix sockets; not networkable |
 | VFS over vsock UDS | `pkg/sandbox/sandbox_linux.go:285-286` | FUSE server binds to `{vsock_path}_{port}` |
 | rootfs copy-on-write per VM | `pkg/sandbox/sandbox_linux.go:97-101` | Local disk I/O; rootfs images must be on node |
-| Firecracker binary required on host | `pkg/vm/linux/backend.go:122` | `firecracker` must be in PATH on worker nodes |
+| Firecracker binary required on host | `pkg/vm/linux/backend.go` | `firecracker` must be in PATH inside the pod |
 
 ### 2.2 Design Goals
 
-1. **Preserve the security model**: VM-level isolation, MITM proxy, secret injection, VFS interception all remain unchanged inside the worker pod.
-2. **Kubernetes-native**: Use CRDs, controllers, and standard K8s patterns.
-3. **Minimal code changes**: Re-use the existing `pkg/sandbox`, `pkg/vm/linux`, `pkg/net`, `pkg/vfs`, and `pkg/rpc` packages as-is where possible. New code is primarily the API layer, controller, and scheduler.
+1. **Preserve the security model**: VM-level isolation, MITM proxy, secret injection, VFS interception all remain unchanged inside the sandbox pod.
+2. **Kubernetes-native**: Use CRDs, controllers, and standard K8s patterns. Lean on the K8s scheduler, resource limits, quotas, and pod lifecycle instead of reimplementing them.
+3. **Minimal code changes**: Re-use the existing `pkg/sandbox`, `pkg/vm/linux`, `pkg/net`, `pkg/vfs`, and `pkg/rpc` packages as-is where possible.
 4. **Horizontal scaling**: Add capacity by adding KVM-enabled nodes.
 5. **Multi-tenancy**: Namespace-level isolation, resource quotas, and RBAC.
 
 ---
 
 ## 3. Architecture Overview
+
+The core idea: **one Pod per Sandbox**. Each Sandbox CR triggers creation of a Kubernetes Pod that runs a single Firecracker VM inside it. The Pod's resource requests/limits map directly to the VM's CPU and memory, so the Kubernetes scheduler handles placement, bin-packing, and resource accounting natively.
 
 ```
                                     Kubernetes Cluster
@@ -49,48 +51,58 @@ This document designs a Kubernetes-native architecture that preserves matchlock'
  │  │  matchlock-api       │     │  matchlock-controller        │           │
  │  │  (Deployment)        │     │  (Deployment)                │           │
  │  │                      │     │                              │           │
- │  │  - REST/gRPC API     │────▶│  - Watches Sandbox CRDs      │           │
- │  │  - AuthN/AuthZ       │     │  - Schedules to worker pods  │           │
- │  │  - Admission control │     │  - Reconciles lifecycle      │           │
- │  │  - SDK gateway       │     │  - Garbage collection        │           │
+ │  │  - REST/gRPC API     │     │  - Watches Sandbox CRDs      │           │
+ │  │  - AuthN/AuthZ       │     │  - Creates sandbox pods      │           │
+ │  │  - SDK gateway       │     │  - Reconciles lifecycle      │           │
  │  └─────────┬────────────┘     └──────────────┬───────────────┘           │
  │            │                                  │                          │
- │            │  Creates Sandbox CRs             │  Assigns to worker,      │
- │            │                                  │  updates status           │
+ │            │  Creates Sandbox CRs             │  Creates/deletes Pods    │
  │            ▼                                  ▼                          │
  │  ┌──────────────────────────────────────────────────────────┐           │
  │  │                    Kubernetes API Server                  │           │
- │  │                    (Sandbox CRD storage)                  │           │
+ │  │                    (Sandbox CRD + Pod storage)            │           │
  │  └──────────────────────────────────────────────────────────┘           │
- │            │                                                             │
- │            │  Worker pods watch for assigned Sandboxes                   │
- │            ▼                                                             │
+ │                                                                          │
+ │  KVM-enabled Node Pool                                                   │
  │  ┌─────────────────────────────────────────────────────────────────┐    │
- │  │  KVM-enabled Node Pool                                          │    │
- │  │                                                                  │    │
- │  │  ┌──────────────────────┐  ┌──────────────────────┐             │    │
- │  │  │ matchlock-worker pod │  │ matchlock-worker pod  │   ...       │    │
- │  │  │ (DaemonSet)          │  │ (DaemonSet)           │             │    │
- │  │  │                      │  │                       │             │    │
- │  │  │ ┌──────────────────┐ │  │ ┌───────────────────┐ │             │    │
- │  │  │ │ Firecracker VM 1 │ │  │ │ Firecracker VM 1  │ │             │    │
- │  │  │ │ ┌──────────────┐ │ │  │ │                   │ │             │    │
- │  │  │ │ │ guest-init   │ │ │  │ │                   │ │             │    │
- │  │  │ │ │ agent+fused  │ │ │  │ │                   │ │             │    │
- │  │  │ │ └──────────────┘ │ │  │ └───────────────────┘ │             │    │
- │  │  │ ├──────────────────┤ │  │ ┌───────────────────┐ │             │    │
- │  │  │ │ Firecracker VM 2 │ │  │ │ Firecracker VM 2  │ │             │    │
- │  │  │ │                  │ │  │ │                   │ │             │    │
- │  │  │ └──────────────────┘ │  │ └───────────────────┘ │             │    │
- │  │  │                      │  │                       │             │    │
- │  │  │ - MITM proxy         │  │                       │             │    │
- │  │  │ - nftables rules     │  │                       │             │    │
- │  │  │ - VFS/FUSE server    │  │                       │             │    │
- │  │  │ - Image cache        │  │                       │             │    │
- │  │  │ - Local subnet alloc │  │                       │             │    │
- │  │  └──────────────────────┘  └───────────────────────┘             │    │
- │  └─────────────────────────────────────────────────────────────────┘    │
- └──────────────────────────────────────────────────────────────────────────┘
+ │  │  Node 1                          Node 2                         │    │
+ │  │  ┌───────────────────────────┐  ┌───────────────────────────┐  │    │
+ │  │  │ sandbox-pod-a1b2          │  │ sandbox-pod-e5f6          │  │    │
+ │  │  │ resources:                │  │ resources:                │  │    │
+ │  │  │   cpu: 2, mem: 1Gi       │  │   cpu: 4, mem: 2Gi       │  │    │
+ │  │  │                          │  │                          │  │    │
+ │  │  │ ┌──────────────────────┐ │  │ ┌──────────────────────┐ │  │    │
+ │  │  │ │ matchlock-sandbox    │ │  │ │ matchlock-sandbox    │ │  │    │
+ │  │  │ │ (thin Go binary)    │ │  │ │ (thin Go binary)    │ │  │    │
+ │  │  │ │                     │ │  │ │                     │ │  │    │
+ │  │  │ │ sandbox.New()       │ │  │ │ sandbox.New()       │ │  │    │
+ │  │  │ │ sandbox.Start()     │ │  │ │ sandbox.Start()     │ │  │    │
+ │  │  │ │ gRPC :50051         │ │  │ │ gRPC :50051         │ │  │    │
+ │  │  │ │                     │ │  │ │                     │ │  │    │
+ │  │  │ │  ┌──────────────┐  │ │  │ │  ┌──────────────┐  │ │  │    │
+ │  │  │ │  │ Firecracker  │  │ │  │ │  │ Firecracker  │  │ │  │    │
+ │  │  │ │  │ microVM      │  │ │  │ │  │ microVM      │  │ │  │    │
+ │  │  │ │  │ + TAP + MITM │  │ │  │ │  │ + TAP + MITM │  │ │  │    │
+ │  │  │ │  │ + VFS/FUSE   │  │ │  │ │  │ + VFS/FUSE   │  │ │  │    │
+ │  │  │ │  └──────────────┘  │ │  │ │  └──────────────┘  │ │  │    │
+ │  │  │ └────────────────────┘ │  │ └────────────────────┘ │  │    │
+ │  │  └───────────────────────┘  └───────────────────────┘  │    │
+ │  │                                                          │    │
+ │  │  ┌───────────────────────────┐                           │    │
+ │  │  │ sandbox-pod-c3d4          │                           │    │
+ │  │  │ resources:                │                           │    │
+ │  │  │   cpu: 1, mem: 512Mi     │                           │    │
+ │  │  │ ...                       │                           │    │
+ │  │  └───────────────────────────┘                           │    │
+ │  │                                                          │    │
+ │  │  ┌───────────────────────────┐  (optional, lightweight)  │    │
+ │  │  │ matchlock-image-warmer    │                           │    │
+ │  │  │ (DaemonSet)               │                           │    │
+ │  │  │ - Pre-pulls OCI images    │                           │    │
+ │  │  │ - Populates shared cache  │                           │    │
+ │  │  └───────────────────────────┘                           │    │
+ │  └─────────────────────────────────────────────────────────┘    │
+ └──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -130,7 +142,6 @@ spec:
     dnsServers:
       - "8.8.8.8"
       - "8.8.4.4"
-    blockPrivateIPs: true
   vfs:
     workspace: "/workspace"
     mounts:
@@ -146,59 +157,51 @@ spec:
   env:
     MY_VAR: "my-value"
 status:
-  phase: Running          # Pending | Scheduling | Creating | Running | Stopping | Stopped | Failed
-  workerNode: node-01
-  workerPod: matchlock-worker-node01-xyz
-  vmID: vm-a1b2c3d4
-  guestIP: "192.168.105.2"
+  phase: Running          # Pending | Creating | Running | Stopping | Stopped | Failed
+  podName: sandbox-sb-a1b2c3d4
+  nodeName: node-01
+  podIP: "10.244.1.15"
+  vmID: sb-a1b2c3d4
   startedAt: "2026-02-17T10:00:00Z"
   conditions:
+    - type: PodReady
+      status: "True"
+      lastTransitionTime: "2026-02-17T10:00:01Z"
     - type: VMReady
       status: "True"
       lastTransitionTime: "2026-02-17T10:00:02Z"
-    - type: NetworkReady
-      status: "True"
-      lastTransitionTime: "2026-02-17T10:00:01Z"
 ```
 
 **Key design decisions:**
 
-- **Secrets via `secretRef`**: Instead of accepting raw secret values in the CRD spec (which would be stored in etcd), secrets reference Kubernetes `Secret` objects. The worker pod resolves these at VM creation time. This is analogous to how `matchlock run --secret API_KEY@host` works, but uses K8s-native secret management.
-- **Phase lifecycle** mirrors matchlock's existing lifecycle phases (`pkg/lifecycle/`) but adds Kubernetes-specific states (`Pending`, `Scheduling`).
+- **Secrets via `secretRef`**: Instead of accepting raw secret values in the CRD spec (which would be stored in etcd), secrets reference Kubernetes `Secret` objects. The sandbox pod resolves these at startup. This is analogous to how `matchlock run --secret API_KEY@host` works, but uses K8s-native secret management.
+- **Phase lifecycle** mirrors matchlock's existing lifecycle phases (`pkg/lifecycle/`) but drops Kubernetes-redundant states (no `Scheduling` — K8s pod scheduling handles that).
 - **Namespace scoping** provides multi-tenant isolation at the Kubernetes level.
 
 ### 4.2 matchlock-controller
 
-A Kubernetes controller (single replica Deployment with leader election) that watches `Sandbox` CRDs and drives the lifecycle.
+A Kubernetes controller (single replica Deployment with leader election) that watches `Sandbox` CRDs and manages the corresponding Pods.
 
 **Responsibilities:**
 
-1. **Scheduling**: When a new `Sandbox` CR is created, select a worker node based on:
-   - Available capacity (CPU, memory, VM count per node)
-   - Node labels/taints (KVM-enabled nodes)
-   - Affinity/anti-affinity rules from the Sandbox spec
+1. **Pod creation**: When a new `Sandbox` CR appears, create a Pod spec with:
+   - Resource requests/limits matching the Sandbox's CPU/memory
+   - `nodeSelector` for KVM-enabled nodes
+   - Sandbox config injected via environment/configmap
+   - Appropriate volumes, security context, and tolerations
 
-2. **Assignment**: Set `status.workerNode` and `status.workerPod` on the Sandbox CR. The assigned worker pod picks this up.
+2. **Status synchronization**: Watch the Pod's status and reflect it back onto the Sandbox CR (phase, podIP, nodeName, conditions).
 
-3. **Lifecycle reconciliation**: Watch for Sandbox phase transitions. Handle:
-   - Timeout enforcement (from `spec.resources.timeoutSeconds`)
-   - Failed VM detection (worker pod reports failure via status)
-   - Cleanup of orphaned Sandboxes when worker pods are evicted
+3. **Timeout enforcement**: If `spec.resources.timeoutSeconds` is set, delete the Pod after timeout.
 
-4. **Garbage collection**: Periodically reconcile Sandboxes against live worker pods. Clean up Sandboxes whose worker pods no longer exist.
+4. **Cleanup**: When a Sandbox CR is deleted, delete the corresponding Pod (via ownerReference, this is mostly automatic).
 
-5. **Quota enforcement**: Validate against namespace-level `ResourceQuota` for matchlock-specific resources (e.g., `matchlock.dev/sandboxes`, `matchlock.dev/cpus`, `matchlock.dev/memory`).
+5. **Subnet coordination**: Assign a unique subnet octet to each Sandbox before pod creation. Store in `status.subnetOctet`. This avoids per-node SQLite coordination (see section 5.4).
 
-**Implementation approach:**
+**Implementation:**
 
 ```go
 // pkg/k8s/controller/sandbox_controller.go
-
-type SandboxReconciler struct {
-    client    client.Client
-    scheme    *runtime.Scheme
-    scheduler *Scheduler
-}
 
 func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
     var sandbox v1alpha1.Sandbox
@@ -207,545 +210,537 @@ func (r *SandboxReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
     }
 
     switch sandbox.Status.Phase {
-    case "":
-        // New Sandbox - schedule it
-        return r.handlePending(ctx, &sandbox)
-    case v1alpha1.PhasePending:
-        return r.handleScheduling(ctx, &sandbox)
-    case v1alpha1.PhaseRunning:
-        return r.handleRunning(ctx, &sandbox)
-    case v1alpha1.PhaseFailed:
-        return r.handleFailed(ctx, &sandbox)
+    case "", v1alpha1.PhasePending:
+        return r.ensurePod(ctx, &sandbox)
+    case v1alpha1.PhaseCreating, v1alpha1.PhaseRunning:
+        return r.syncPodStatus(ctx, &sandbox)
     }
     return ctrl.Result{}, nil
 }
+
+func (r *SandboxReconciler) ensurePod(ctx context.Context, sb *v1alpha1.Sandbox) (ctrl.Result, error) {
+    pod := r.buildSandboxPod(sb)
+
+    // Pod is owned by the Sandbox CR — deleted automatically on CR deletion
+    controllerutil.SetControllerReference(sb, pod, r.scheme)
+
+    if err := r.client.Create(ctx, pod); err != nil {
+        return ctrl.Result{}, err
+    }
+
+    sb.Status.Phase = v1alpha1.PhaseCreating
+    sb.Status.PodName = pod.Name
+    return ctrl.Result{}, r.client.Status().Update(ctx, sb)
+}
 ```
 
-Built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) / kubebuilder.
+The controller is simple because it delegates scheduling to Kubernetes and VM management to the sandbox pod. No custom scheduler, no WorkerNode CRD, no capacity tracking.
 
-### 4.3 matchlock-worker (DaemonSet)
+### 4.3 Sandbox Pod (the thin wrapper)
 
-A privileged DaemonSet pod running on each KVM-enabled node. This is where Firecracker VMs actually run.
+Each Sandbox gets its own Pod. The pod runs a single container: `matchlock-sandbox`, a thin Go binary that wraps the existing `pkg/sandbox` package.
 
-**Why DaemonSet over per-Sandbox pods:**
+**Pod lifecycle:**
 
-Running Firecracker inside a Kubernetes pod requires `/dev/kvm` access, `NET_ADMIN`/`NET_RAW` capabilities, and host networking for TAP devices. Creating a new pod per sandbox would add ~5-10s of pod scheduling overhead on top of matchlock's fast VM boot (~200ms). A DaemonSet that manages multiple VMs per node avoids this overhead and amortizes image caching.
+```
+Pod Created (by controller)
+    │
+    ▼
+Container starts matchlock-sandbox binary
+    │
+    ├─ Reads config from downward API / env / mounted ConfigMap
+    ├─ Resolves K8s Secrets for credential injection
+    ├─ Calls sandbox.New(ctx, config, opts)
+    ├─ Calls sandbox.Start(ctx)
+    ├─ Starts gRPC server on :50051 for exec/file ops
+    ├─ Updates Sandbox CR status to Running
+    │
+    ▼
+Serves exec/file/port-forward requests via gRPC
+    │
+    ▼
+On SIGTERM (pod deletion) or timeout:
+    ├─ Calls sandbox.Close(ctx)
+    └─ Exits cleanly
+```
 
-**Pod spec:**
+**Pod spec (generated by controller):**
 
 ```yaml
-apiVersion: apps/v1
-kind: DaemonSet
+apiVersion: v1
+kind: Pod
 metadata:
-  name: matchlock-worker
-  namespace: matchlock-system
+  name: sandbox-sb-a1b2c3d4
+  namespace: tenant-acme
+  labels:
+    matchlock.dev/sandbox: sb-a1b2c3d4
+    matchlock.dev/role: sandbox
+  ownerReferences:
+    - apiVersion: matchlock.dev/v1alpha1
+      kind: Sandbox
+      name: sb-a1b2c3d4
+      uid: ...
 spec:
-  selector:
-    matchLabels:
-      app: matchlock-worker
-  template:
-    metadata:
-      labels:
-        app: matchlock-worker
-    spec:
-      nodeSelector:
-        matchlock.dev/kvm: "true"        # Only KVM-enabled nodes
-      serviceAccountName: matchlock-worker
-      hostNetwork: true                   # Required for TAP + nftables
-      hostPID: false
-      containers:
-        - name: worker
-          image: ghcr.io/jingkaihe/matchlock/worker:latest
-          securityContext:
-            privileged: true              # Required for /dev/kvm, TAP, nftables
-          resources:
-            requests:
-              cpu: "500m"
-              memory: "256Mi"
-            limits:
-              cpu: "2"
-              memory: "1Gi"
-          volumeMounts:
-            - name: dev-kvm
-              mountPath: /dev/kvm
-            - name: matchlock-data
-              mountPath: /var/lib/matchlock
-            - name: image-cache
-              mountPath: /var/cache/matchlock
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-      volumes:
+  nodeSelector:
+    matchlock.dev/kvm: "true"
+  serviceAccountName: matchlock-sandbox
+  hostNetwork: true                         # Required for TAP + nftables
+  containers:
+    - name: sandbox
+      image: ghcr.io/jingkaihe/matchlock/sandbox:latest
+      securityContext:
+        privileged: true                    # Required for /dev/kvm, TAP, nftables
+      ports:
+        - containerPort: 50051              # gRPC for exec/file ops
+          name: grpc
+      resources:
+        requests:
+          cpu: "2"                          # == Sandbox spec.resources.cpus
+          memory: "1124Mi"                  # == VM memory + ~100Mi overhead
+        limits:
+          cpu: "2"
+          memory: "1224Mi"
+      env:
+        - name: SANDBOX_ID
+          value: "sb-a1b2c3d4"
+        - name: SANDBOX_CONFIG
+          value: "<base64-encoded api.Config JSON>"
+        - name: SUBNET_OCTET
+          value: "105"                      # Pre-assigned by controller
+        - name: GRPC_PORT
+          value: "50051"
+      volumeMounts:
         - name: dev-kvm
-          hostPath:
-            path: /dev/kvm
-            type: CharDevice
-        - name: matchlock-data
-          hostPath:
-            path: /var/lib/matchlock
-            type: DirectoryOrCreate
+          mountPath: /dev/kvm
         - name: image-cache
-          hostPath:
-            path: /var/cache/matchlock
-            type: DirectoryOrCreate
+          mountPath: /var/cache/matchlock
+        - name: sandbox-data
+          mountPath: /var/lib/matchlock
+      readinessProbe:
+        grpc:
+          port: 50051
+        initialDelaySeconds: 2
+        periodSeconds: 5
+      livenessProbe:
+        grpc:
+          port: 50051
+        initialDelaySeconds: 10
+        periodSeconds: 10
+  volumes:
+    - name: dev-kvm
+      hostPath:
+        path: /dev/kvm
+        type: CharDevice
+    - name: image-cache                     # Shared across pods on same node
+      hostPath:
+        path: /var/cache/matchlock
+        type: DirectoryOrCreate
+    - name: sandbox-data                    # Per-pod ephemeral storage
+      emptyDir:
+        sizeLimit: "6Gi"                    # Matches diskSizeMB
+  restartPolicy: Never                      # Sandboxes are ephemeral, don't restart
+  terminationGracePeriodSeconds: 30
+  activeDeadlineSeconds: 600                # == spec.resources.timeoutSeconds
 ```
 
-**Internal architecture of the worker pod:**
+**What you get from Kubernetes for free:**
 
+| Concern | K8s mechanism | Replaces |
+|---|---|---|
+| Scheduling / bin-packing | `resources.requests` + K8s scheduler | Custom scheduler + WorkerNode CRD |
+| Resource limits | `resources.limits` + cgroup enforcement | Nothing (was missing before) |
+| Timeout | `activeDeadlineSeconds` | Custom timeout logic in controller |
+| Quota enforcement | `ResourceQuota` per namespace | Custom quota logic |
+| Cleanup on failure | `restartPolicy: Never` + ownerReference | Orphan reconciliation |
+| Health checking | `readinessProbe` / `livenessProbe` | Custom health reporting |
+| Observability | Pod metrics, logs, events | Custom metrics pipeline |
+| Affinity/anti-affinity | Pod affinity rules | Custom scheduling constraints |
+| Priority | PriorityClass | Nothing |
+
+**The `matchlock-sandbox` binary:**
+
+```go
+// cmd/matchlock-sandbox/main.go
+
+func main() {
+    cfg := loadConfigFromEnv()              // SANDBOX_CONFIG env var
+    secrets := resolveK8sSecrets(cfg)       // Read K8s Secrets via API
+    cfg = mergeSecrets(cfg, secrets)
+
+    octet := os.Getenv("SUBNET_OCTET")     // Pre-assigned by controller
+
+    opts := &sandbox.Options{
+        RootfsPath: buildOrCacheRootfs(cfg),
+        StateDir:   "/var/lib/matchlock",
+        CacheDir:   "/var/cache/matchlock",
+        SubnetOctet: octet,                 // Skip allocator, use assigned value
+    }
+
+    sb, err := sandbox.New(ctx, cfg, opts)
+    handleErr(err)
+
+    err = sb.Start(ctx)
+    handleErr(err)
+
+    updateSandboxCRStatus(ctx, "Running")
+
+    // Serve gRPC until SIGTERM or timeout
+    grpcServer := newGRPCServer(sb)
+    grpcServer.Serve(ctx)
+
+    sb.Close(ctx)
+}
 ```
-matchlock-worker pod
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│  ┌──────────────────────────────────┐                           │
-│  │ CRD Watcher                      │                           │
-│  │ - Watches Sandbox CRs assigned   │                           │
-│  │   to this pod                    │                           │
-│  │ - Drives create/exec/stop        │                           │
-│  └───────────────┬──────────────────┘                           │
-│                  │                                               │
-│  ┌───────────────▼──────────────────┐                           │
-│  │ gRPC Server (:50051)             │                           │
-│  │ - Exec, WriteFile, ReadFile      │                           │
-│  │ - ExecStream (bidirectional)     │                           │
-│  │ - PortForward                    │                           │
-│  └───────────────┬──────────────────┘                           │
-│                  │                                               │
-│  ┌───────────────▼──────────────────┐                           │
-│  │ Sandbox Manager                   │                           │
-│  │ (wraps existing pkg/sandbox)      │                           │
-│  │                                   │                           │
-│  │ sandbox_id → *sandbox.Sandbox     │                           │
-│  │                                   │                           │
-│  │ ┌─────────┐ ┌─────────┐         │                           │
-│  │ │ VM 1    │ │ VM 2    │  ...     │                           │
-│  │ │ FC+TAP  │ │ FC+TAP  │         │                           │
-│  │ │ proxy   │ │ proxy   │         │                           │
-│  │ │ VFS     │ │ VFS     │         │                           │
-│  │ └─────────┘ └─────────┘         │                           │
-│  └──────────────────────────────────┘                           │
-│                                                                  │
-│  ┌──────────────────────────────────┐                           │
-│  │ Image Manager                     │                           │
-│  │ (wraps existing pkg/image)        │                           │
-│  │ - Shared image cache on hostPath  │                           │
-│  │ - Pre-pull via ImageCache CRD     │                           │
-│  └──────────────────────────────────┘                           │
-│                                                                  │
-│  ┌──────────────────────────────────┐                           │
-│  │ Health Reporter                   │                           │
-│  │ - Node capacity (free KVM slots)  │                           │
-│  │ - VM count, CPU/mem utilization   │                           │
-│  │ - Updates WorkerNode CR status    │                           │
-│  └──────────────────────────────────┘                           │
-└─────────────────────────────────────────────────────────────────┘
-```
 
-The worker pod's primary loop:
-
-1. Watch `Sandbox` CRDs filtered by `status.workerPod == MY_POD_NAME`
-2. On new assignment: resolve K8s secrets, call `sandbox.New()` + `sandbox.Start()`
-3. Update `Sandbox` CR status to `Running`
-4. Serve exec/file operations via gRPC (called by the API server)
-5. On delete/stop: call `sandbox.Close()`, update status
+This is ~100 lines of glue. All the real work happens in the unchanged `pkg/sandbox` package.
 
 ### 4.4 matchlock-api
 
-A Deployment (2+ replicas) that provides the external API surface. This replaces the current `matchlock rpc` stdin/stdout model for remote access.
+A Deployment (2+ replicas) providing the external API surface. Replaces `matchlock rpc` stdin/stdout for remote access.
 
-**API design:**
-
-The API translates between HTTP/gRPC and the Kubernetes CRD + worker gRPC backend. Two protocols are supported:
-
-**gRPC (primary, for SDK clients):**
+**gRPC service:**
 
 ```protobuf
 service MatchlockService {
-  // Sandbox lifecycle
+  // Lifecycle (creates/reads Sandbox CRs)
   rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
   rpc GetSandbox(GetSandboxRequest) returns (Sandbox);
   rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
 
-  // Execution (proxied to worker pod)
+  // Execution (proxied directly to sandbox pod's gRPC)
   rpc Exec(ExecRequest) returns (ExecResponse);
   rpc ExecStream(ExecStreamRequest) returns (stream ExecStreamResponse);
 
-  // File operations (proxied to worker pod)
+  // File operations (proxied directly to sandbox pod's gRPC)
   rpc WriteFile(WriteFileRequest) returns (WriteFileResponse);
   rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
   rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
-
-  // Port forwarding
-  rpc PortForward(PortForwardRequest) returns (PortForwardResponse);
 }
-```
-
-**REST (secondary, for dashboards and integrations):**
-
-```
-POST   /v1/sandboxes                  → CreateSandbox
-GET    /v1/sandboxes                  → ListSandboxes
-GET    /v1/sandboxes/{id}             → GetSandbox
-DELETE /v1/sandboxes/{id}             → DeleteSandbox
-POST   /v1/sandboxes/{id}/exec        → Exec
-POST   /v1/sandboxes/{id}/exec-stream → ExecStream (WebSocket)
-POST   /v1/sandboxes/{id}/files       → WriteFile
-GET    /v1/sandboxes/{id}/files       → ReadFile
-GET    /v1/sandboxes/{id}/files/list   → ListFiles
 ```
 
 **Request routing:**
 
 ```
-SDK Client ──gRPC──▶ matchlock-api ──K8s API──▶ Sandbox CR (create/delete)
-                          │
-                          │ (exec/file ops)
-                          │
-                          ├──gRPC──▶ matchlock-worker pod (node-01)
-                          └──gRPC──▶ matchlock-worker pod (node-02)
+SDK ──gRPC──▶ matchlock-api
+                  │
+                  ├─ Create/Delete: writes Sandbox CR to K8s API
+                  │
+                  ├─ Exec/File ops: reads status.podIP from Sandbox CR,
+                  │                 proxies gRPC to sandbox-pod:50051
+                  │
+                  └─ List/Get: reads Sandbox CRs from K8s API
 ```
 
-The API server resolves `status.workerPod` from the Sandbox CR, then connects directly to the worker pod's gRPC endpoint for exec/file operations. This avoids double-hop latency.
+The API server is stateless. It resolves which sandbox pod to talk to by reading `status.podIP` from the Sandbox CR. Since pods use `hostNetwork`, the pod is reachable via the node IP + a unique gRPC port (allocated by the controller per-pod to avoid collisions, or via a `hostPort` mapping).
 
-**Authentication and authorization:**
+### 4.5 matchlock-image-warmer (optional DaemonSet)
 
-- **External**: API key or OIDC token validated at the API server
-- **Internal**: K8s ServiceAccount tokens for worker-to-API-server communication
-- **Multi-tenancy**: API requests are scoped to a K8s namespace. Users can only interact with Sandboxes in namespaces they have RBAC access to.
-
-### 4.5 Image Cache (optional CRD)
+A lightweight, unprivileged DaemonSet that pre-pulls OCI images into the shared `hostPath` cache. This eliminates cold-start image pull latency.
 
 ```yaml
-apiVersion: matchlock.dev/v1alpha1
-kind: ImageCache
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
-  name: alpine-latest
-  namespace: matchlock-system
+  name: matchlock-image-warmer
 spec:
-  images:
-    - "alpine:latest"
-    - "ubuntu:22.04"
-    - "python:3.12-slim"
-  nodeSelector:
-    matchlock.dev/kvm: "true"
-status:
-  cachedNodes:
-    - node: node-01
-      images:
-        - ref: "alpine:latest"
-          digest: "sha256:abc..."
-          cachedAt: "2026-02-17T08:00:00Z"
+  template:
+    spec:
+      nodeSelector:
+        matchlock.dev/kvm: "true"
+      containers:
+        - name: warmer
+          image: ghcr.io/jingkaihe/matchlock/image-warmer:latest
+          volumeMounts:
+            - name: image-cache
+              mountPath: /var/cache/matchlock
+      volumes:
+        - name: image-cache
+          hostPath:
+            path: /var/cache/matchlock
 ```
 
-The worker pod watches `ImageCache` CRs and pre-pulls images to the local `hostPath` cache. This eliminates cold-start image pull latency for commonly used images.
+Watches an `ImageCache` CR listing images to keep warm. Uses the existing `pkg/image` builder to pull and prepare ext4 rootfs images.
 
 ---
 
 ## 5. Key Design Decisions
 
-### 5.1 hostNetwork: true
+### 5.1 Pod-per-Sandbox (not DaemonSet)
 
-**Decision**: Worker pods use `hostNetwork: true`.
+**Decision**: One Kubernetes Pod per Sandbox, each running a single Firecracker VM.
 
-**Rationale**: Matchlock creates TAP devices and nftables rules per VM (`pkg/vm/linux/tap.go`, `pkg/net/nftables.go`). TAP devices are host network namespace objects. The DNAT rules redirect traffic from the TAP interface to the transparent proxy running in the worker pod. With pod networking, the TAP device would exist in the pod's network namespace, but nftables rules need to reference it from the host's perspective for NAT masquerading to work (`pkg/net/nftables.go:335-441`, the `NFTablesNAT` which masquerades traffic from the TAP to the outside). Using `hostNetwork` keeps the current networking stack unchanged.
+**Rationale**: This delegates scheduling, resource management, and lifecycle to Kubernetes instead of reimplementing them:
 
-**Alternative considered**: Using a CNI plugin or network namespace bridging. This would require significant rework of the nftables and proxy code, adding complexity without clear benefit since Firecracker already provides VM-level network isolation.
+- **Native scheduling**: The K8s scheduler handles node selection, bin-packing, affinity, taints/tolerations, and topology spread. No custom scheduler needed.
+- **Native resource limits**: Pod `resources.requests/limits` map to VM CPU/memory. The Firecracker process runs inside the pod's cgroup, so kubelet enforces limits automatically.
+- **Native quotas**: Namespace `ResourceQuota` limits how many sandbox pods (and how much CPU/memory) a tenant can consume.
+- **Native timeout**: `activeDeadlineSeconds` on the Pod handles sandbox timeout without custom timer logic.
+- **Simpler failure model**: Pod dies = sandbox dies. No need to reconcile a multi-VM DaemonSet against orphaned state.
+- **Simpler controller**: ~200 lines (create pod, sync status, handle deletion) vs ~1000+ lines (custom scheduler, capacity tracking, WorkerNode CRD, multi-VM manager).
 
-### 5.2 DaemonSet vs. Pod-per-Sandbox
+**Overhead analysis**: Pod scheduling adds ~2-3s to sandbox creation (scheduler decision ~100ms, container startup ~1-2s, assuming pre-cached container image). This is acceptable because:
+- Matchlock sandboxes typically run for minutes to hours (agent tasks), not sub-second.
+- The container image is a static Go binary + Firecracker — small and fast to start.
+- Image pre-warming via the DaemonSet eliminates OCI image pull latency for sandbox images.
 
-**Decision**: DaemonSet with multiple VMs per pod.
+### 5.2 hostNetwork: true
 
-**Rationale**:
-- **Boot latency**: Matchlock boots Firecracker VMs in ~200ms. Pod scheduling adds 5-10s. A DaemonSet amortizes scheduling cost.
-- **Image cache sharing**: Multiple VMs on the same node share the image cache (`~/.cache/matchlock/images/`). A pod-per-sandbox model would need a shared PersistentVolume or re-pull images per pod.
-- **Subnet allocator**: The current `SubnetAllocator` (`pkg/state/subnet.go`) uses a per-host SQLite database. With a DaemonSet, each node has one allocator managing 155 subnets (192.168.100-254.0/24). This is sufficient for the expected VM density per node.
-- **Privileged pod overhead**: Each privileged pod is a security surface. Fewer privileged pods (one per node) is better than one per sandbox.
+**Decision**: Sandbox pods use `hostNetwork: true`.
+
+**Rationale**: Matchlock creates TAP devices and nftables rules per VM (`pkg/vm/linux/tap.go`, `pkg/net/nftables.go`). TAP devices exist in the pod's network namespace. The NFTablesNAT masquerade rule (`pkg/net/nftables.go:335-441`) needs to route traffic from the TAP through a real interface to the internet. With `hostNetwork`, the TAP and the host's outbound interface are in the same namespace, so the existing masquerade logic works unchanged.
+
+**Trade-off**: `hostNetwork` means sandbox pods share the host's network namespace. Pods on the same node must use different gRPC ports (or Unix sockets). The controller assigns a unique port per pod via the `GRPC_PORT` env var (range 50051-50205, matching the 155 max subnets per node).
+
+**Alternative considered**: Pod networking with `NET_ADMIN`. TAP devices would be in the pod's network namespace, but outbound masquerade would need to route through the pod's `eth0` (veth). This requires changing `NFTablesNAT` to reference the pod's veth instead of hardcoding outbound interface detection. Feasible but adds complexity to the networking code for marginal benefit, since Firecracker already isolates the guest network.
 
 ### 5.3 State Management
 
-**Decision**: Replace local SQLite with Kubernetes CRD status as the source of truth. Keep node-local SQLite for transient operational state only.
+**Decision**: The Sandbox CRD status is the source of truth. The pod uses ephemeral local storage (`emptyDir`) for operational state.
 
-**Rationale**: The current `pkg/state/` package stores VM metadata in `~/.matchlock/state.db`. In Kubernetes, the Sandbox CRD status field is the authoritative state. The worker pod's local SQLite (`/var/lib/matchlock/state.db`) is used only for:
-- Subnet allocation tracking (node-local concern)
-- Lifecycle event logging (for debugging)
-- Transient operational data (vsock paths, TAP names)
+| State | Storage | Rationale |
+|---|---|---|
+| Sandbox lifecycle phase | Sandbox CR `status.phase` | Survives pod restarts; visible to controller/API |
+| VM metadata (PID, vsock path) | `emptyDir` in pod | Ephemeral, only needed while pod runs |
+| Subnet allocation | Sandbox CR `status.subnetOctet` | Coordinated by controller (see 5.4) |
+| Image cache | `hostPath` `/var/cache/matchlock` | Shared across pods on same node |
+| Rootfs copy | `emptyDir` in pod | One per sandbox, cleaned up with pod |
 
-If a worker pod restarts, it reconciles its local state against the Sandbox CRDs assigned to it, cleaning up orphaned VMs.
+No SQLite database is needed in the pod. The `pkg/state` and `pkg/lifecycle` packages are bypassed; the sandbox pod directly calls `sandbox.New()` with pre-computed values (subnet, paths).
 
-### 5.4 Secret Handling
+### 5.4 Subnet Allocation
 
-**Decision**: Sandbox CRD references K8s Secrets; worker pod resolves them at VM creation time.
+**Decision**: The controller assigns subnet octets centrally.
+
+The current `SubnetAllocator` (`pkg/state/subnet.go`) uses a per-host SQLite database and allocates from 192.168.100-254.0/24. With pod-per-sandbox, multiple pods on the same node share the host network namespace and must not collide.
+
+The controller tracks allocated octets per node:
+
+```go
+// In controller: map[nodeName]map[octet]sandboxName
+// Populated from Sandbox CRs: status.nodeName + status.subnetOctet
+```
+
+When creating a pod, the controller:
+1. Reads all Sandbox CRs on the target node (after K8s schedules the pod, from pod's `spec.nodeName`)
+2. Finds a free octet (100-254)
+3. Sets `SUBNET_OCTET` env var on the pod
+
+**Alternative**: The sandbox pod could still use the per-node SQLite allocator via the `hostPath` at `/var/lib/matchlock/subnets/`. This is simpler and requires no controller changes, but risks race conditions between concurrent pod starts. File locking on the SQLite DB mitigates this (SQLite handles concurrent access natively). Either approach works; the SQLite approach requires fewer controller changes.
+
+### 5.5 Secret Handling
+
+**Decision**: Sandbox CRD references K8s Secrets; the sandbox pod resolves them at startup.
 
 ```
 Sandbox CR spec.network.secrets.ANTHROPIC_API_KEY.secretRef
     → K8s Secret "anthropic-credentials" in namespace "tenant-acme"
-    → Worker pod reads secret value via K8s API
+    → Sandbox pod reads secret value via K8s API at startup
     → Passes to sandbox.New() as api.Config.Network.Secrets
     → MITM proxy injects in-flight (existing behavior)
 ```
 
-The secret value never appears in the Sandbox CRD, only the reference. The worker pod's ServiceAccount needs RBAC to read Secrets in tenant namespaces. This is scoped via a ClusterRole binding that only permits reading Secrets that are explicitly referenced by a Sandbox CR.
+The secret value never appears in the Sandbox CRD or in the pod spec, only the reference. The sandbox pod's ServiceAccount needs RBAC to read Secrets in its namespace.
 
-### 5.5 Exec/File Proxying
+### 5.6 Exec/File Proxying
 
-**Decision**: API server proxies exec/file operations to worker pods via gRPC. The worker pod wraps the existing `sandbox.Exec()`, `sandbox.WriteFile()`, `sandbox.ReadFile()` methods.
+**Decision**: API server proxies exec/file operations directly to the sandbox pod's gRPC endpoint.
 
 ```
-SDK ──gRPC──▶ matchlock-api ──gRPC──▶ matchlock-worker ──vsock──▶ guest-agent
+SDK ──gRPC──▶ matchlock-api ──gRPC──▶ sandbox-pod:50051 ──vsock──▶ guest-agent
 ```
 
-This is a thin wrapper. The worker pod already has the `*sandbox.Sandbox` in memory. The gRPC call translates 1:1 to the existing sandbox methods. Streaming exec uses gRPC bidirectional streaming, which maps to the existing `exec_stream` RPC method in `pkg/rpc/handler.go:354-418`.
+This is a 1:1 mapping to the existing sandbox methods. The sandbox pod's gRPC server wraps `sandbox.Exec()`, `sandbox.WriteFile()`, `sandbox.ReadFile()`, `sandbox.ListFiles()` directly. Streaming exec uses gRPC bidirectional streaming, mapping to the existing exec relay in `pkg/sandbox/exec_relay.go`.
 
 ---
 
 ## 6. Networking Deep Dive
 
-### 6.1 Per-VM Network Isolation (unchanged)
+### 6.1 Per-VM Network Isolation (unchanged inside the pod)
 
-Each Firecracker VM gets its own TAP device and /24 subnet, identical to today:
+Each sandbox pod runs one Firecracker VM with its own TAP device and /24 subnet. The network stack is identical to standalone matchlock:
 
 ```
-                     Host Network Namespace (= pod with hostNetwork)
+    Sandbox Pod (hostNetwork: true)
 ┌──────────────────────────────────────────────────────────────────────┐
 │                                                                      │
-│  eth0 (host NIC)                                                     │
+│  host eth0 (real NIC)                                                │
 │    │                                                                  │
 │    │ masquerade (nftables NAT postrouting)                           │
 │    │                                                                  │
-│  fc-a1b2c3d4 (TAP)  ◄── 192.168.105.1/24                           │
+│  fc-sb-a1b2 (TAP)  ◄── 192.168.105.1/24                            │
 │    │                                                                  │
 │    │  DNAT :80  → transparent proxy HTTP port                        │
 │    │  DNAT :443 → transparent proxy HTTPS port                       │
 │    │  catch-all → passthrough port                                    │
 │    │                                                                  │
 │    │            ┌──────────────────────────────────────┐              │
-│    │            │  Transparent Proxy (per-VM)           │              │
+│    │            │  Transparent Proxy (in-pod)           │              │
 │    │            │  - Policy engine evaluation           │              │
 │    │            │  - Secret injection via MITM           │              │
 │    │            │  - Ephemeral CA per VM                │              │
 │    │            └──────────────────────────────────────┘              │
 │    │                                                                  │
 │    └──────▶  Firecracker VM (192.168.105.2)                          │
-│              eth0 in guest sees 192.168.105.2                        │
+│              guest eth0: 192.168.105.2                               │
 │              gateway: 192.168.105.1                                  │
 │              DNS: 8.8.8.8 (forwarded)                                │
-│                                                                      │
-│  fc-b3c4d5e6 (TAP)  ◄── 192.168.106.1/24   (second VM, same node)  │
-│    │                                                                  │
-│    └──────▶  Firecracker VM (192.168.106.2)                          │
-│                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.2 Inter-Pod Communication
+### 6.2 gRPC Port Allocation
+
+With `hostNetwork`, sandbox pods share the host's port space. Each pod needs a unique gRPC port. The controller assigns ports from a per-node pool (e.g., 50051-50205, matching subnet octet range 100-254):
 
 ```
-                    ┌──────────────┐
-                    │ K8s Service  │
-                    │ (headless)   │
-                    │ matchlock-   │
-                    │ worker       │
-                    └──────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-        ┌─────▼────┐ ┌────▼─────┐ ┌───▼──────┐
-        │worker    │ │worker    │ │worker    │
-        │node-01   │ │node-02   │ │node-03   │
-        │:50051    │ │:50051    │ │:50051    │
-        └──────────┘ └──────────┘ └──────────┘
+grpcPort = 50051 + (subnetOctet - 100)
 ```
 
-Worker pods expose gRPC on a fixed port. The API server connects directly to the specific worker pod (not through the Service) using the pod IP from the Sandbox CR's `status.workerPod`. The headless Service is used for DNS resolution and health checking.
+So `SUBNET_OCTET=105` → gRPC port `50056`. The API server reads the assigned port from the Sandbox CR status and connects directly.
+
+### 6.3 API-to-Pod Communication
+
+```
+matchlock-api
+    │
+    │ reads Sandbox CR → status.nodeName, status.grpcPort
+    │
+    └──gRPC──▶ <nodeName>:<grpcPort>
+                    │
+                    └── sandbox-pod process
+                            │
+                            └── sandbox.Exec() → vsock → guest-agent
+```
 
 ---
 
-## 7. Scheduling
+## 7. Failure Modes and Recovery
 
-### 7.1 Worker Capacity Reporting
+### 7.1 Sandbox Pod Crash
 
-Each worker pod periodically reports its capacity via a `WorkerNode` CRD (or annotations on its own pod):
+- Pod status transitions to `Failed`
+- Controller observes pod status, updates Sandbox CR phase to `Failed`
+- `restartPolicy: Never` prevents restart (sandboxes are ephemeral)
+- Clients get an error on next gRPC call, create a new Sandbox
 
-```yaml
-apiVersion: matchlock.dev/v1alpha1
-kind: WorkerNode
-metadata:
-  name: node-01
-  namespace: matchlock-system
-status:
-  capacity:
-    sandboxes: 155      # Max subnets (192.168.100-254)
-    cpus: 32            # Node CPUs available for VMs
-    memoryMB: 65536     # Node memory available for VMs
-  allocated:
-    sandboxes: 12
-    cpus: 18
-    memoryMB: 12288
-  conditions:
-    - type: Ready
-      status: "True"
-    - type: KVMAvailable
-      status: "True"
-```
+### 7.2 Node Failure
 
-### 7.2 Scheduling Algorithm
+- K8s marks all pods on the node as `Unknown` → `Failed` after timeout
+- Controller updates Sandbox CRs to `Failed`
+- Clients create new Sandboxes (scheduled to healthy nodes automatically)
 
-The controller uses a simple scoring algorithm:
+### 7.3 Controller Restart
 
-```
-score(node) = (free_cpus / requested_cpus) * 0.4
-            + (free_memory / requested_memory) * 0.4
-            + (free_sandbox_slots / total_sandbox_slots) * 0.2
-```
+No impact. Controller is stateless; reconstructs state from Sandbox CRs and their owned Pods via ownerReferences.
 
-Nodes are filtered first (KVM available, sufficient resources), then ranked by score. Highest score wins. This is similar to the Kubernetes scheduler's LeastAllocated strategy.
+### 7.4 API Server Restart
 
-For v1, this is a simple in-controller scheduler. If scheduling becomes a bottleneck, it can be extracted into a separate scheduler extender.
+No impact. Stateless proxy. In-flight gRPC streams interrupted; clients retry.
+
+### 7.5 Sandbox Pod Deletion
+
+- `sandbox.Close()` runs in SIGTERM handler during `terminationGracePeriodSeconds` (30s)
+- Cleans up: Firecracker process, TAP device, nftables rules, proxy, VFS
+- If grace period exceeded, SIGKILL — TAP and nftables rules leak. Mitigated by:
+  - Controller can run a cleanup job per node periodically
+  - Node reboot clears all nftables rules and TAP devices
 
 ---
 
-## 8. Failure Modes and Recovery
+## 8. Observability
 
-### 8.1 Worker Pod Restart
-
-1. Worker pod starts, queries K8s API for Sandbox CRs assigned to it
-2. For each assigned Sandbox: check if the Firecracker process is still running (PID file or process scan)
-3. If running: re-attach (re-build in-memory sandbox state from local files + CRD status)
-4. If not running: mark Sandbox CR as `Failed`, run cleanup (`sandbox.Close()` equivalent)
-
-### 8.2 Worker Pod Eviction/Node Failure
-
-1. Controller watches worker pod health via Pod conditions
-2. If a worker pod disappears, all its assigned Sandboxes transition to `Failed`
-3. Sandbox CRDs are not auto-rescheduled (VMs are ephemeral, state is lost)
-4. Clients receive an error on their next exec/file call and must create a new Sandbox
-
-### 8.3 Controller Restart
-
-No impact. The controller is stateless; it reconstructs its view from Sandbox CRDs on startup. Leader election ensures only one replica is active.
-
-### 8.4 API Server Restart
-
-No impact. API servers are stateless proxies. In-flight gRPC streams are interrupted; clients retry.
-
----
-
-## 9. Observability
-
-### 9.1 Metrics (Prometheus)
+### 8.1 Metrics (Prometheus)
 
 **Controller metrics:**
-- `matchlock_sandboxes_total{namespace, phase}` - gauge of sandbox count by phase
-- `matchlock_sandbox_create_duration_seconds` - histogram of time from CR creation to Running
-- `matchlock_sandbox_schedule_duration_seconds` - histogram of scheduling latency
-- `matchlock_scheduling_failures_total{reason}` - counter of scheduling failures
+- `matchlock_sandboxes_total{namespace, phase}` — gauge of sandbox count by phase
+- `matchlock_sandbox_create_duration_seconds` — histogram of time from CR creation to Running
+- `matchlock_pod_create_failures_total{reason}` — counter of pod creation failures
 
-**Worker metrics:**
-- `matchlock_worker_vms_active` - gauge of active Firecracker VMs on this node
-- `matchlock_worker_vm_boot_duration_seconds` - histogram of VM boot time
-- `matchlock_worker_exec_duration_seconds{sandbox}` - histogram of exec latency
-- `matchlock_worker_network_requests_total{sandbox, host, status}` - counter of proxied HTTP requests
-- `matchlock_worker_network_blocked_total{sandbox, host}` - counter of blocked requests
-- `matchlock_worker_subnet_utilization` - gauge of subnet pool usage
+**Sandbox pod metrics (per pod, scraped by Prometheus):**
+- `matchlock_vm_boot_duration_seconds` — histogram of VM boot time
+- `matchlock_exec_duration_seconds` — histogram of exec call latency
+- `matchlock_network_requests_total{host, status}` — counter of proxied HTTP requests
+- `matchlock_network_blocked_total{host}` — counter of blocked requests
 
-### 9.2 Logging
+### 8.2 Logging
 
-Structured JSON logging at all layers:
-- **Controller**: scheduling decisions, lifecycle transitions
-- **Worker**: VM create/start/stop events, exec requests, network interception events
-- **Per-VM**: Firecracker console output (from `vm.log`), guest-agent output
+Structured JSON logging:
+- **Controller**: pod create/delete events, lifecycle transitions, subnet allocation
+- **Sandbox pod**: VM create/start/stop, exec requests, network events
+- Standard `kubectl logs sandbox-sb-a1b2c3d4` works out of the box
 
-### 9.3 Events
+### 8.3 Events
 
-Kubernetes Events on Sandbox CRDs for lifecycle transitions:
+Kubernetes Events on Sandbox CRs:
 
 ```
-Normal   Scheduled    Sandbox assigned to worker node-01
-Normal   VMCreated    Firecracker VM vm-a1b2c3d4 created
-Normal   VMStarted    VM ready in 215ms
-Warning  ExecTimeout  Exec command exceeded timeout
-Normal   VMStopped    VM stopped gracefully
+Normal   PodCreated    Pod sandbox-sb-a1b2c3d4 created on node-01
+Normal   VMStarted     Firecracker VM ready in 215ms
+Warning  ExecTimeout   Exec command exceeded timeout
+Normal   VMStopped     VM stopped gracefully
 ```
 
 ---
 
-## 10. Codebase Changes
+## 9. Codebase Changes
 
-### 10.1 New Packages
+### 9.1 New Packages
 
 | Package | Purpose |
 |---|---|
-| `pkg/k8s/api/v1alpha1/` | CRD type definitions (Sandbox, WorkerNode, ImageCache) |
-| `pkg/k8s/controller/` | Sandbox controller (reconciler, scheduler) |
-| `pkg/k8s/worker/` | Worker daemon (CRD watcher, gRPC server, sandbox manager) |
+| `pkg/k8s/api/v1alpha1/` | CRD type definitions (Sandbox, ImageCache) |
+| `pkg/k8s/controller/` | Sandbox controller (pod creation, status sync) |
+| `cmd/matchlock-sandbox/` | Sandbox pod binary (~100 lines of glue) |
 | `cmd/matchlock-controller/` | Controller binary entry point |
-| `cmd/matchlock-worker/` | Worker daemon binary entry point |
 | `cmd/matchlock-api/` | API server binary entry point |
 
-### 10.2 Existing Package Modifications
+### 9.2 Existing Package Modifications
 
 | Package | Change | Scope |
 |---|---|---|
-| `pkg/sandbox/` | Make state/lifecycle deps injectable (interface) | Minor refactor |
-| `pkg/state/` | Accept configurable base directory | Small change |
-| `pkg/image/` | Accept configurable cache directory | Small change |
-| `pkg/rpc/` | No changes (worker wraps sandbox directly) | None |
+| `pkg/sandbox/` | Accept pre-computed subnet info in Options, make state dir configurable | Small |
+| `pkg/state/` | Accept configurable base directory (already partially exists: `NewSubnetAllocatorWithDir`) | Small |
+| `pkg/image/` | Accept configurable cache directory | Small |
 | `pkg/vm/linux/` | No changes | None |
 | `pkg/net/` | No changes | None |
 | `pkg/vfs/` | No changes | None |
 | `pkg/policy/` | No changes | None |
+| `pkg/rpc/` | No changes | None |
 
-The key insight is that the `pkg/sandbox/` package already encapsulates the full lifecycle (VM creation, network setup, VFS, proxy). The Kubernetes layer is purely orchestration on top. The worker pod calls the same `sandbox.New()` → `sandbox.Start()` → `sandbox.Exec()` → `sandbox.Close()` sequence that the CLI does.
+The critical insight: `pkg/sandbox` already encapsulates the full VM lifecycle. The sandbox pod is a thin wrapper that calls the same `sandbox.New()` → `Start()` → `Exec()` → `Close()` sequence the CLI uses. The K8s layer is purely orchestration.
 
-### 10.3 Changes to `pkg/sandbox/`
+### 9.3 Changes to `pkg/sandbox/`
 
-The current `sandbox_linux.go:New()` hardcodes `state.NewManager()` and `state.NewSubnetAllocator()` which use `~/.matchlock/` paths. These need to become injectable:
+The current `sandbox_linux.go:New()` hardcodes `state.NewManager()` and `state.NewSubnetAllocator()` which use `~/.matchlock/` paths. These need small adjustments:
 
 ```go
-// Current:
-func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
-    stateMgr := state.NewManager()           // hardcoded ~/.matchlock/
-    subnetAlloc := state.NewSubnetAllocator() // hardcoded ~/.matchlock/subnets/
-    ...
-}
-
-// Proposed:
+// Proposed Options extension:
 type Options struct {
-    KernelPath  string
-    RootfsPath  string
-    StateDir    string // NEW: override state directory (default: ~/.matchlock/)
-    CacheDir    string // NEW: override cache directory (default: ~/.cache/matchlock/)
-}
-
-func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
-    stateMgr := state.NewManagerWithDir(opts.StateDir)
-    subnetAlloc := state.NewSubnetAllocatorWithDir(opts.StateDir + "/subnets")
-    ...
+    KernelPath   string
+    RootfsPath   string
+    StateDir     string        // Override state directory (default: ~/.matchlock/)
+    CacheDir     string        // Override cache directory (default: ~/.cache/matchlock/)
+    SubnetOctet  int           // Pre-assigned subnet octet (skip allocator if set)
 }
 ```
 
-This is a small, backward-compatible change. `NewSubnetAllocatorWithDir` already exists in the codebase (`pkg/state/subnet.go:39`).
+When `SubnetOctet` is set, `sandbox.New()` skips the `SubnetAllocator.Allocate()` call and directly constructs a `SubnetInfo` from the octet. This is a ~10 line change.
 
 ---
 
-## 11. Deployment Topology
+## 10. Deployment Topology
 
-### 11.1 Minimal (Development/Test)
+### 10.1 Minimal (Development/Test)
 
 ```
-1 node (KVM-enabled):
+1 node (KVM-enabled, e.g., bare metal or nested virt VM):
   - matchlock-controller (Deployment, 1 replica)
   - matchlock-api (Deployment, 1 replica)
-  - matchlock-worker (DaemonSet, 1 pod)
+  - matchlock-image-warmer (DaemonSet, 1 pod)
+  - sandbox pods created on demand
 ```
 
-### 11.2 Production
+### 10.2 Production
 
 ```
 Control plane nodes (no KVM needed):
@@ -753,7 +748,8 @@ Control plane nodes (no KVM needed):
   - matchlock-api (Deployment, 3+ replicas, behind LoadBalancer)
 
 Worker node pool (KVM-enabled, bare metal or nested virt):
-  - matchlock-worker (DaemonSet, 1 pod per node)
+  - matchlock-image-warmer (DaemonSet, 1 pod per node)
+  - Sandbox pods scheduled on demand by K8s scheduler
   - 5-50+ nodes depending on scale
 
 Shared infrastructure:
@@ -762,86 +758,86 @@ Shared infrastructure:
   - K8s Secrets (secret management)
 ```
 
-### 11.3 Node Requirements
+### 10.3 Node Requirements
 
 Worker nodes need:
 - **KVM support**: Bare metal or VMs with nested virtualization enabled
 - **Kernel modules**: `kvm`, `kvm_intel`/`kvm_amd`, `tun` (for TAP), `nf_tables`
-- **Firecracker binary**: Bundled in the worker container image
-- **Linux kernel + guest-init**: Bundled in the worker container image or pulled at startup
-- **Disk**: Local SSD for image cache and rootfs copies (fast I/O matters for boot time)
+- **Node label**: `matchlock.dev/kvm: "true"`
+- **Disk**: Local SSD recommended for image cache and rootfs copies
+
+The Firecracker binary, Linux kernel, and guest-init are all bundled in the `matchlock-sandbox` container image — no host-level installation required.
 
 ---
 
-## 12. SDK Changes
+## 11. SDK Changes
 
-### 12.1 Go SDK
-
-The existing `pkg/sdk/client.go` launches `matchlock rpc` as a subprocess. For Kubernetes, an alternative client that speaks gRPC to the API server:
+### 11.1 Go SDK
 
 ```go
-// Current (local):
+// Current (local — unchanged):
 client, _ := matchlock.NewClient()  // spawns matchlock rpc subprocess
 
-// Kubernetes:
+// Kubernetes (new RemoteClient):
 client, _ := matchlock.NewRemoteClient("matchlock-api.example.com:443",
     matchlock.WithAPIKey("mlk_..."),
     matchlock.WithNamespace("tenant-acme"),
 )
 
 // Same interface from here:
-sandbox, _ := client.CreateSandbox(ctx, &matchlock.Config{
+sb, _ := client.CreateSandbox(ctx, &matchlock.Config{
     Image: "alpine:latest",
     ...
 })
-result, _ := sandbox.Exec(ctx, "echo hello")
+result, _ := sb.Exec(ctx, "echo hello")
+sb.Close(ctx)
 ```
 
-Both clients implement the same `Client` interface. The local client uses stdin/stdout JSON-RPC; the remote client uses gRPC. Application code doesn't change.
+Both implement the same `Client` interface.
 
-### 12.2 Python SDK
+### 11.2 Python SDK
 
-Same pattern: a `RemoteClient` class that speaks gRPC (via `grpcio`) alongside the existing subprocess-based client.
+Same pattern: `RemoteClient` class using gRPC (`grpcio`) alongside the existing subprocess client.
 
 ---
 
-## 13. Migration Path
+## 12. Migration Path
 
 ### Phase 1: Refactor `pkg/sandbox/` for injectable dependencies
-- Make `StateDir`, `CacheDir` configurable via `Options`
+- Add `StateDir`, `CacheDir`, `SubnetOctet` to `Options`
 - No behavioral changes; CLI continues to work identically
-- Add integration tests with custom directories
+- Tests with custom directories
 
-### Phase 2: Build worker daemon
-- `cmd/matchlock-worker/` that runs `sandbox.New/Start/Exec/Close` driven by CRD watches
-- gRPC server wrapping sandbox operations
-- Health reporting
+### Phase 2: Build `matchlock-sandbox` binary + container image
+- Thin Go binary wrapping `sandbox.New/Start/Exec/Close`
+- gRPC server for exec/file operations
+- Dockerfile: static binary + Firecracker + kernel + guest-init
 
 ### Phase 3: Build controller
-- Sandbox CRD definitions
-- Scheduling logic
-- Lifecycle reconciliation
+- Sandbox CRD definition
+- Pod creation/deletion logic
+- Status synchronization
+- Subnet coordination
 
 ### Phase 4: Build API server
 - gRPC + REST API
 - AuthN/AuthZ
-- SDK proxy layer
+- Proxy to sandbox pods
 
-### Phase 5: SDK clients
+### Phase 5: SDK remote clients
 - Go `RemoteClient`
 - Python `RemoteClient`
-- Documentation
 
 ---
 
-## 14. Open Questions
+## 13. Open Questions
 
-1. **Persistent workspaces**: Should Sandboxes support PersistentVolumeClaims for the workspace mount, allowing workspace state to survive across Sandbox restarts? This would require passing a PVC-backed host path into the VFS provider.
+1. **hostNetwork port collisions**: With `hostNetwork`, sandbox pods on the same node need unique gRPC ports. The port-from-octet scheme (50051 + octet - 100) works but is fragile. Alternative: use Unix domain sockets via a shared `hostPath` directory, with the API server connecting to the socket file directly. This avoids port allocation entirely.
 
-2. **Live migration**: Should Sandboxes support migration between nodes? Firecracker supports snapshot/restore, but the networking state (TAP, nftables, proxy) makes this complex. Initial recommendation: don't support it; treat Sandboxes as ephemeral.
+2. **Pod networking alternative**: Could we avoid `hostNetwork` entirely? If TAP + nftables work within a pod's network namespace (they do — the TAP is created by the pod process and lives in its namespace), the remaining issue is outbound masquerade. The `NFTablesNAT` masquerade rule just needs the outbound interface name. In pod networking, this would be `eth0` (the veth). A small change to auto-detect the default route interface would make this work. This would be cleaner for port management (each pod gets its own IP + port space) but needs testing.
 
-3. **GPU passthrough**: Some AI workloads need GPU access. Firecracker doesn't support GPU passthrough. If needed, this would require a different VM backend (e.g., Cloud Hypervisor or QEMU) behind the existing `Backend` interface.
+3. **Persistent workspaces**: Should Sandboxes support PersistentVolumeClaims for the workspace mount? This would allow workspace state to survive across Sandbox recreations.
 
-4. **Multi-cluster**: Should the API server support federating Sandboxes across multiple Kubernetes clusters? This is likely out of scope for v1.
+4. **GPU passthrough**: Firecracker doesn't support GPU passthrough. If needed, a different VM backend (Cloud Hypervisor, QEMU) behind the `Backend` interface would be required.
 
-5. **Billing/metering**: Detailed per-sandbox resource usage tracking for chargeback. The metrics pipeline provides the data; the billing integration is application-specific.
+5. **Image pull optimization**: The image-warmer DaemonSet is optional. For high-churn environments, consider using init containers that pull the OCI image before the sandbox container starts, so the image is guaranteed warm.
