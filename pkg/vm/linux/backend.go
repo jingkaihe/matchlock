@@ -284,6 +284,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 			dev := string(rune('b' + i)) // vdb, vdc, ...
 			kernelArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
 		}
+		for i, mapping := range m.config.AddHosts {
+			kernelArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)
+		}
 	}
 
 	type fcDrive struct {

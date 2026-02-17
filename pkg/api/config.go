@@ -70,8 +70,14 @@ type Resources struct {
 // DefaultDNSServers are used when no custom DNS servers are configured.
 var DefaultDNSServers = []string{"8.8.8.8", "8.8.4.4"}
 
+type HostIPMapping struct {
+	Host string `json:"host"`
+	IP   string `json:"ip"`
+}
+
 type NetworkConfig struct {
 	AllowedHosts    []string          `json:"allowed_hosts,omitempty"`
+	AddHosts        []HostIPMapping   `json:"add_hosts,omitempty"`
 	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`

@@ -51,6 +51,7 @@ var (
 	ErrBuildingRootfs         = errors.New("building rootfs")
 	ErrInvalidVolume          = errors.New("invalid volume mount")
 	ErrInvalidSecret          = errors.New("invalid secret")
+	ErrInvalidAddHost         = errors.New("invalid add-host mapping")
 	ErrInvalidEnv             = errors.New("invalid environment variable")
 	ErrInvalidPortForward     = errors.New("invalid port-forward specification")
 	ErrInvalidPortForwardAddr = errors.New("invalid port-forward bind address")

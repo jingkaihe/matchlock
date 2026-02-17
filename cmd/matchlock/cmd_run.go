@@ -54,7 +54,11 @@ Volume Mounts (-v):
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
   *.example.com          Allow all subdomains (api.example.com, a.b.example.com)
-  api-*.example.com      Allow pattern match (api-v1.example.com, api-prod.example.com)`,
+  api-*.example.com      Allow pattern match (api-v1.example.com, api-prod.example.com)
+
+Custom hosts with --add-host:
+  --add-host api.internal:10.0.0.10
+  --add-host db.internal:10.0.0.11`,
 	Example: `  matchlock run --image alpine:latest -it sh
   matchlock run --image python:3.12-alpine python3 -c 'print(42)'
   matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
@@ -77,6 +81,7 @@ func init() {
 	runCmd.Flags().String("image", "", "Container image (required)")
 	runCmd.Flags().String("workspace", api.DefaultWorkspace, "Guest mount point for VFS")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
+	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, "Volume mount (host:guest or host:guest:ro)")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
@@ -104,6 +109,7 @@ func init() {
 	viper.BindPFlag("run.image", runCmd.Flags().Lookup("image"))
 	viper.BindPFlag("run.workspace", runCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
+	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
@@ -146,6 +152,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
+	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
@@ -273,6 +280,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return errx.Wrap(ErrInvalidEnv, err)
 	}
 
+	addHosts, err := api.ParseAddHosts(addHostSpecs)
+	if err != nil {
+		return errx.Wrap(ErrInvalidAddHost, err)
+	}
+
 	portForwards, err := api.ParsePortForwards(publishSpecs)
 	if err != nil {
 		return errx.Wrap(ErrInvalidPortForward, err)
@@ -295,6 +307,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		},
 		Network: &api.NetworkConfig{
 			AllowedHosts:    allowHosts,
+			AddHosts:        addHosts,
 			BlockPrivateIPs: true,
 			Secrets:         parsedSecrets,
 			DNSServers:      dnsServers,

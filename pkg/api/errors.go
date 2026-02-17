@@ -26,4 +26,8 @@ var (
 
 	ErrPortForwardSpecFormat = errors.New("invalid port-forward spec format")
 	ErrPortForwardPort       = errors.New("invalid port")
+
+	ErrAddHostSpecFormat = errors.New("invalid add-host format")
+	ErrAddHostHost       = errors.New("invalid add-host hostname")
+	ErrAddHostIP         = errors.New("invalid add-host ip")
 )

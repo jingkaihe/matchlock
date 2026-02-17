@@ -39,6 +39,15 @@ func TestBuilderAllowHost(t *testing.T) {
 	require.Equal(t, expected, opts.AllowedHosts)
 }
 
+func TestBuilderAddHost(t *testing.T) {
+	opts := New("alpine:latest").
+		AddHost("api.internal", "10.0.0.10").
+		AddHost("db.internal", "10.0.0.11").
+		Options()
+
+	require.Equal(t, []api.HostIPMapping{{Host: "api.internal", IP: "10.0.0.10"}, {Host: "db.internal", IP: "10.0.0.11"}}, opts.AddHosts)
+}
+
 func TestBuilderAddSecret(t *testing.T) {
 	opts := New("alpine:latest").
 		AddSecret("API_KEY", "sk-123", "api.openai.com").
@@ -196,6 +205,7 @@ func TestBuilderFullChain(t *testing.T) {
 		WithMemory(1024).
 		WithEnv("PLAIN_TOKEN", "abc123").
 		AllowHost("dl-cdn.alpinelinux.org", "api.anthropic.com").
+		AddHost("api.internal", "10.0.0.10").
 		AddSecret("ANTHROPIC_API_KEY", "sk-ant-xxx", "api.anthropic.com").
 		BlockPrivateIPs().
 		WithWorkspace("/code").
@@ -207,6 +217,7 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Equal(t, 2, opts.CPUs)
 	require.Equal(t, 1024, opts.MemoryMB)
 	require.Len(t, opts.AllowedHosts, 2)
+	require.Len(t, opts.AddHosts, 1)
 	require.Len(t, opts.Secrets, 1)
 	require.Equal(t, "abc123", opts.Env["PLAIN_TOKEN"])
 	require.True(t, opts.BlockPrivateIPs)
