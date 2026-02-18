@@ -18,9 +18,7 @@ func buildVFSProviders(config *api.Config, workspace string) map[string]vfs.Prov
 	if config.VFS != nil && config.VFS.Mounts != nil {
 		for path, mount := range config.VFS.Mounts {
 			provider := createProvider(mount)
-			if provider != nil {
-				vfsProviders[path] = provider
-			}
+			vfsProviders[path] = provider
 		}
 	}
 

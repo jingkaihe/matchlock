@@ -63,10 +63,10 @@ class MountConfig:
     """VFS mount configuration."""
 
     type: str = "memory"
-    """Mount type: memory, real_fs, or overlay."""
+    """Mount type: memory, host_fs, or overlay."""
 
     host_path: str = ""
-    """Host path for real_fs mounts."""
+    """Host path for host_fs mounts."""
 
     readonly: bool = False
     """Whether the mount is read-only."""

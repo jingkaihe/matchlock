@@ -263,7 +263,7 @@ func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 			"workspace": "/workspace/project",
 			"mounts": map[string]interface{}{
 				"/workspace": map[string]interface{}{
-					"type": "memory",
+					"type": api.MountTypeMemory,
 				},
 			},
 		},

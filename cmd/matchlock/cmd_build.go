@@ -230,14 +230,14 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	defer os.RemoveAll(outputDir)
 
 	mounts := map[string]api.MountConfig{
-		"/workspace":         {Type: "real_fs", HostPath: workspaceDir},
-		"/workspace/context": {Type: "real_fs", HostPath: absContext, Readonly: true},
-		"/workspace/output":  {Type: "real_fs", HostPath: outputDir},
+		"/workspace":         {Type: api.MountTypeHostFS, HostPath: workspaceDir},
+		"/workspace/context": {Type: api.MountTypeHostFS, HostPath: absContext, Readonly: true},
+		"/workspace/output":  {Type: api.MountTypeHostFS, HostPath: outputDir},
 	}
 
 	guestDockerfileDir := "/workspace/context"
 	if _, err := os.Stat(dockerfileInContext); os.IsNotExist(err) {
-		mounts["/workspace/dockerfile"] = api.MountConfig{Type: "real_fs", HostPath: dockerfileDir, Readonly: true}
+		mounts["/workspace/dockerfile"] = api.MountConfig{Type: api.MountTypeHostFS, HostPath: dockerfileDir, Readonly: true}
 		guestDockerfileDir = "/workspace/dockerfile"
 	}
 

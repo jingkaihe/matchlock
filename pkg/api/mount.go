@@ -8,36 +8,73 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-// ParseVolumeMount parses a volume mount string in format "host:guest" or "host:guest:ro".
+// VolumeMountSpec is a parsed -v/--volume specification.
+type VolumeMountSpec struct {
+	HostPath  string
+	GuestPath string
+	Type      string
+	Readonly  bool
+}
+
+// ParseVolumeMount parses a volume mount string in format:
+// - "host:guest"
+// - "host:guest:ro"
+// - "host:guest:overlay"
+// - "host:guest:host_fs"
+//
+// This is kept for backward compatibility with existing callers that only need
+// host/guest/readonly. Use ParseVolumeMountSpec for mount type aware parsing.
+//
 // Guest paths are resolved within workspace; absolute guest paths must already be under workspace.
 func ParseVolumeMount(vol string, workspace string) (hostPath, guestPath string, readonly bool, err error) {
+	spec, err := ParseVolumeMountSpec(vol, workspace)
+	if err != nil {
+		return "", "", false, err
+	}
+	return spec.HostPath, spec.GuestPath, spec.Readonly, nil
+}
+
+// ParseVolumeMountSpec parses a volume mount string and returns a typed spec.
+func ParseVolumeMountSpec(vol string, workspace string) (VolumeMountSpec, error) {
 	parts := strings.Split(vol, ":")
 	if len(parts) < 2 || len(parts) > 3 {
-		return "", "", false, ErrInvalidVolumeFormat
+		return VolumeMountSpec{}, ErrInvalidVolumeFormat
 	}
 
-	hostPath = parts[0]
-	guestPath = parts[1]
+	hostPath := parts[0]
+	guestPath := parts[1]
 
 	// Resolve to absolute path
+	var err error
 	if !filepath.IsAbs(hostPath) {
 		hostPath, err = filepath.Abs(hostPath)
 		if err != nil {
-			return "", "", false, errx.Wrap(ErrResolvePath, err)
+			return VolumeMountSpec{}, errx.Wrap(ErrResolvePath, err)
 		}
 	}
 
 	// Verify host path exists
 	if _, err := os.Stat(hostPath); err != nil {
-		return "", "", false, errx.With(ErrHostPathNotExist, ": %s", hostPath)
+		return VolumeMountSpec{}, errx.With(ErrHostPathNotExist, ": %s", hostPath)
 	}
 
-	// Check for readonly flag
+	// Default to overlay for safer snapshot-based isolation.
+	mountType := MountTypeOverlay
+	readonly := false
+
+	// Parse optional mount option.
 	if len(parts) == 3 {
-		if parts[2] == "ro" || parts[2] == "readonly" {
+		switch strings.ToLower(strings.TrimSpace(parts[2])) {
+		case MountOptionReadonlyShort, MountOptionReadonly:
+			// Keep explicit read-only behavior as a host mount.
+			mountType = MountTypeHostFS
 			readonly = true
-		} else {
-			return "", "", false, errx.With(ErrUnknownMountOption, " %q (use 'ro' for readonly)", parts[2])
+		case MountTypeOverlay:
+			mountType = MountTypeOverlay
+		case MountTypeHostFS:
+			mountType = MountTypeHostFS
+		default:
+			return VolumeMountSpec{}, errx.With(ErrUnknownMountOption, " %q (use '%s', '%s', or '%s')", parts[2], MountOptionReadonlyShort, MountTypeOverlay, MountTypeHostFS)
 		}
 	}
 
@@ -53,10 +90,15 @@ func ParseVolumeMount(vol string, workspace string) (hostPath, guestPath string,
 	}
 
 	if err := ValidateGuestPathWithinWorkspace(guestPath, cleanWorkspace); err != nil {
-		return "", "", false, err
+		return VolumeMountSpec{}, err
 	}
 
-	return hostPath, guestPath, readonly, nil
+	return VolumeMountSpec{
+		HostPath:  hostPath,
+		GuestPath: guestPath,
+		Type:      mountType,
+		Readonly:  readonly,
+	}, nil
 }
 
 // ValidateGuestPathWithinWorkspace checks that guestPath is absolute and inside workspace.

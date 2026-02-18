@@ -15,7 +15,7 @@ func TestBuildVFSProvidersAddsWorkspaceRootForNestedMounts(t *testing.T) {
 	config := &api.Config{
 		VFS: &api.VFSConfig{
 			Mounts: map[string]api.MountConfig{
-				"/workspace/not_exist_folder": {Type: "memory"},
+				"/workspace/not_exist_folder": {Type: api.MountTypeMemory},
 			},
 		},
 	}
@@ -36,7 +36,7 @@ func TestBuildVFSProvidersKeepsExplicitWorkspaceMount(t *testing.T) {
 	config := &api.Config{
 		VFS: &api.VFSConfig{
 			Mounts: map[string]api.MountConfig{
-				workspace: {Type: "memory"},
+				workspace: {Type: api.MountTypeMemory},
 			},
 		},
 	}
@@ -50,7 +50,7 @@ func TestBuildVFSProvidersDoesNotDuplicateCanonicalWorkspaceMount(t *testing.T) 
 	config := &api.Config{
 		VFS: &api.VFSConfig{
 			Mounts: map[string]api.MountConfig{
-				"/workspace/": {Type: "memory"},
+				"/workspace/": {Type: api.MountTypeMemory},
 			},
 		},
 	}

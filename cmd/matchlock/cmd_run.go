@@ -47,9 +47,11 @@ Secrets (--secret):
 
 Volume Mounts (-v):
   Guest paths are relative to workspace (or use full workspace paths):
-  ./mycode:code                    Mounts to <workspace>/code
-  ./data:/workspace/data           Same as above (explicit)
-  /host/path:subdir:ro             Read-only mount to <workspace>/subdir
+  ./mycode:code                    Isolated snapshot mount to <workspace>/code (default)
+  ./mycode:code:overlay            Same as above (explicit)
+  ./data:/workspace/data           Same as above (explicit guest path)
+  /host/path:subdir:host_fs        Read-write host mount to <workspace>/subdir
+  /host/path:subdir:ro             Read-only host mount to <workspace>/subdir
 
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
@@ -82,7 +84,7 @@ func init() {
 	runCmd.Flags().String("workspace", api.DefaultWorkspace, "Guest mount point for VFS")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
-	runCmd.Flags().StringSliceP("volume", "v", nil, "Volume mount (host:guest or host:guest:ro)")
+	runCmd.Flags().StringSliceP("volume", "v", nil, fmt.Sprintf("Volume mount (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
@@ -250,15 +252,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if len(volumes) > 0 {
 		mounts := make(map[string]api.MountConfig)
 		for _, vol := range volumes {
-			hostPath, guestPath, readonly, err := api.ParseVolumeMount(vol, workspace)
+			spec, err := api.ParseVolumeMountSpec(vol, workspace)
 			if err != nil {
 				return errx.With(ErrInvalidVolume, " %q: %w", vol, err)
 			}
-			mounts[guestPath] = api.MountConfig{
-				Type:     "real_fs",
-				HostPath: hostPath,
-				Readonly: readonly,
+
+			mount := api.MountConfig{
+				Type:     spec.Type,
+				HostPath: spec.HostPath,
+				Readonly: spec.Readonly,
 			}
+			mounts[spec.GuestPath] = mount
 		}
 		vfsConfig.Mounts = mounts
 	}

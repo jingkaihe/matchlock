@@ -23,22 +23,23 @@ import (
 )
 
 type Sandbox struct {
-	id          string
-	config      *api.Config
-	machine     vm.Machine
-	netStack    *sandboxnet.NetworkStack
-	policy      *policy.Engine
-	vfsRoot     vfs.Provider
-	vfsHooks    *vfs.HookEngine
-	vfsServer   *vfs.VFSServer
-	vfsStopFunc func()
-	events      chan api.Event
-	stateMgr    *state.Manager
-	caPool      *sandboxnet.CAPool
-	subnetInfo  *state.SubnetInfo
-	subnetAlloc *state.SubnetAllocator
-	workspace   string
-	lifecycle   *lifecycle.Store
+	id               string
+	config           *api.Config
+	machine          vm.Machine
+	netStack         *sandboxnet.NetworkStack
+	policy           *policy.Engine
+	vfsRoot          vfs.Provider
+	vfsHooks         *vfs.HookEngine
+	vfsServer        *vfs.VFSServer
+	vfsStopFunc      func()
+	events           chan api.Event
+	stateMgr         *state.Manager
+	caPool           *sandboxnet.CAPool
+	subnetInfo       *state.SubnetInfo
+	subnetAlloc      *state.SubnetAllocator
+	workspace        string
+	overlaySnapshots []string
+	lifecycle        *lifecycle.Store
 }
 
 type Options struct {
@@ -189,6 +190,19 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
+	// Prepare overlay snapshots before creating the VZ VM process.
+	// On macOS, large snapshot work between Create() and Start() can cause
+	// startup instability in Virtualization.framework.
+	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
+	if err != nil {
+		if prebuiltRootfs != "" {
+			os.Remove(prebuiltRootfs)
+		}
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, err
+	}
+
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		if prebuiltRootfs != "" {
@@ -295,22 +309,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}()
 
 	sb = &Sandbox{
-		id:          id,
-		config:      config,
-		machine:     machine,
-		netStack:    netStack,
-		policy:      policyEngine,
-		vfsRoot:     vfsRoot,
-		vfsHooks:    vfsHooks,
-		vfsServer:   vfsServer,
-		vfsStopFunc: vfsStopFunc,
-		events:      events,
-		stateMgr:    stateMgr,
-		caPool:      caPool,
-		subnetInfo:  subnetInfo,
-		subnetAlloc: subnetAlloc,
-		workspace:   workspace,
-		lifecycle:   lifecycleStore,
+		id:               id,
+		config:           config,
+		machine:          machine,
+		netStack:         netStack,
+		policy:           policyEngine,
+		vfsRoot:          vfsRoot,
+		vfsHooks:         vfsHooks,
+		vfsServer:        vfsServer,
+		vfsStopFunc:      vfsStopFunc,
+		events:           events,
+		stateMgr:         stateMgr,
+		caPool:           caPool,
+		subnetInfo:       subnetInfo,
+		subnetAlloc:      subnetAlloc,
+		workspace:        workspace,
+		overlaySnapshots: overlaySnapshots,
+		lifecycle:        lifecycleStore,
 	}
 	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
 		_ = sb.Close(ctx)
@@ -474,6 +489,15 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("machine_close", nil)
 	}
 
+	var overlayCleanupErr error
+	for _, snapshotPath := range s.overlaySnapshots {
+		if err := os.RemoveAll(snapshotPath); err != nil {
+			errs = append(errs, errx.With(ErrRemoveOverlaySnapshot, " %s: %v", snapshotPath, err))
+			overlayCleanupErr = err
+		}
+	}
+	markCleanup("overlay_snapshot_remove", overlayCleanupErr)
+
 	if len(errs) > 0 {
 		joined := errors.Join(errs...)
 		if s.lifecycle != nil {
@@ -495,28 +519,14 @@ func (s *Sandbox) Close(ctx context.Context) error {
 
 func createProvider(mount api.MountConfig) vfs.Provider {
 	switch mount.Type {
-	case "memory":
+	case api.MountTypeMemory:
 		return vfs.NewMemoryProvider()
-	case "real_fs":
+	case api.MountTypeHostFS:
 		p := vfs.NewRealFSProvider(mount.HostPath)
 		if mount.Readonly {
 			return vfs.NewReadonlyProvider(p)
 		}
 		return p
-	case "overlay":
-		var upper, lower vfs.Provider
-		if mount.Upper != nil {
-			upper = createProvider(*mount.Upper)
-		} else {
-			upper = vfs.NewMemoryProvider()
-		}
-		if mount.Lower != nil {
-			lower = createProvider(*mount.Lower)
-		}
-		if upper != nil && lower != nil {
-			return vfs.NewOverlayProvider(upper, lower)
-		}
-		return upper
 	default:
 		return vfs.NewMemoryProvider()
 	}

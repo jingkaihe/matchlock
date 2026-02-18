@@ -179,22 +179,22 @@ func (b *SandboxBuilder) Mount(guestPath string, cfg MountConfig) *SandboxBuilde
 
 // MountHostDir is a convenience for mounting a host directory into the guest.
 func (b *SandboxBuilder) MountHostDir(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: "real_fs", HostPath: hostPath})
+	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath})
 }
 
 // MountHostDirReadonly mounts a host directory into the guest as read-only.
 func (b *SandboxBuilder) MountHostDirReadonly(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: "real_fs", HostPath: hostPath, Readonly: true})
+	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath, Readonly: true})
 }
 
 // MountMemory creates an in-memory filesystem at the given guest path.
 func (b *SandboxBuilder) MountMemory(guestPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: "memory"})
+	return b.Mount(guestPath, MountConfig{Type: api.MountTypeMemory})
 }
 
-// MountOverlay creates a copy-on-write overlay at the given guest path.
+// MountOverlay creates an isolated snapshot mount at the given guest path.
 func (b *SandboxBuilder) MountOverlay(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: "overlay", HostPath: hostPath})
+	return b.Mount(guestPath, MountConfig{Type: api.MountTypeOverlay, HostPath: hostPath})
 }
 
 // WithUser sets the user to run commands as (uid, uid:gid, or username).

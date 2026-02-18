@@ -425,7 +425,7 @@ class TestClientCreate:
             opts = CreateOptions(
                 image="img",
                 workspace="/code",
-                mounts={"/data": MountConfig(type="real_fs", host_path="/h")},
+                mounts={"/data": MountConfig(type="host_fs", host_path="/h")},
             )
             vm_id = client.create(opts)
             assert vm_id == "vm-vfs"

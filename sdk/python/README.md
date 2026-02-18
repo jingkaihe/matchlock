@@ -147,7 +147,7 @@ If you use `CreateOptions(...)` directly instead of the builder, set both:
 
 ### Filesystem Mounts
 
-Mount host directories or use in-memory/overlay filesystems:
+Mount host directories or use in-memory/snapshot filesystems:
 
 ```python
 from matchlock import Client, Sandbox, MountConfig
@@ -159,7 +159,7 @@ sandbox = (
     .mount_memory("/workspace/tmp")
     .mount_overlay("/workspace/data", "/home/user/project/data")
     # Or use the generic mount() method:
-    .mount("/workspace/custom", MountConfig(type="real_fs", host_path="/tmp/custom"))
+    .mount("/workspace/custom", MountConfig(type="host_fs", host_path="/tmp/custom"))
 )
 ```
 
@@ -246,7 +246,7 @@ Fluent builder for sandbox configuration.
 | `.mount_host_dir(guest, host)` | Mount a host directory (read-write) |
 | `.mount_host_dir_readonly(guest, host)` | Mount a host directory (read-only) |
 | `.mount_memory(guest_path)` | Mount an in-memory filesystem |
-| `.mount_overlay(guest, host)` | Mount a copy-on-write overlay |
+| `.mount_overlay(guest, host)` | Mount an isolated snapshot of host path |
 | `.options()` | Return the built `CreateOptions` |
 
 ### `Client(config: Config | None = None)`
