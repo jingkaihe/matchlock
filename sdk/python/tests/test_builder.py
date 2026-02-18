@@ -187,14 +187,14 @@ class TestSandboxMounts:
     def test_mount_host_dir(self):
         opts = Sandbox("img").mount_host_dir("/guest", "/host").options()
         m = opts.mounts["/guest"]
-        assert m.type == "real_fs"
+        assert m.type == "host_fs"
         assert m.host_path == "/host"
         assert m.readonly is False
 
     def test_mount_host_dir_readonly(self):
         opts = Sandbox("img").mount_host_dir_readonly("/guest", "/host").options()
         m = opts.mounts["/guest"]
-        assert m.type == "real_fs"
+        assert m.type == "host_fs"
         assert m.host_path == "/host"
         assert m.readonly is True
 
@@ -210,10 +210,10 @@ class TestSandboxMounts:
         assert m.host_path == "/host/data"
 
     def test_mount_custom(self):
-        cfg = MountConfig(type="real_fs", host_path="/custom", readonly=True)
+        cfg = MountConfig(type="host_fs", host_path="/custom", readonly=True)
         opts = Sandbox("img").mount("/workspace/custom", cfg).options()
         m = opts.mounts["/workspace/custom"]
-        assert m.type == "real_fs"
+        assert m.type == "host_fs"
         assert m.readonly is True
 
     def test_multiple_mounts(self):

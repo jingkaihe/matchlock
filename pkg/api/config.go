@@ -136,6 +136,15 @@ type MountConfig struct {
 	Lower    *MountConfig `json:"lower,omitempty"`
 }
 
+const (
+	MountTypeMemory  = "memory"
+	MountTypeHostFS  = "host_fs"
+	MountTypeOverlay = "overlay"
+
+	MountOptionReadonlyShort = "ro"
+	MountOptionReadonly      = "readonly"
+)
+
 // GetID returns the VM ID from config. Creates a new random ID if not set.
 func (c *Config) GetID() string {
 	if c.ID == "" {
@@ -174,7 +183,7 @@ func DefaultConfig() *Config {
 		},
 		VFS: &VFSConfig{
 			Mounts: map[string]MountConfig{
-				DefaultWorkspace: {Type: "memory"},
+				DefaultWorkspace: {Type: MountTypeMemory},
 			},
 		},
 	}

@@ -11,7 +11,7 @@ var (
 	ErrTimeout        = errors.New("operation timed out")
 	ErrInvalidConfig  = errors.New("invalid configuration")
 
-	ErrInvalidVolumeFormat = errors.New("expected format host:guest or host:guest:ro")
+	ErrInvalidVolumeFormat = errors.New("expected format host:guest or host:guest:" + MountOptionReadonlyShort)
 	ErrResolvePath         = errors.New("failed to resolve path")
 	ErrHostPathNotExist    = errors.New("host path does not exist")
 	ErrUnknownMountOption  = errors.New("unknown option")

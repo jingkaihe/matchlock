@@ -37,7 +37,7 @@ Introduce an interceptor provider/handle wrapper in `pkg/vfs`:
   - guest FUSE operations
   - host RPC file operations (`write_file`, `read_file`, `list_files`)
 
-This keeps providers (`memory`, `real_fs`, `overlay`, `readonly`) unchanged and centralizes interception behavior.
+This keeps providers (`memory`, `host_fs`, `overlay`, `readonly`) unchanged and centralizes interception behavior.
 
 ### 2. Hook Model
 

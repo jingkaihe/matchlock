@@ -47,13 +47,13 @@ class TestMountConfig:
         assert m.to_dict() == {"type": "memory"}
 
     def test_to_dict_with_host_path(self):
-        m = MountConfig(type="real_fs", host_path="/tmp/data")
-        assert m.to_dict() == {"type": "real_fs", "host_path": "/tmp/data"}
+        m = MountConfig(type="host_fs", host_path="/tmp/data")
+        assert m.to_dict() == {"type": "host_fs", "host_path": "/tmp/data"}
 
     def test_to_dict_readonly(self):
-        m = MountConfig(type="real_fs", host_path="/src", readonly=True)
+        m = MountConfig(type="host_fs", host_path="/src", readonly=True)
         d = m.to_dict()
-        assert d == {"type": "real_fs", "host_path": "/src", "readonly": True}
+        assert d == {"type": "host_fs", "host_path": "/src", "readonly": True}
 
     def test_to_dict_readonly_false_omitted(self):
         m = MountConfig(type="overlay", host_path="/data", readonly=False)

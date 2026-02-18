@@ -30,26 +30,27 @@ type FirewallRules interface {
 
 // Sandbox represents a running sandbox VM with all associated resources.
 type Sandbox struct {
-	id          string
-	config      *api.Config
-	machine     vm.Machine
-	proxy       *sandboxnet.TransparentProxy
-	fwRules     FirewallRules
-	natRules    *sandboxnet.NFTablesNAT
-	policy      *policy.Engine
-	vfsRoot     vfs.Provider
-	vfsHooks    *vfs.HookEngine
-	vfsServer   *vfs.VFSServer
-	vfsStopFunc func()
-	events      chan api.Event
-	stateMgr    *state.Manager
-	tapName     string
-	caPool      *sandboxnet.CAPool
-	subnetInfo  *state.SubnetInfo
-	subnetAlloc *state.SubnetAllocator
-	workspace   string
-	rootfsPath  string
-	lifecycle   *lifecycle.Store
+	id               string
+	config           *api.Config
+	machine          vm.Machine
+	proxy            *sandboxnet.TransparentProxy
+	fwRules          FirewallRules
+	natRules         *sandboxnet.NFTablesNAT
+	policy           *policy.Engine
+	vfsRoot          vfs.Provider
+	vfsHooks         *vfs.HookEngine
+	vfsServer        *vfs.VFSServer
+	vfsStopFunc      func()
+	events           chan api.Event
+	stateMgr         *state.Manager
+	tapName          string
+	caPool           *sandboxnet.CAPool
+	subnetInfo       *state.SubnetInfo
+	subnetAlloc      *state.SubnetAllocator
+	workspace        string
+	rootfsPath       string
+	overlaySnapshots []string
+	lifecycle        *lifecycle.Store
 }
 
 // Options configures sandbox creation.
@@ -220,6 +221,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
+	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
+	if err != nil {
+		machine.Close(ctx)
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, err
+	}
+
 	// Create policy engine
 	policyEngine := policy.NewEngine(config.Network)
 
@@ -299,26 +308,27 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	sb = &Sandbox{
-		id:          id,
-		config:      config,
-		machine:     machine,
-		proxy:       proxy,
-		fwRules:     fwRules,
-		natRules:    natRules,
-		policy:      policyEngine,
-		vfsRoot:     vfsRoot,
-		vfsHooks:    vfsHooks,
-		vfsServer:   vfsServer,
-		vfsStopFunc: vfsStopFunc,
-		events:      events,
-		stateMgr:    stateMgr,
-		tapName:     linuxMachine.TapName(),
-		caPool:      caPool,
-		subnetInfo:  subnetInfo,
-		subnetAlloc: subnetAlloc,
-		workspace:   workspace,
-		rootfsPath:  vmRootfsPath,
-		lifecycle:   lifecycleStore,
+		id:               id,
+		config:           config,
+		machine:          machine,
+		proxy:            proxy,
+		fwRules:          fwRules,
+		natRules:         natRules,
+		policy:           policyEngine,
+		vfsRoot:          vfsRoot,
+		vfsHooks:         vfsHooks,
+		vfsServer:        vfsServer,
+		vfsStopFunc:      vfsStopFunc,
+		events:           events,
+		stateMgr:         stateMgr,
+		tapName:          linuxMachine.TapName(),
+		caPool:           caPool,
+		subnetInfo:       subnetInfo,
+		subnetAlloc:      subnetAlloc,
+		workspace:        workspace,
+		rootfsPath:       vmRootfsPath,
+		overlaySnapshots: overlaySnapshots,
+		lifecycle:        lifecycleStore,
 	}
 	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
 		_ = sb.Close(ctx)
@@ -517,6 +527,15 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("machine_close", nil)
 	}
 
+	var overlayCleanupErr error
+	for _, snapshotPath := range s.overlaySnapshots {
+		if err := os.RemoveAll(snapshotPath); err != nil {
+			errs = append(errs, errx.With(ErrRemoveOverlaySnapshot, " %s: %v", snapshotPath, err))
+			overlayCleanupErr = err
+		}
+	}
+	markCleanup("overlay_snapshot_remove", overlayCleanupErr)
+
 	// Remove rootfs copy to save disk space
 	rootfsCopy := s.stateMgr.Dir(s.id) + "/rootfs.ext4"
 	if err := os.Remove(rootfsCopy); err != nil && !os.IsNotExist(err) {
@@ -547,28 +566,14 @@ func (s *Sandbox) Close(ctx context.Context) error {
 
 func createProvider(mount api.MountConfig) vfs.Provider {
 	switch mount.Type {
-	case "memory":
+	case api.MountTypeMemory:
 		return vfs.NewMemoryProvider()
-	case "real_fs":
+	case api.MountTypeHostFS:
 		p := vfs.NewRealFSProvider(mount.HostPath)
 		if mount.Readonly {
 			return vfs.NewReadonlyProvider(p)
 		}
 		return p
-	case "overlay":
-		var upper, lower vfs.Provider
-		if mount.Upper != nil {
-			upper = createProvider(*mount.Upper)
-		} else {
-			upper = vfs.NewMemoryProvider()
-		}
-		if mount.Lower != nil {
-			lower = createProvider(*mount.Lower)
-		}
-		if upper != nil && lower != nil {
-			return vfs.NewOverlayProvider(upper, lower)
-		}
-		return upper
 	default:
 		return vfs.NewMemoryProvider()
 	}

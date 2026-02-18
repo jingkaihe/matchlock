@@ -182,20 +182,20 @@ func TestBuilderMounts(t *testing.T) {
 	require.Len(t, opts.Mounts, 4)
 
 	m := opts.Mounts["/data"]
-	assert.Equal(t, "real_fs", m.Type)
+	assert.Equal(t, api.MountTypeHostFS, m.Type)
 	assert.Equal(t, "/host/data", m.HostPath)
 	assert.False(t, m.Readonly)
 
 	m = opts.Mounts["/config"]
-	assert.Equal(t, "real_fs", m.Type)
+	assert.Equal(t, api.MountTypeHostFS, m.Type)
 	assert.Equal(t, "/host/config", m.HostPath)
 	assert.True(t, m.Readonly)
 
 	m = opts.Mounts["/tmp/scratch"]
-	assert.Equal(t, "memory", m.Type)
+	assert.Equal(t, api.MountTypeMemory, m.Type)
 
 	m = opts.Mounts["/workspace"]
-	assert.Equal(t, "overlay", m.Type)
+	assert.Equal(t, api.MountTypeOverlay, m.Type)
 	assert.Equal(t, "/host/workspace", m.HostPath)
 }
 

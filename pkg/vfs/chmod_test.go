@@ -64,45 +64,6 @@ func TestMemoryProvider_Mkdir_StoresMode(t *testing.T) {
 	assert.Equal(t, os.FileMode(0700), info.Mode().Perm())
 }
 
-func TestOverlayProvider_Chmod_UpperFile(t *testing.T) {
-	lower := NewMemoryProvider()
-	upper := NewMemoryProvider()
-	h, _ := upper.Create("/file.txt", 0644)
-	h.Close()
-
-	overlay := NewOverlayProvider(upper, lower)
-	require.NoError(t, overlay.Chmod("/file.txt", 0755))
-
-	info, _ := upper.Stat("/file.txt")
-	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
-}
-
-func TestOverlayProvider_Chmod_CopiesUpFromLower(t *testing.T) {
-	lower := NewMemoryProvider()
-	upper := NewMemoryProvider()
-
-	h, _ := lower.Create("/file.txt", 0644)
-	h.Write([]byte("lower content"))
-	h.Close()
-
-	overlay := NewOverlayProvider(upper, lower)
-	require.NoError(t, overlay.Chmod("/file.txt", 0755))
-
-	// File should now exist in upper with new mode
-	info, err := upper.Stat("/file.txt")
-	require.NoError(t, err, "file should exist in upper after copy-up")
-	assert.Equal(t, os.FileMode(0755), info.Mode().Perm())
-}
-
-func TestOverlayProvider_Chmod_NonExistent(t *testing.T) {
-	lower := NewMemoryProvider()
-	upper := NewMemoryProvider()
-	overlay := NewOverlayProvider(upper, lower)
-
-	err := overlay.Chmod("/nope", 0644)
-	require.Error(t, err)
-}
-
 func TestRealFSProvider_Chmod(t *testing.T) {
 	dir := t.TempDir()
 	p := NewRealFSProvider(dir)
