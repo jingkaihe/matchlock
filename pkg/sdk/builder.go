@@ -93,6 +93,12 @@ func (b *SandboxBuilder) AllowHost(hosts ...string) *SandboxBuilder {
 	return b
 }
 
+// AddHost injects a static host-to-IP mapping into guest /etc/hosts.
+func (b *SandboxBuilder) AddHost(host, ip string) *SandboxBuilder {
+	b.opts.AddHosts = append(b.opts.AddHosts, api.HostIPMapping{Host: host, IP: ip})
+	return b
+}
+
 // BlockPrivateIPs blocks access to private IP ranges (10.x, 172.16.x, 192.168.x).
 func (b *SandboxBuilder) BlockPrivateIPs() *SandboxBuilder {
 	return b.WithBlockPrivateIPs(true)

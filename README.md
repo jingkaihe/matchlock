@@ -114,6 +114,7 @@ Go SDK private-IP behavior (`10/8`, `172.16/12`, `192.168/16`):
 ```go
 sandbox := sdk.New("alpine:latest").
 	AllowHost("api.openai.com").
+	AddHost("api.internal", "10.0.0.10").
 	WithNetworkMTU(1200).
 	AllowPrivateIPs() // explicit override: block_private_ips=false
 ```

@@ -34,7 +34,7 @@ func TestCLIHelp(t *testing.T) {
 func TestCLIRunHelp(t *testing.T) {
 	stdout, _, exitCode := runCLI(t, "run", "--help")
 	require.Equal(t, 0, exitCode)
-	for _, flag := range []string{"--image", "--cpus", "--memory", "--timeout", "--disk-size", "--allow-host", "--secret", "--publish", "--address", "--rm"} {
+	for _, flag := range []string{"--image", "--cpus", "--memory", "--timeout", "--disk-size", "--allow-host", "--add-host", "--secret", "--publish", "--address", "--rm"} {
 		assert.Containsf(t, stdout, flag, "run --help should mention %q flag", flag)
 	}
 }

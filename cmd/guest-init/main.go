@@ -49,9 +49,15 @@ type diskMount struct {
 	Path   string
 }
 
+type hostIPMapping struct {
+	Host string
+	IP   string
+}
+
 type bootConfig struct {
 	DNSServers []string
 	Hostname   string
+	AddHosts   []hostIPMapping
 	Workspace  string
 	MTU        int
 	Disks      []diskMount
@@ -90,7 +96,7 @@ func runInit() {
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
 
-	if err := configureHostname(cfg.Hostname); err != nil {
+	if err := configureHostname(cfg.Hostname, cfg.AddHosts); err != nil {
 		fatal(err)
 	}
 
@@ -171,6 +177,18 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				continue
 			}
 			cfg.Disks = append(cfg.Disks, diskMount{Device: spec[:i], Path: spec[i+1:]})
+
+		case strings.HasPrefix(field, "matchlock.add_host."):
+			spec := strings.TrimPrefix(field, "matchlock.add_host.")
+			i := strings.IndexByte(spec, '=')
+			if i <= 0 || i == len(spec)-1 {
+				return nil, errx.With(ErrInvalidAddHost, ": %q", field)
+			}
+			mapping, parseErr := parseAddHostField(spec[i+1:])
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			cfg.AddHosts = append(cfg.AddHosts, mapping)
 		}
 	}
 
@@ -229,11 +247,35 @@ func configureCgroupDelegation() {
 	}
 }
 
+func parseAddHostField(value string) (hostIPMapping, error) {
+	parts := strings.SplitN(value, ",", 2)
+	if len(parts) != 2 {
+		return hostIPMapping{}, errx.With(ErrInvalidAddHost, ": %q (expected host,ip)", value)
+	}
+
+	host := strings.TrimSpace(parts[0])
+	ip := strings.TrimSpace(parts[1])
+	if host == "" || ip == "" {
+		return hostIPMapping{}, errx.With(ErrInvalidAddHost, ": %q has empty host or ip", value)
+	}
+	if strings.ContainsAny(host, " \t\n\r") {
+		return hostIPMapping{}, errx.With(ErrInvalidAddHost, ": %q contains whitespace", host)
+	}
+	if strings.Contains(host, ":") {
+		return hostIPMapping{}, errx.With(ErrInvalidAddHost, ": %q contains ':'", host)
+	}
+	if net.ParseIP(ip) == nil {
+		return hostIPMapping{}, errx.With(ErrInvalidAddHost, ": %q invalid ip", ip)
+	}
+
+	return hostIPMapping{Host: host, IP: ip}, nil
+}
+
 // configureHostname calls sethostname and writes /etc/hostname.
 //
 // Hostname is set before user-space via the `hostname=` kernel arg, but we set
 // it here too to keep /etc/hostname in sync for tools that read the file.
-func configureHostname(hostname string) error {
+func configureHostname(hostname string, addHosts []hostIPMapping) error {
 	if hostname == "" {
 		hostname = "matchlock"
 	}
@@ -243,22 +285,31 @@ func configureHostname(hostname string) error {
 	if err := os.WriteFile(etcHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
 		return errx.With(ErrWriteHostname, " write %s: %w", etcHostnamePath, err)
 	}
-	if err := writeEtcHosts(etcHostsPath, hostname); err != nil {
+	if err := writeEtcHosts(etcHostsPath, hostname, addHosts); err != nil {
 		return errx.With(ErrWriteHosts, " write %s: %w", etcHostsPath, err)
 	}
 
 	return nil
 }
 
-func writeEtcHosts(path, hostname string) error {
-	return os.WriteFile(path, []byte(renderEtcHosts(hostname)), 0644)
+func writeEtcHosts(path, hostname string, addHosts []hostIPMapping) error {
+	return os.WriteFile(path, []byte(renderEtcHosts(hostname, addHosts)), 0644)
 }
 
-func renderEtcHosts(hostname string) string {
+func renderEtcHosts(hostname string, addHosts []hostIPMapping) string {
 	var b strings.Builder
 	b.WriteString("127.0.0.1 localhost localhost.localdomain ")
 	b.WriteString(hostname)
 	b.WriteByte('\n')
+	for _, mapping := range addHosts {
+		if mapping.Host == "" || mapping.IP == "" {
+			continue
+		}
+		b.WriteString(mapping.IP)
+		b.WriteByte(' ')
+		b.WriteString(mapping.Host)
+		b.WriteByte('\n')
+	}
 	b.WriteString("::1 localhost ip6-localhost ip6-loopback\n")
 	b.WriteString("ff02::1 ip6-allnodes\n")
 	b.WriteString("ff02::2 ip6-allrouters\n")

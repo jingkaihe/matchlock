@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -277,6 +278,39 @@ func TestCustomDNSServersStillResolveDomains(t *testing.T) {
 	require.NoError(t, err, "Exec")
 
 	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected DNS resolution and HTTP request to succeed with custom DNS")
+}
+
+func TestSDKAddHostEtcHosts(t *testing.T) {
+	t.Parallel()
+	sandbox := sdk.New("alpine:latest").
+		AddHost("api.internal", "10.0.0.10").
+		AddHost("db.internal", "10.0.0.11")
+
+	client := launchAlpineWithNetwork(t, sandbox)
+
+	result, err := client.Exec(context.Background(), "cat /etc/hosts")
+	require.NoError(t, err, "Exec")
+
+	combined := result.Stdout + result.Stderr
+	assert.Contains(t, combined, "10.0.0.10 api.internal")
+	assert.Contains(t, combined, "10.0.0.11 db.internal")
+}
+
+func TestSDKAddHostRejectsInvalidMapping(t *testing.T) {
+	t.Parallel()
+	client, err := sdk.NewClient(matchlockConfig(t))
+	require.NoError(t, err, "NewClient")
+	defer client.Close(0)
+
+	_, err = client.Create(sdk.CreateOptions{
+		Image: "alpine:latest",
+		AddHosts: []api.HostIPMapping{{
+			Host: "bad host",
+			IP:   "10.0.0.10",
+		}},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sdk.ErrInvalidAddHost)
 }
 
 // ---------------------------------------------------------------------------

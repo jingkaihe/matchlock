@@ -12,6 +12,7 @@
 //	    WithCPUs(2).
 //	    WithMemory(1024).
 //	    AllowHost("dl-cdn.alpinelinux.org", "api.openai.com").
+//	    AddHost("api.internal", "10.0.0.10").
 //	    AddSecret("API_KEY", os.Getenv("API_KEY"), "api.openai.com")
 //
 //	vmID, err := client.Launch(sandbox)
@@ -205,6 +206,8 @@ type CreateOptions struct {
 	TimeoutSeconds int
 	// AllowedHosts is a list of allowed network hosts (supports wildcards)
 	AllowedHosts []string
+	// AddHosts injects static host-to-IP mappings into guest /etc/hosts.
+	AddHosts []api.HostIPMapping
 	// BlockPrivateIPs controls access to private IP ranges.
 	// Use together with BlockPrivateIPsSet to express explicit true/false.
 	BlockPrivateIPs bool
@@ -415,6 +418,11 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.NetworkMTU < 0 {
 		return "", ErrInvalidNetworkMTU
 	}
+	for _, mapping := range opts.AddHosts {
+		if err := api.ValidateAddHost(mapping); err != nil {
+			return "", errx.Wrap(ErrInvalidAddHost, err)
+		}
+	}
 
 	wireVFS, localHooks, localMutateHooks, localActionHooks, err := compileVFSHooks(opts.VFSInterception)
 	if err != nil {
@@ -486,13 +494,14 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 
 func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasAllowedHosts := len(opts.AllowedHosts) > 0
+	hasAddHosts := len(opts.AddHosts) > 0
 	hasSecrets := len(opts.Secrets) > 0
 	hasDNSServers := len(opts.DNSServers) > 0
 	hasHostname := len(opts.Hostname) > 0
 	hasMTU := opts.NetworkMTU > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride
 	if !includeNetwork {
 		return nil
 	}
@@ -506,6 +515,9 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	network := map[string]interface{}{
 		"allowed_hosts":     opts.AllowedHosts,
 		"block_private_ips": blockPrivateIPs,
+	}
+	if hasAddHosts {
+		network["add_hosts"] = opts.AddHosts
 	}
 	if hasSecrets {
 		secrets := make(map[string]interface{})

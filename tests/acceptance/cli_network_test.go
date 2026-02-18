@@ -97,6 +97,28 @@ func TestCLIHostnameOverrideEtcHosts(t *testing.T) {
 	assert.Contains(t, stdout, "localhost localhost.localdomain override.internal")
 }
 
+func TestCLIAddHostEtcHosts(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"--add-host", "api.internal:10.0.0.10",
+		"--add-host", "db.internal:10.0.0.11",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "10.0.0.10 api.internal")
+	assert.Contains(t, stdout, "10.0.0.11 db.internal")
+}
+
+func TestCLIAddHostRejectsInvalidSpec(t *testing.T) {
+	_, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"--add-host", "invalid-spec",
+		"true",
+	)
+	require.NotEqual(t, 0, exitCode)
+	assert.Contains(t, stderr, "invalid add-host mapping")
+}
+
 func TestCLIAllowedHostHTTP(t *testing.T) {
 	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", "alpine:latest",

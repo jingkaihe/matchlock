@@ -151,6 +151,61 @@ func TestCreateSendsNetworkMTU(t *testing.T) {
 	assert.True(t, capturedBlockPrivateIPs)
 }
 
+func TestCreateSendsAddHosts(t *testing.T) {
+	var capturedAddHosts []map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						if addHosts, ok := network["add_hosts"].([]interface{}); ok {
+							capturedAddHosts = make([]map[string]interface{}, 0, len(addHosts))
+							for _, item := range addHosts {
+								if hostMap, ok := item.(map[string]interface{}); ok {
+									capturedAddHosts = append(capturedAddHosts, hostMap)
+								}
+							}
+						}
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-add-hosts"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		AddHosts: []api.HostIPMapping{
+			{Host: "api.internal", IP: "10.0.0.10"},
+			{Host: "db.internal", IP: "10.0.0.11"},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-add-hosts", vmID)
+	require.Len(t, capturedAddHosts, 2)
+	assert.Equal(t, "api.internal", capturedAddHosts[0]["host"])
+	assert.Equal(t, "10.0.0.10", capturedAddHosts[0]["ip"])
+	assert.Equal(t, "db.internal", capturedAddHosts[1]["host"])
+	assert.Equal(t, "10.0.0.11", capturedAddHosts[1]["ip"])
+}
+
 func TestCreateNetworkDefaultsBlockPrivateIPsWhenAllowHostsSet(t *testing.T) {
 	var capturedBlockPrivateIPs bool
 	var hasNetworkConfig bool
@@ -290,5 +345,17 @@ func TestCreateRejectsNegativeNetworkMTU(t *testing.T) {
 		NetworkMTU: -1,
 	})
 	require.ErrorIs(t, err, ErrInvalidNetworkMTU)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsInvalidAddHost(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		AddHosts: []api.HostIPMapping{
+			{Host: "bad host", IP: "10.0.0.10"},
+		},
+	})
+	require.ErrorIs(t, err, ErrInvalidAddHost)
 	assert.Empty(t, vmID)
 }

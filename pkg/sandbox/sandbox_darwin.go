@@ -182,6 +182,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		ExtraDisks:      extraDisks,
 		DNSServers:      config.Network.GetDNSServers(),
 		Hostname:        hostname,
+		AddHosts:        config.Network.AddHosts,
 		MTU:             config.Network.GetMTU(),
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {

@@ -30,17 +30,18 @@ type VMConfig struct {
 	LogPath         string
 	KernelArgs      string
 	Env             map[string]string
-	GatewayIP       string       // Host TAP IP (e.g., 192.168.100.1)
-	GuestIP         string       // Guest IP (e.g., 192.168.100.2)
-	SubnetCIDR      string       // CIDR notation (e.g., 192.168.100.1/24)
-	Workspace       string       // Guest VFS mount point (default: /workspace)
-	UseInterception bool         // Use network interception (MITM proxy)
-	Privileged      bool         // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
-	DNSServers      []string     // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
-	Hostname        string       // Hostname for the guest (default: vm's ID)
-	MTU             int          // Guest interface/network stack MTU (default: 1500)
-	PrebuiltRootfs  string       // Pre-prepared rootfs path (skips internal copy if set)
-	ExtraDisks      []DiskConfig // Additional block devices to attach
+	GatewayIP       string              // Host TAP IP (e.g., 192.168.100.1)
+	GuestIP         string              // Guest IP (e.g., 192.168.100.2)
+	SubnetCIDR      string              // CIDR notation (e.g., 192.168.100.1/24)
+	Workspace       string              // Guest VFS mount point (default: /workspace)
+	UseInterception bool                // Use network interception (MITM proxy)
+	Privileged      bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
+	DNSServers      []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
+	Hostname        string              // Hostname for the guest (default: vm's ID)
+	AddHosts        []api.HostIPMapping // Additional /etc/hosts entries injected at boot
+	MTU             int                 // Guest interface/network stack MTU (default: 1500)
+	PrebuiltRootfs  string              // Pre-prepared rootfs path (skips internal copy if set)
+	ExtraDisks      []DiskConfig        // Additional block devices to attach
 }
 
 type Backend interface {

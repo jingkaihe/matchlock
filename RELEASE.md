@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## 0.1.20 
 
 * Added port forward support with `matchlock run -p LOCAL_PORT:REMOTE_PORT ...`
 * Updated default working directory semantics for `run`/`exec`: when `--workdir` is not set, Matchlock now uses the image `WORKDIR` first, then falls back to workspace path ([#40](https://github.com/jingkaihe/matchlock/issues/40)).
@@ -10,6 +10,7 @@
 * Refactored guest runtime startup to a unified `guest-init` binary that dispatches init/agent/fused roles, replacing separate guest binaries and simplifying rootfs injection.
 * Stabilised FUSE inode propagation for workspace paths to eliminate intermittent Alpine/musl `getcwd` failures during `git init` in `/workspace` ([#43](https://github.com/jingkaihe/matchlock/issues/43)).
 * Added configurable guest hostname support (CLI `--hostname` and Go/Python SDKs), with safe defaults and deterministic `/etc/hostname` + `/etc/hosts` setup in guest init ([#48](https://github.com/jingkaihe/matchlock/pull/48) by [@comunidadio](https://github.com/comunidadio).
+* Added `--add-host host:ip` support (including Go SDK `AddHost`) to inject custom host-to-IP mappings into guest `/etc/hosts` ([#52](https://github.com/jingkaihe/matchlock/issues/52)).
 
 ## 0.1.19
 
