@@ -1,6 +1,8 @@
 # Docker in Matchlock
 
 This example demonstrates how to run Docker inside a matchlock sandbox.
+It boots `/sbin/init` (systemd) in a nested PID namespace so Docker is started
+via `docker.service` and pins Docker to `iptables-legacy` for bridge setup.
 
 ## Build the Image
 
@@ -23,6 +25,15 @@ You can use `matchlock` if you don't have Docker installed:
 matchlock build -t docker-in-matchlock:latest --build-cache-size 30000 examples/docker-in-sandbox
 ```
 
+## Rebuild the Matchlock Kernels
+
+Docker bridge/NAT networking requires netfilter support in the guest kernel.
+Rebuild kernels after updating `guest/kernel/*.config`:
+
+```bash
+mise run kernel:build
+```
+
 ## Run the Docker Sandbox
 
 ```bash
@@ -38,7 +49,7 @@ Then connect and use Docker:
 ```bash
 matchlock exec vm-XXXX -it bash
 
-# Inside the sandbox (containers must use host networking since
-# the kernel has no netfilter/iptables for Docker bridge NAT):
-docker run --network=host hello-world
+# Inside the sandbox:
+docker info
+docker run hello-world
 ```
