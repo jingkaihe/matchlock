@@ -37,6 +37,12 @@ From repo root, use the helper script in the codex example dir:
 ```
 
 
+Add `--privileged` when you need privileged sandbox mode:
+
+```bash
+./examples/codex/matchlock-codex run --privileged
+```
+
 You can also pass an explicit GitHub repo slug:
 
 ```bash

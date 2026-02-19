@@ -20,7 +20,7 @@ extract_repo_slug() {
 }
 
 usage() {
-    echo "Usage: ./examples/codex/matchlock-codex run [--cpus N] [--memory MB] [--privileged] [owner/repo] [instruction]" >&2
+    echo "Usage: ./examples/claude-code/matchlock-claude run [--cpus N] [--memory MB] [--privileged] [owner/repo] [instruction]" >&2
     exit 1
 }
 
@@ -42,8 +42,8 @@ shift
 
 [ "$subcommand" = "run" ] || usage
 
-cpus="${MATCHLOCK_CODEX_CPUS:-2}"
-memory="${MATCHLOCK_CODEX_MEMORY:-4096}"
+cpus="${MATCHLOCK_CLAUDE_CPUS:-2}"
+memory="${MATCHLOCK_CLAUDE_MEMORY:-4096}"
 privileged=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -92,8 +92,8 @@ if [ -z "${GH_TOKEN:-}" ]; then
     exit 1
 fi
 
-if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "OPENAI_API_KEY is required." >&2
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "ANTHROPIC_API_KEY is required." >&2
     exit 1
 fi
 
@@ -115,7 +115,7 @@ git_editor="${GIT_EDITOR:-$(git -C "$PWD" config --get core.editor 2>/dev/null |
 
 args=(
     run
-    --image codex:latest
+    --image claude-code:latest
     --cpus "$cpus"
     --memory "$memory"
     -it
@@ -126,9 +126,10 @@ args=(
     --allow-host security.ubuntu.com
     --allow-host ports.ubuntu.com
     --allow-host "*.archive.ubuntu.com"
-    --allow-host api.openai.com
+    --allow-host api.anthropic.com
+    --allow-host "*.anthropic.com"
     --secret 'GH_TOKEN@github.com'
-    --secret 'OPENAI_API_KEY@api.openai.com'
+    --secret 'ANTHROPIC_API_KEY@api.anthropic.com'
 )
 
 if [ "$privileged" -eq 1 ]; then
