@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+is_repo_slug() {
+    [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]
+}
+
+extract_repo_slug() {
+    local value="${1%.git}"
+    value="${value#git@github.com:}"
+    value="${value#https://github.com/}"
+    value="${value#http://github.com/}"
+    value="${value#ssh://git@github.com/}"
+    value="${value#git://github.com/}"
+    if is_repo_slug "$value"; then
+        printf '%s\n' "$value"
+        return 0
+    fi
+    return 1
+}
+
+usage() {
+    echo "Usage: ./examples/codex/matchlock-codex run [owner/repo] [instruction]" >&2
+    exit 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
+
+MATCHLOCK_BIN="${MATCHLOCK_BIN:-$PROJECT_ROOT/bin/matchlock}"
+if [ ! -x "$MATCHLOCK_BIN" ]; then
+    MATCHLOCK_BIN="$(command -v matchlock || true)"
+fi
+
+if [ -z "$MATCHLOCK_BIN" ]; then
+    echo "matchlock binary not found. Build it with 'mise run build' or set MATCHLOCK_BIN." >&2
+    exit 1
+fi
+
+[ "$#" -ge 1 ] || usage
+subcommand="$1"
+shift
+
+[ "$subcommand" = "run" ] || usage
+
+repo=""
+if [ "$#" -gt 0 ] && is_repo_slug "$1"; then
+    repo="$1"
+    shift
+fi
+
+instruction="$*"
+
+if [ -z "${GH_TOKEN:-}" ]; then
+    GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+    export GH_TOKEN
+fi
+
+if [ -n "${GH_TOKEN:-}" ] && [[ "$GH_TOKEN" != gho_* ]] && [[ "$GH_TOKEN" != ghp_* ]] && [[ "$GH_TOKEN" != github_pat_* ]]; then
+    echo "Warning: GH_TOKEN does not look like a GitHub personal access token; clone may fail." >&2
+fi
+
+if [ -z "${GH_TOKEN:-}" ]; then
+    echo "GH_TOKEN is required. Export GH_TOKEN or run 'gh auth login' first." >&2
+    exit 1
+fi
+
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY is required." >&2
+    exit 1
+fi
+
+if [ -z "$repo" ]; then
+    remote_url="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
+    if [ -z "$remote_url" ]; then
+        remote_url="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
+    fi
+    repo="$(extract_repo_slug "$remote_url" || true)"
+    if [ -z "$repo" ]; then
+        echo "Repo not provided and local git remote origin is unavailable/unsupported." >&2
+        exit 1
+    fi
+fi
+
+git_user_name="${GIT_USER_NAME:-$(git -C "$PWD" config --get user.name 2>/dev/null || git -C "$PROJECT_ROOT" config --get user.name 2>/dev/null || true)}"
+git_user_email="${GIT_USER_EMAIL:-$(git -C "$PWD" config --get user.email 2>/dev/null || git -C "$PROJECT_ROOT" config --get user.email 2>/dev/null || true)}"
+git_editor="${GIT_EDITOR:-$(git -C "$PWD" config --get core.editor 2>/dev/null || git -C "$PROJECT_ROOT" config --get core.editor 2>/dev/null || true)}"
+
+args=(
+    run
+    --image codex:latest
+    --cpus 2
+    --memory 4096
+    -it
+    --allow-host github.com
+    --allow-host "*.github.com"
+    --allow-host "*.githubusercontent.com"
+    --allow-host api.openai.com
+    --secret 'GH_TOKEN@github.com'
+    --secret 'OPENAI_API_KEY@api.openai.com'
+)
+
+if [ -n "$git_user_name" ]; then
+    args+=(--env "GIT_USER_NAME=$git_user_name")
+fi
+if [ -n "$git_user_email" ]; then
+    args+=(--env "GIT_USER_EMAIL=$git_user_email")
+fi
+if [ -n "$git_editor" ]; then
+    args+=(--env "GIT_EDITOR=$git_editor")
+fi
+
+args+=(-- "$repo")
+if [ -n "$instruction" ]; then
+    args+=("$instruction")
+fi
+
+exec "$MATCHLOCK_BIN" "${args[@]}"
