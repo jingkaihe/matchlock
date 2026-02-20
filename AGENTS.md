@@ -56,6 +56,7 @@ Linux sudo rule:
 - Use `sudo` only for the one-time `setup linux` command above.
 - Do not run `matchlock run` or `matchlock exec` with `sudo`.
 - NEVER EVER run `matchlock` with `sudo`.
+- `setup linux` now also applies `cap_net_admin,cap_net_raw` to `matchlock-ui` when present.
 
 ## Test and Check
 
