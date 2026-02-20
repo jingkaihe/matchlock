@@ -36,6 +36,14 @@ fi
 
 mkdir -p bin
 
+# Build embedded UI assets.
+if [ -f cmd/matchlock/ui/package.json ]; then
+  if [ ! -d cmd/matchlock/ui/node_modules ]; then
+    npm --prefix cmd/matchlock/ui ci
+  fi
+  go generate ./cmd/matchlock
+fi
+
 LDFLAGS="-X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
 go build -ldflags="$LDFLAGS" -o bin/matchlock ./cmd/matchlock
 
@@ -77,7 +85,19 @@ run = "rm -rf bin/"
 
 [tasks.test]
 description = "Run all tests"
-run = "go test ./..."
+run = """
+#!/usr/bin/env bash
+set -e
+
+if [ -f cmd/matchlock/ui/package.json ] && [ ! -f cmd/matchlock/ui/dist/app.js ]; then
+  if [ ! -d cmd/matchlock/ui/node_modules ]; then
+    npm --prefix cmd/matchlock/ui ci
+  fi
+  go generate ./cmd/matchlock
+fi
+
+go test ./...
+"""
 
 [tasks."test:coverage"]
 description = "Generate coverage report"

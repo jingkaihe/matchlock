@@ -112,7 +112,7 @@ func runExecInteractive(ctx context.Context, execSocketPath, command, workdir, u
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	exitCode, err := sandbox.ExecInteractiveViaRelay(ctx, execSocketPath, command, workdir, user, uint16(rows), uint16(cols), os.Stdin, os.Stdout)
+	exitCode, err := sandbox.ExecInteractiveViaRelay(ctx, execSocketPath, command, workdir, user, uint16(rows), uint16(cols), os.Stdin, os.Stdout, nil)
 	if err != nil {
 		term.Restore(int(os.Stdin.Fd()), oldState)
 		return errx.Wrap(ErrInteractiveExec, err)

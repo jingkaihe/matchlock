@@ -37,6 +37,9 @@ vmlinux-*
 node_modules/
 sdk/typescript/node_modules/
 sdk/typescript/dist/
+cmd/matchlock/ui/node_modules/
+cmd/matchlock/ui/dist/
+cmd/matchlock/ui/npm-debug.log*
 
 # Firecracker runtime
 *.sock

@@ -45,6 +45,10 @@ matchlock run --image alpine:latest --rm=false   # prints VM ID
 matchlock exec vm-abc12345 -it sh                # attach to it
 matchlock port-forward vm-abc12345 8080:8080     # forward host:8080 -> guest:8080
 
+# Web management UI
+matchlock ui                                      # open http://127.0.0.1:8540
+# from UI: list/start/stop sandboxes, pull images, open web terminal
+
 # Publish ports at startup
 matchlock run --image alpine:latest --rm=false -p 8080:8080
 
