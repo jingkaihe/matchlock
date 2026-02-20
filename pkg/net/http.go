@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -157,16 +158,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		return
 	}
 
-	realConn, err := tls.Dial("tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), &tls.Config{
-		ServerName: serverName,
-	})
-	if err != nil {
-		return
-	}
-	defer realConn.Close()
-
 	guestReader := bufio.NewReader(tlsConn)
-	serverReader := bufio.NewReader(realConn)
 
 	for {
 		req, err := http.ReadRequest(guestReader)
@@ -176,33 +168,86 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		start := time.Now()
 
-		modifiedReq, err := i.policy.OnRequest(req, serverName)
+		// Routing decision
+		routeDirective, err := i.policy.RouteRequest(req, serverName)
+		if err != nil {
+			i.emitBlockedEvent(req, serverName, err.Error())
+			writeHTTPError(tlsConn, http.StatusBadGateway, "Routing error")
+			return
+		}
+
+		// Determine effective host for secret injection
+		effectiveHost := serverName
+		if routeDirective != nil {
+			effectiveHost = routeDirective.Host
+			log.Printf("[matchlock] route: %s %s%s -> %s:%d (local-backend)", req.Method, serverName, req.URL.Path, routeDirective.Host, routeDirective.Port)
+		}
+
+		// Secret injection using effective host
+		modifiedReq, err := i.policy.OnRequest(req, effectiveHost)
 		if err != nil {
 			i.emitBlockedEvent(req, serverName, err.Error())
 			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
 
-		if err := modifiedReq.Write(realConn); err != nil {
+		// Connect to backend per-request
+		var upstreamConn net.Conn
+
+		if routeDirective != nil {
+			target := net.JoinHostPort(routeDirective.Host, fmt.Sprintf("%d", routeDirective.Port))
+			if routeDirective.UseTLS {
+				upstreamConn, err = tls.Dial("tcp", target, &tls.Config{
+					ServerName: routeDirective.Host,
+				})
+			} else {
+				upstreamConn, err = net.DialTimeout("tcp", target, 30*time.Second)
+			}
+			if err != nil {
+				writeHTTPError(tlsConn, http.StatusBadGateway, "Failed to connect to routed backend")
+				return
+			}
+		} else {
+			target := net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort))
+			upstreamConn, err = tls.Dial("tcp", target, &tls.Config{
+				ServerName: serverName,
+			})
+			if err != nil {
+				return
+			}
+		}
+
+		// Forward request to upstream
+		if err := modifiedReq.Write(upstreamConn); err != nil {
+			upstreamConn.Close()
 			return
 		}
 
-		resp, err := http.ReadResponse(serverReader, modifiedReq)
+		// Read response
+		upstreamReader := bufio.NewReader(upstreamConn)
+		resp, err := http.ReadResponse(upstreamReader, modifiedReq)
 		if err != nil {
+			upstreamConn.Close()
 			return
 		}
 
+		// Inject X-Routed-Via header on routed responses
+		if routeDirective != nil {
+			resp.Header.Set("X-Routed-Via", "local-backend")
+		}
+
+		// OnResponse
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
 		if err != nil {
 			resp.Body.Close()
+			upstreamConn.Close()
 			return
 		}
 
-		// Buffer the entire body so we can inspect it, set Content-Length,
-		// and avoid broken chunked re-encoding for streaming responses
-		// (SSE / text/event-stream from LLM APIs).
+		// Buffer full response body
 		body, err := io.ReadAll(modifiedResp.Body)
 		resp.Body.Close()
+		upstreamConn.Close()
 		if err != nil {
 			return
 		}
@@ -214,6 +259,9 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
+		if routeDirective != nil {
+			log.Printf("[matchlock] route complete: %s %s%s -> %d %s (%dms, %d bytes)", req.Method, serverName, req.URL.Path, modifiedResp.StatusCode, effectiveHost, duration.Milliseconds(), len(body))
+		}
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {

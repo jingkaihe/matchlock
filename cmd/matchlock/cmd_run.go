@@ -89,6 +89,8 @@ func init() {
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
 	runCmd.Flags().StringSlice("allow-private-host", nil, "Allow specific private IP addresses (bypasses block-private-ips for these hosts)")
+	runCmd.Flags().String("local-model-backend", "", "Default backend for local model routing (HOST:PORT, e.g., 127.0.0.1:11434)")
+	runCmd.Flags().StringSlice("local-model-route", nil, "Model route: SOURCE_HOST/SOURCE_MODEL=TARGET_MODEL[@HOST:PORT] (repeatable)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
@@ -118,6 +120,8 @@ func init() {
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
 	viper.BindPFlag("run.allow-private-host", runCmd.Flags().Lookup("allow-private-host"))
+	viper.BindPFlag("run.local-model-backend", runCmd.Flags().Lookup("local-model-backend"))
+	viper.BindPFlag("run.local-model-route", runCmd.Flags().Lookup("local-model-route"))
 	viper.BindPFlag("run.hostname", runCmd.Flags().Lookup("hostname"))
 	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
 	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
@@ -162,6 +166,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
+	localModelBackend, _ := cmd.Flags().GetString("local-model-backend")
+	localModelRouteFlags, _ := cmd.Flags().GetStringSlice("local-model-route")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
 	hostname, _ := cmd.Flags().GetString("hostname")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
@@ -292,6 +298,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return errx.Wrap(ErrInvalidAddHost, err)
 	}
 
+	localModelRoutes, err := api.ParseLocalModelRoutes(localModelBackend, localModelRouteFlags)
+	if err != nil {
+		return errx.Wrap(ErrInvalidLocalModelRoute, err)
+	}
+
 	portForwards, err := api.ParsePortForwards(publishSpecs)
 	if err != nil {
 		return errx.Wrap(ErrInvalidPortForward, err)
@@ -321,6 +332,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			DNSServers:          dnsServers,
 			Hostname:            hostname,
 			MTU:                 networkMTU,
+			LocalModelRouting:   localModelRoutes,
 		},
 		VFS:      vfsConfig,
 		Env:      parsedEnv,

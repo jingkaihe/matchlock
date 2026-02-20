@@ -30,4 +30,6 @@ var (
 	ErrAddHostSpecFormat = errors.New("invalid add-host format")
 	ErrAddHostHost       = errors.New("invalid add-host hostname")
 	ErrAddHostIP         = errors.New("invalid add-host ip")
+
+	ErrLocalModelRouteFormat = errors.New("invalid local-model-route format")
 )

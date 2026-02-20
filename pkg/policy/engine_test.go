@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -362,4 +363,450 @@ func TestIsPrivateIP(t *testing.T) {
 			assert.Equal(t, tt.private, isPrivateIP(tt.host))
 		})
 	}
+}
+
+// --- Routing tests ---
+
+func routingConfig() *api.NetworkConfig {
+	return &api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost:  "openrouter.ai",
+			BackendHost: "127.0.0.1",
+			BackendPort: 11434,
+			Models: map[string]api.ModelRoute{
+				"meta-llama/llama-3.1-8b-instruct":  {Target: "llama3.1:8b"},
+				"meta-llama/llama-3.1-70b-instruct": {Target: "llama3.1:70b"},
+				"qwen/qwen-2.5-coder-32b-instruct":  {Target: "qwen2.5-coder:32b"},
+			},
+		}},
+	}
+}
+
+func TestEngine_RouteRequest_MatchingModel(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hi"}]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+
+	assert.Equal(t, "127.0.0.1", directive.Host)
+	assert.Equal(t, 11434, directive.Port)
+	assert.False(t, directive.UseTLS)
+}
+
+func TestEngine_RouteRequest_NonMatchingModel(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"openai/gpt-4o","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_WrongHost(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "other-api.com")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_WrongPath(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct"}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/models"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_GETMethod(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	req := &http.Request{
+		Method: "GET",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_BodyRewritten(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hi"}],"stream":true,"route":"fallback","transforms":["middle-out"],"provider":{"order":["Together"]}}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{
+			"Authorization": []string{"Bearer sk-or-fake-key"},
+			"Http-Referer":  []string{"https://myapp.com"},
+			"X-Title":       []string{"MyApp"},
+			"Content-Type":  []string{"application/json"},
+		},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+
+	assert.Equal(t, "/v1/chat/completions", req.URL.Path)
+
+	assert.Empty(t, req.Header.Get("Authorization"))
+	assert.Empty(t, req.Header.Get("Http-Referer"))
+	assert.Empty(t, req.Header.Get("X-Title"))
+	assert.Equal(t, "application/json", req.Header.Get("Content-Type"))
+
+	gotBody, _ := io.ReadAll(req.Body)
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(gotBody, &parsed))
+
+	assert.Equal(t, "llama3.1:8b", parsed["model"])
+	assert.NotNil(t, parsed["messages"])
+	assert.Equal(t, true, parsed["stream"])
+	assert.Nil(t, parsed["route"])
+	assert.Nil(t, parsed["transforms"])
+	assert.Nil(t, parsed["provider"])
+
+	assert.Equal(t, int64(len(gotBody)), req.ContentLength)
+}
+
+func TestEngine_RouteRequest_SecretScopingIntegration(t *testing.T) {
+	config := routingConfig()
+	config.Secrets = map[string]api.Secret{
+		"OPENROUTER_KEY": {
+			Value: "sk-or-real-secret",
+			Hosts: []string{"openrouter.ai"},
+		},
+	}
+	engine := NewEngine(config)
+
+	placeholder := engine.GetPlaceholder("OPENROUTER_KEY")
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{
+			"Authorization": []string{"Bearer " + placeholder},
+		},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+
+	req2 := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/v1/chat/completions"},
+		Header: http.Header{
+			"Authorization": []string{"Bearer " + placeholder},
+		},
+	}
+	_, err = engine.OnRequest(req2, directive.Host)
+	require.ErrorIs(t, err, api.ErrSecretLeak)
+}
+
+func TestEngine_RouteRequest_BodyRestored_OnNoMatch(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	originalBody := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hello"}]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(originalBody)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+
+	gotBody, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+	assert.Equal(t, originalBody, string(gotBody))
+}
+
+func TestEngine_RouteRequest_NilBody(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   nil,
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_MalformedJSON(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader("not json")),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+}
+
+func TestEngine_RouteRequest_HostWithPort(t *testing.T) {
+	engine := NewEngine(routingConfig())
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai:443")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+	assert.Equal(t, "127.0.0.1", directive.Host)
+}
+
+// --- New configurable routing tests ---
+
+func TestEngine_RouteRequest_NilRouting(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{})
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive, "Nil routing config should pass through all requests")
+}
+
+func TestEngine_RouteRequest_EmptyRouting(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{},
+	})
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive, "Empty routing config should pass through all requests")
+}
+
+func TestEngine_RouteRequest_MultipleSourceHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{
+			{
+				SourceHost: "openrouter.ai",
+				Models: map[string]api.ModelRoute{
+					"meta-llama/llama-3.1-8b-instruct": {Target: "llama3.1:8b"},
+				},
+			},
+			{
+				SourceHost:  "api.openai.com",
+				Path:        "/v1/chat/completions",
+				BackendHost: "10.0.0.5",
+				BackendPort: 8080,
+				Models: map[string]api.ModelRoute{
+					"gpt-4o-mini": {Target: "llama3.1:8b"},
+				},
+			},
+		},
+	})
+
+	body1 := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req1 := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body1)),
+	}
+	d1, err := engine.RouteRequest(req1, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, d1)
+	assert.Equal(t, "127.0.0.1", d1.Host)
+	assert.Equal(t, 11434, d1.Port)
+
+	body2 := `{"model":"gpt-4o-mini","messages":[]}`
+	req2 := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body2)),
+	}
+	d2, err := engine.RouteRequest(req2, "api.openai.com")
+	require.NoError(t, err)
+	require.NotNil(t, d2)
+	assert.Equal(t, "10.0.0.5", d2.Host)
+	assert.Equal(t, 8080, d2.Port)
+}
+
+func TestEngine_RouteRequest_PerModelBackendOverride(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost:  "openrouter.ai",
+			BackendHost: "127.0.0.1",
+			BackendPort: 11434,
+			Models: map[string]api.ModelRoute{
+				"meta-llama/llama-3.1-8b-instruct": {Target: "llama3.1:8b"},
+				"qwen/qwen-2.5-coder-32b-instruct": {
+					Target:      "qwen2.5-coder:32b",
+					BackendHost: "10.0.0.5",
+					BackendPort: 8080,
+				},
+			},
+		}},
+	})
+
+	body1 := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req1 := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body1)),
+	}
+	d1, err := engine.RouteRequest(req1, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, d1)
+	assert.Equal(t, "127.0.0.1", d1.Host)
+	assert.Equal(t, 11434, d1.Port)
+
+	body2 := `{"model":"qwen/qwen-2.5-coder-32b-instruct","messages":[]}`
+	req2 := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body2)),
+	}
+	d2, err := engine.RouteRequest(req2, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, d2)
+	assert.Equal(t, "10.0.0.5", d2.Host)
+	assert.Equal(t, 8080, d2.Port)
+}
+
+func TestEngine_RouteRequest_CustomPath(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost: "api.openai.com",
+			Path:       "/v1/chat/completions",
+			Models: map[string]api.ModelRoute{
+				"gpt-4o-mini": {Target: "llama3.1:8b"},
+			},
+		}},
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "api.openai.com")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+}
+
+func TestEngine_RouteRequest_CustomPath_NoMatchDefaultPath(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost: "api.openai.com",
+			Path:       "/v1/chat/completions",
+			Models: map[string]api.ModelRoute{
+				"gpt-4o-mini": {Target: "llama3.1:8b"},
+			},
+		}},
+	})
+
+	body := `{"model":"gpt-4o-mini","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "api.openai.com")
+	require.NoError(t, err)
+	assert.Nil(t, directive, "Default path should not match when custom path is configured")
+}
+
+func TestEngine_RouteRequest_HostHeaderRewritten(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost:  "openrouter.ai",
+			BackendHost: "192.168.1.50",
+			BackendPort: 9090,
+			Models: map[string]api.ModelRoute{
+				"meta-llama/llama-3.1-8b-instruct": {Target: "llama3.1:8b"},
+			},
+		}},
+	})
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+
+	assert.Equal(t, "192.168.1.50:9090", req.Host, "Host header should be rewritten to effective backend")
 }

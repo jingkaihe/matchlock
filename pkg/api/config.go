@@ -76,15 +76,75 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts        []string          `json:"allowed_hosts,omitempty"`
-	AddHosts            []HostIPMapping   `json:"add_hosts,omitempty"`
-	BlockPrivateIPs     bool              `json:"block_private_ips,omitempty"`
-	AllowedPrivateHosts []string          `json:"allowed_private_hosts,omitempty"`
-	Secrets             map[string]Secret `json:"secrets,omitempty"`
-	PolicyScript    string            `json:"policy_script,omitempty"`
-	DNSServers      []string          `json:"dns_servers,omitempty"`
-	Hostname        string            `json:"hostname,omitempty"`
-	MTU             int               `json:"mtu,omitempty"`
+	AllowedHosts        []string            `json:"allowed_hosts,omitempty"`
+	AddHosts            []HostIPMapping     `json:"add_hosts,omitempty"`
+	BlockPrivateIPs     bool                `json:"block_private_ips,omitempty"`
+	AllowedPrivateHosts []string            `json:"allowed_private_hosts,omitempty"`
+	Secrets             map[string]Secret   `json:"secrets,omitempty"`
+	PolicyScript        string              `json:"policy_script,omitempty"`
+	DNSServers          []string            `json:"dns_servers,omitempty"`
+	Hostname            string              `json:"hostname,omitempty"`
+	MTU                 int                 `json:"mtu,omitempty"`
+	LocalModelRouting   []LocalModelRoute   `json:"local_model_routing,omitempty"`
+}
+
+// LocalModelRoute configures interception of LLM API requests from a
+// specific source host and redirection to a local inference backend.
+type LocalModelRoute struct {
+	SourceHost  string                `json:"source_host"`
+	Path        string                `json:"path,omitempty"`
+	BackendHost string                `json:"backend_host,omitempty"`
+	BackendPort int                   `json:"backend_port,omitempty"`
+	Models      map[string]ModelRoute `json:"models"`
+}
+
+// GetPath returns the configured path or the default ("/api/v1/chat/completions").
+func (r *LocalModelRoute) GetPath() string {
+	if r != nil && r.Path != "" {
+		return r.Path
+	}
+	return "/api/v1/chat/completions"
+}
+
+// GetBackendHost returns the configured backend host or the default ("127.0.0.1").
+func (r *LocalModelRoute) GetBackendHost() string {
+	if r != nil && r.BackendHost != "" {
+		return r.BackendHost
+	}
+	return "127.0.0.1"
+}
+
+// GetBackendPort returns the configured backend port or the default (11434).
+func (r *LocalModelRoute) GetBackendPort() int {
+	if r != nil && r.BackendPort > 0 {
+		return r.BackendPort
+	}
+	return 11434
+}
+
+// ModelRoute defines how a specific model is routed to a local backend.
+type ModelRoute struct {
+	Target      string `json:"target"`
+	BackendHost string `json:"backend_host,omitempty"`
+	BackendPort int    `json:"backend_port,omitempty"`
+}
+
+// EffectiveBackendHost returns the model-specific backend host,
+// falling back to the route-level default.
+func (m *ModelRoute) EffectiveBackendHost(routeDefault string) string {
+	if m.BackendHost != "" {
+		return m.BackendHost
+	}
+	return routeDefault
+}
+
+// EffectiveBackendPort returns the model-specific backend port,
+// falling back to the route-level default.
+func (m *ModelRoute) EffectiveBackendPort(routeDefault int) int {
+	if m.BackendPort > 0 {
+		return m.BackendPort
+	}
+	return routeDefault
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.

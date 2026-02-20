@@ -15,7 +15,9 @@ import "github.com/jingkaihe/matchlock/pkg/api"
 //
 //	vmID, err := client.Launch(sandbox)
 type SandboxBuilder struct {
-	opts CreateOptions
+	opts                  CreateOptions
+	localModelBackendHost string
+	localModelBackendPort int
 }
 
 // New creates a SandboxBuilder for the given container image.
@@ -119,6 +121,46 @@ func (b *SandboxBuilder) AllowPrivateIPs() *SandboxBuilder {
 // AllowPrivateHost adds specific private IP addresses that bypass block-private-ips.
 func (b *SandboxBuilder) AllowPrivateHost(hosts ...string) *SandboxBuilder {
 	b.opts.AllowedPrivateHosts = append(b.opts.AllowedPrivateHosts, hosts...)
+	return b
+}
+
+// WithLocalModelBackend sets the default backend for local model routing.
+func (b *SandboxBuilder) WithLocalModelBackend(host string, port int) *SandboxBuilder {
+	b.localModelBackendHost = host
+	b.localModelBackendPort = port
+	return b
+}
+
+// WithLocalModelRoute adds a model routing rule.
+// The sourceHost groups routes: multiple models for the same sourceHost
+// share a single route entry.
+func (b *SandboxBuilder) WithLocalModelRoute(sourceHost, sourceModel, targetModel string) *SandboxBuilder {
+	var route *LocalModelRouteOption
+	for i := range b.opts.LocalModelRoutes {
+		if b.opts.LocalModelRoutes[i].SourceHost == sourceHost {
+			route = &b.opts.LocalModelRoutes[i]
+			break
+		}
+	}
+	if route == nil {
+		backendHost := b.localModelBackendHost
+		backendPort := b.localModelBackendPort
+		if backendHost == "" {
+			backendHost = "127.0.0.1"
+		}
+		if backendPort == 0 {
+			backendPort = 11434
+		}
+		b.opts.LocalModelRoutes = append(b.opts.LocalModelRoutes, LocalModelRouteOption{
+			SourceHost:  sourceHost,
+			BackendHost: backendHost,
+			BackendPort: backendPort,
+			Models:      make(map[string]ModelRouteOption),
+		})
+		route = &b.opts.LocalModelRoutes[len(b.opts.LocalModelRoutes)-1]
+	}
+
+	route.Models[sourceModel] = ModelRouteOption{Target: targetModel}
 	return b
 }
 

@@ -1,8 +1,12 @@
 package policy
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -13,6 +17,15 @@ import (
 type Engine struct {
 	config       *api.NetworkConfig
 	placeholders map[string]string
+}
+
+// RouteDirective tells the HTTP interceptor to send a request to an
+// alternative backend instead of the original destination.
+// A nil *RouteDirective means "use the original destination."
+type RouteDirective struct {
+	Host   string // Target host, e.g., "127.0.0.1"
+	Port   int    // Target port, e.g., 11434
+	UseTLS bool   // Whether to use TLS for the upstream connection
 }
 
 func NewEngine(config *api.NetworkConfig) *Engine {
@@ -105,6 +118,92 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 
 func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
 	return resp, nil
+}
+
+// RouteRequest inspects a request and returns a RouteDirective if the
+// request should be sent to an alternative backend.
+func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, error) {
+	if len(e.config.LocalModelRouting) == 0 {
+		return nil, nil
+	}
+
+	host = strings.Split(host, ":")[0]
+
+	for _, route := range e.config.LocalModelRouting {
+		if route.SourceHost != host {
+			continue
+		}
+
+		if req.Method != "POST" || req.URL.Path != route.GetPath() {
+			return nil, nil
+		}
+
+		if req.Body == nil {
+			return nil, nil
+		}
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, nil
+		}
+		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			return nil, nil
+		}
+
+		modelRoute, ok := route.Models[payload.Model]
+		if !ok {
+			return nil, nil
+		}
+
+		backendHost := modelRoute.EffectiveBackendHost(route.GetBackendHost())
+		backendPort := modelRoute.EffectiveBackendPort(route.GetBackendPort())
+
+		e.rewriteRequestForLocal(req, bodyBytes, payload.Model, modelRoute.Target, backendHost, backendPort)
+
+		return &RouteDirective{
+			Host:   backendHost,
+			Port:   backendPort,
+			UseTLS: false,
+		}, nil
+	}
+
+	return nil, nil
+}
+
+func (e *Engine) rewriteRequestForLocal(req *http.Request, bodyBytes []byte, originalModel, targetModel, backendHost string, backendPort int) {
+	req.URL.Path = "/v1/chat/completions"
+
+	req.Header.Del("Authorization")
+	req.Header.Del("Http-Referer")
+	req.Header.Del("X-Title")
+
+	var bodyMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &bodyMap); err != nil {
+		newBody := bytes.Replace(bodyBytes, []byte(`"`+originalModel+`"`), []byte(`"`+targetModel+`"`), 1)
+		req.Body = io.NopCloser(bytes.NewReader(newBody))
+		req.ContentLength = int64(len(newBody))
+		return
+	}
+
+	bodyMap["model"] = targetModel
+	delete(bodyMap, "route")
+	delete(bodyMap, "transforms")
+	delete(bodyMap, "provider")
+
+	newBody, err := json.Marshal(bodyMap)
+	if err != nil {
+		newBody = bytes.Replace(bodyBytes, []byte(`"`+originalModel+`"`), []byte(`"`+targetModel+`"`), 1)
+	}
+
+	req.Body = io.NopCloser(bytes.NewReader(newBody))
+	req.ContentLength = int64(len(newBody))
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(newBody)))
+
+	req.Host = fmt.Sprintf("%s:%d", backendHost, backendPort)
 }
 
 func (e *Engine) isSecretAllowedForHost(secretName, host string) bool {

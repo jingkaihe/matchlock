@@ -242,6 +242,8 @@ type CreateOptions struct {
 	PortForwardAddresses []string
 	// ImageConfig holds OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)
 	ImageConfig *ImageConfig
+	// LocalModelRoutes configures local model routing rules.
+	LocalModelRoutes []LocalModelRouteOption
 }
 
 // ImageConfig holds OCI image metadata for user/entrypoint/cmd/workdir/env.
@@ -262,6 +264,21 @@ type Secret struct {
 	Value string
 	// Hosts is a list of hosts where this secret can be used (supports wildcards)
 	Hosts []string
+}
+
+// LocalModelRouteOption configures a local model routing rule for the SDK wire format.
+type LocalModelRouteOption struct {
+	SourceHost  string
+	BackendHost string
+	BackendPort int
+	Models      map[string]ModelRouteOption
+}
+
+// ModelRouteOption configures a model routing target for the SDK wire format.
+type ModelRouteOption struct {
+	Target      string
+	BackendHost string
+	BackendPort int
 }
 
 // MountConfig defines a VFS mount
@@ -503,9 +520,10 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasHostname := len(opts.Hostname) > 0
 	hasMTU := opts.NetworkMTU > 0
 	hasAllowedPrivateHosts := len(opts.AllowedPrivateHosts) > 0
+	hasLocalModelRoutes := len(opts.LocalModelRoutes) > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts || hasLocalModelRoutes
 	if !includeNetwork {
 		return nil
 	}
@@ -544,6 +562,32 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	}
 	if hasMTU {
 		network["mtu"] = opts.NetworkMTU
+	}
+	if hasLocalModelRoutes {
+		routes := make([]map[string]interface{}, 0, len(opts.LocalModelRoutes))
+		for _, r := range opts.LocalModelRoutes {
+			models := make(map[string]interface{}, len(r.Models))
+			for name, m := range r.Models {
+				modelEntry := map[string]interface{}{
+					"target": m.Target,
+				}
+				if m.BackendHost != "" {
+					modelEntry["backend_host"] = m.BackendHost
+				}
+				if m.BackendPort > 0 {
+					modelEntry["backend_port"] = m.BackendPort
+				}
+				models[name] = modelEntry
+			}
+			route := map[string]interface{}{
+				"source_host":  r.SourceHost,
+				"backend_host": r.BackendHost,
+				"backend_port": r.BackendPort,
+				"models":       models,
+			}
+			routes = append(routes, route)
+		}
+		network["local_model_routing"] = routes
 	}
 	return network
 }
