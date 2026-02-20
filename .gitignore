@@ -40,6 +40,9 @@ sdk/typescript/dist/
 cmd/matchlock/ui/node_modules/
 cmd/matchlock/ui/dist/
 cmd/matchlock/ui/npm-debug.log*
+cmd/matchlock-ui/ui/node_modules/
+cmd/matchlock-ui/ui/dist/
+cmd/matchlock-ui/ui/npm-debug.log*
 
 # Firecracker runtime
 *.sock

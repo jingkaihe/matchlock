@@ -83,3 +83,20 @@ var (
 	ErrSysctlMemsize = errors.New("sysctl hw.memsize")
 	ErrSysinfo       = errors.New("sysinfo")
 )
+
+// UI errors
+var (
+	ErrUIServeAssets    = errors.New("serve UI assets")
+	ErrUIInvalidRequest = errors.New("invalid UI request")
+	ErrUIBuildRootfs    = errors.New("build rootfs for UI")
+	ErrUICreateSandbox  = errors.New("create sandbox from UI")
+	ErrUIStartSandbox   = errors.New("start sandbox from UI")
+	ErrUIStartExecRelay = errors.New("start exec relay from UI")
+	ErrUIStopSandbox    = errors.New("stop sandbox from UI")
+	ErrUIRemoveSandbox  = errors.New("remove sandbox from UI")
+	ErrUIListImages     = errors.New("list images from UI")
+	ErrUIRemoveImage    = errors.New("remove image from UI")
+	ErrUIPullImage      = errors.New("pull image from UI")
+	ErrUITagImage       = errors.New("tag image from UI")
+	ErrUIStartServer    = errors.New("start UI server")
+)
