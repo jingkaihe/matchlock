@@ -1,0 +1,28 @@
+{
+  "name": "matchlock-sdk",
+  "version": "0.0.0",
+  "description": "TypeScript SDK for Matchlock sandboxes",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "minimatch": "^10.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.6"
+  }
+}

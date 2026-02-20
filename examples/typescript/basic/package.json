@@ -1,0 +1,14 @@
+{
+  "name": "matchlock-typescript-basic-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts"
+  },
+  "dependencies": {
+    "matchlock-sdk": "file:../../../sdk/typescript"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}

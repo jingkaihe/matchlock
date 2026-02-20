@@ -34,6 +34,9 @@ Thumbs.db
 *.ext4
 vmlinux
 vmlinux-*
+node_modules/
+sdk/typescript/node_modules/
+sdk/typescript/dist/
 
 # Firecracker runtime
 *.sock

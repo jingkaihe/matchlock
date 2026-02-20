@@ -158,11 +158,34 @@ with Client(Config()) as client:
     client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
 ```
 
+**TypeScript**
+
+```bash
+cd sdk/typescript
+npm install
+npm run build
+```
+
+```ts
+import { Client, Sandbox } from "matchlock-sdk";
+
+const sandbox = new Sandbox("alpine:latest")
+  .allowHost("dl-cdn.alpinelinux.org", "api.anthropic.com")
+  .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
+
+const client = new Client();
+await client.launch(sandbox);
+const result = await client.exec("echo hello from typescript");
+console.log(result.stdout);
+await client.close();
+```
+
 See full examples in:
 - [`examples/go/basic/main.go`](examples/go/basic/main.go)
 - [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
 - [`examples/python/basic/main.py`](examples/python/basic/main.py)
 - [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
+- [`examples/typescript/basic/main.ts`](examples/typescript/basic/main.ts)
 
 ## Architecture
 
