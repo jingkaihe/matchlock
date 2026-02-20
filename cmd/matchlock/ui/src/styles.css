@@ -346,6 +346,31 @@ textarea:focus {
   color: color-mix(in srgb, var(--brand-dark) 60%, var(--brand-mid));
 }
 
+.profile-summary {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, white 70%, var(--brand-light-gray));
+  padding: 0.55rem 0.65rem;
+}
+
+.profile-name {
+  margin: 0;
+  font-family: "Poppins", Arial, sans-serif;
+  font-size: 0.9rem;
+}
+
+.profile-desc {
+  margin: 0.24rem 0 0;
+  font-size: 0.84rem;
+  color: color-mix(in srgb, var(--brand-dark) 76%, var(--brand-mid));
+}
+
+.profile-meta {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: color-mix(in srgb, var(--brand-dark) 64%, var(--brand-mid));
+}
+
 .dot {
   display: inline-flex;
   align-items: center;

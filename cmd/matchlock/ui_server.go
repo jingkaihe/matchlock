@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,83 @@ const (
 )
 
 var errSandboxNotManaged = errors.New("sandbox not managed by this UI server")
+
+var repoSlugPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+type sandboxProfile struct {
+	ID          string
+	Name        string
+	Description string
+	Image       string
+	Pull        bool
+	CPUs        int
+	MemoryMB    int
+	DiskSizeMB  int
+	Workspace   string
+	Privileged  bool
+
+	AllowedHosts []string
+	SecretSpecs  []string
+	EnvFromHost  []string
+
+	RequireRepo bool
+}
+
+var builtInProfiles = map[string]sandboxProfile{
+	"codex": {
+		ID:          "codex",
+		Name:        "Codex",
+		Description: "OpenAI Codex profile with GitHub clone and API secret injection",
+		Image:       "codex:latest",
+		CPUs:        2,
+		MemoryMB:    4096,
+		DiskSizeMB:  5120,
+		Workspace:   "/workspace",
+		AllowedHosts: []string{
+			"github.com",
+			"*.github.com",
+			"*.githubusercontent.com",
+			"archive.ubuntu.com",
+			"security.ubuntu.com",
+			"ports.ubuntu.com",
+			"*.archive.ubuntu.com",
+			"api.openai.com",
+		},
+		SecretSpecs: []string{
+			"GH_TOKEN@github.com",
+			"OPENAI_API_KEY@api.openai.com",
+		},
+		EnvFromHost: []string{"GIT_USER_NAME", "GIT_USER_EMAIL", "GIT_EDITOR"},
+		RequireRepo: true,
+	},
+	"claude-code": {
+		ID:          "claude-code",
+		Name:        "Claude Code",
+		Description: "Anthropic Claude Code profile with GitHub clone and API secret injection",
+		Image:       "claude-code:latest",
+		CPUs:        2,
+		MemoryMB:    4096,
+		DiskSizeMB:  5120,
+		Workspace:   "/workspace",
+		AllowedHosts: []string{
+			"github.com",
+			"*.github.com",
+			"*.githubusercontent.com",
+			"archive.ubuntu.com",
+			"security.ubuntu.com",
+			"ports.ubuntu.com",
+			"*.archive.ubuntu.com",
+			"api.anthropic.com",
+			"*.anthropic.com",
+		},
+		SecretSpecs: []string{
+			"GH_TOKEN@github.com",
+			"ANTHROPIC_API_KEY@api.anthropic.com",
+		},
+		EnvFromHost: []string{"GIT_USER_NAME", "GIT_USER_EMAIL", "GIT_EDITOR"},
+		RequireRepo: true,
+	},
+}
 
 type managedSandbox struct {
 	sb    *sandbox.Sandbox
@@ -74,14 +152,72 @@ type uiImageSummary struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type uiProfileSummary struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Image       string   `json:"image"`
+	CPUs        int      `json:"cpus"`
+	MemoryMB    int      `json:"memory_mb"`
+	DiskSizeMB  int      `json:"disk_size_mb"`
+	Workspace   string   `json:"workspace"`
+	Privileged  bool     `json:"privileged"`
+	AllowHosts  []string `json:"allow_hosts"`
+	SecretNames []string `json:"secret_names"`
+	EnvFromHost []string `json:"env_from_host"`
+	RequireRepo bool     `json:"require_repo"`
+}
+
 type uiStartSandboxRequest struct {
-	Image      string `json:"image"`
-	Pull       bool   `json:"pull,omitempty"`
-	CPUs       int    `json:"cpus,omitempty"`
-	MemoryMB   int    `json:"memory_mb,omitempty"`
-	DiskSizeMB int    `json:"disk_size_mb,omitempty"`
-	Workspace  string `json:"workspace,omitempty"`
-	Privileged bool   `json:"privileged,omitempty"`
+	ProfileID   string `json:"profile_id,omitempty"`
+	Repo        string `json:"repo,omitempty"`
+	Instruction string `json:"instruction,omitempty"`
+	LaunchMode  string `json:"launch_mode,omitempty"`
+	Image       string `json:"image"`
+	Pull        bool   `json:"pull,omitempty"`
+	CPUs        int    `json:"cpus,omitempty"`
+	MemoryMB    int    `json:"memory_mb,omitempty"`
+	DiskSizeMB  int    `json:"disk_size_mb,omitempty"`
+	Workspace   string `json:"workspace,omitempty"`
+	Privileged  bool   `json:"privileged,omitempty"`
+}
+
+func profileStartupWrapper(profileID string, launchMode string, startupCommand string) string {
+	startupCommand = strings.TrimSpace(startupCommand)
+	if startupCommand == "" {
+		return ""
+	}
+	switch profileID {
+	case "codex", "claude-code":
+		startupCommandValue := api.ShellQuoteArgs([]string{startupCommand})
+		script := []string{
+			"set -e",
+			"gh_bin=$(command -v gh 2>/dev/null || true)",
+			"if [ -n \"$gh_bin\" ]; then",
+			"  for host in github.com gist.github.com; do",
+			"    key=credential.https://$host.helper",
+			"    git config --global --unset-all \"$key\" >/dev/null 2>&1 || true",
+			"    git config --global --add \"$key\" \"!$gh_bin auth git-credential\" >/dev/null 2>&1 || true",
+			"  done",
+			"fi",
+		}
+		if launchMode == "terminal" {
+			script = append(script,
+				"startup_cmd="+startupCommandValue,
+				"if command -v tmux >/dev/null 2>&1; then",
+				"  session_name=matchlock-profile",
+				"  if tmux has-session -t \"$session_name\" 2>/dev/null; then",
+				"    exec tmux attach -t \"$session_name\"",
+				"  fi",
+				"  exec tmux new-session -s \"$session_name\" \"exec $startup_cmd\"",
+				"fi",
+			)
+		}
+		script = append(script, "exec "+startupCommand)
+		return api.ShellQuoteArgs([]string{"bash", "-lc", strings.Join(script, "\n")})
+	default:
+		return startupCommand
+	}
 }
 
 type uiPullImageRequest struct {
@@ -115,6 +251,7 @@ func (s *uiServer) routes() http.Handler {
 	mux.HandleFunc("/api/sandboxes/", s.handleSandboxActions)
 	mux.HandleFunc("/api/images", s.handleImages)
 	mux.HandleFunc("/api/images/pull", s.handlePullImage)
+	mux.HandleFunc("/api/profiles", s.handleProfiles)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -171,6 +308,43 @@ func (s *uiServer) handleImages(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w, http.MethodGet, http.MethodDelete)
 	}
+}
+
+func (s *uiServer) handleProfiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	items := make([]uiProfileSummary, 0, len(builtInProfiles))
+	for _, profile := range builtInProfiles {
+		secretNames := make([]string, 0, len(profile.SecretSpecs))
+		for _, spec := range profile.SecretSpecs {
+			if idx := strings.Index(spec, "@"); idx > 0 {
+				secretNames = append(secretNames, spec[:idx])
+			}
+		}
+		items = append(items, uiProfileSummary{
+			ID:          profile.ID,
+			Name:        profile.Name,
+			Description: profile.Description,
+			Image:       profile.Image,
+			CPUs:        profile.CPUs,
+			MemoryMB:    profile.MemoryMB,
+			DiskSizeMB:  profile.DiskSizeMB,
+			Workspace:   profile.Workspace,
+			Privileged:  profile.Privileged,
+			AllowHosts:  append([]string(nil), profile.AllowedHosts...),
+			SecretNames: secretNames,
+			EnvFromHost: append([]string(nil), profile.EnvFromHost...),
+			RequireRepo: profile.RequireRepo,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].ID < items[j].ID
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"profiles": items})
 }
 
 func (s *uiServer) handleListImages(w http.ResponseWriter) {
@@ -288,12 +462,44 @@ func (s *uiServer) handleStartSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.ProfileID = strings.TrimSpace(req.ProfileID)
+	req.Repo = strings.TrimSpace(req.Repo)
+	req.Instruction = strings.TrimSpace(req.Instruction)
+	req.LaunchMode = strings.ToLower(strings.TrimSpace(req.LaunchMode))
 	req.Image = strings.TrimSpace(req.Image)
+	req.Workspace = strings.TrimSpace(req.Workspace)
+
+	var profile *sandboxProfile
+	if req.ProfileID != "" {
+		resolved, ok := builtInProfiles[req.ProfileID]
+		if !ok {
+			writeAPIError(w, http.StatusBadRequest, fmt.Sprintf("unknown profile %q", req.ProfileID))
+			return
+		}
+		profile = &resolved
+		if req.Image == "" {
+			req.Image = profile.Image
+		}
+		if req.CPUs <= 0 {
+			req.CPUs = profile.CPUs
+		}
+		if req.MemoryMB <= 0 {
+			req.MemoryMB = profile.MemoryMB
+		}
+		if req.DiskSizeMB <= 0 {
+			req.DiskSizeMB = profile.DiskSizeMB
+		}
+		if req.Workspace == "" {
+			req.Workspace = profile.Workspace
+		}
+		req.Privileged = req.Privileged || profile.Privileged
+		req.Pull = req.Pull || profile.Pull
+	}
+
 	if req.Image == "" {
 		writeAPIError(w, http.StatusBadRequest, "image is required")
 		return
 	}
-	req.Workspace = strings.TrimSpace(req.Workspace)
 	if req.Workspace != "" {
 		if err := api.ValidateGuestMount(req.Workspace); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err.Error())
@@ -304,18 +510,34 @@ func (s *uiServer) handleStartSandbox(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "cpus, memory_mb, and disk_size_mb must be >= 0")
 		return
 	}
+	if profile != nil && profile.RequireRepo {
+		if req.Repo == "" {
+			writeAPIError(w, http.StatusBadRequest, "repo is required for this profile (owner/repo)")
+			return
+		}
+		if !repoSlugPattern.MatchString(req.Repo) {
+			writeAPIError(w, http.StatusBadRequest, "repo must be in owner/repo format")
+			return
+		}
+		if req.LaunchMode == "" {
+			req.LaunchMode = "terminal"
+		}
+	}
+	if req.LaunchMode == "" {
+		req.LaunchMode = "exec"
+	}
+	if req.LaunchMode != "exec" && req.LaunchMode != "terminal" {
+		writeAPIError(w, http.StatusBadRequest, "launch_mode must be one of: exec, terminal")
+		return
+	}
 
-	builder := image.NewBuilder(&image.BuildOptions{
-		ForcePull: req.Pull,
-	})
+	builder := image.NewBuilder(&image.BuildOptions{ForcePull: req.Pull})
 	result, err := builder.Build(r.Context(), req.Image)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, errx.Wrap(ErrUIBuildRootfs, err).Error())
 		return
 	}
 
-	// Sandbox lifetime must outlive the HTTP request context. Keep a dedicated
-	// context per managed VM and cancel it only on explicit stop/shutdown.
 	vmCtx, vmCancel := context.WithCancel(context.Background())
 
 	var imageCfg *api.ImageConfig
@@ -344,8 +566,39 @@ func (s *uiServer) handleStartSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Workspace != "" {
 		config.VFS.Workspace = req.Workspace
-		config.VFS.Mounts = map[string]api.MountConfig{
-			req.Workspace: {Type: api.MountTypeMemory},
+		config.VFS.Mounts = map[string]api.MountConfig{req.Workspace: {Type: api.MountTypeMemory}}
+	}
+
+	if profile != nil {
+		secrets := make(map[string]api.Secret)
+		for _, spec := range profile.SecretSpecs {
+			name, parsedSecret, parseErr := api.ParseSecret(spec)
+			if parseErr != nil {
+				vmCancel()
+				writeAPIError(w, http.StatusBadRequest, errx.With(ErrInvalidSecret, " %q: %v", spec, parseErr).Error())
+				return
+			}
+			secrets[name] = parsedSecret
+		}
+
+		env := make(map[string]string)
+		for _, key := range profile.EnvFromHost {
+			if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+				env[key] = value
+			}
+		}
+
+		if len(secrets) > 0 || len(profile.AllowedHosts) > 0 {
+			config.Network.Secrets = secrets
+			config.Network.AllowedHosts = append(config.Network.AllowedHosts, profile.AllowedHosts...)
+		}
+		if len(env) > 0 {
+			if config.Env == nil {
+				config.Env = map[string]string{}
+			}
+			for k, v := range env {
+				config.Env[k] = v
+			}
 		}
 	}
 
@@ -375,32 +628,47 @@ func (s *uiServer) handleStartSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startupCommand := startupCommandFromImageConfig(imageCfg)
-	if startupCommand != "" {
+	if profile != nil {
+		startupCommand = startupCommandFromImageConfig(imageCfg)
+		if req.Repo != "" {
+			args := []string{req.Repo}
+			if req.Instruction != "" {
+				args = append(args, req.Instruction)
+			}
+			argCommand := api.ShellQuoteArgs(args)
+			if startupCommand == "" {
+				startupCommand = argCommand
+			} else {
+				startupCommand = startupCommand + " " + argCommand
+			}
+		}
+	}
+	if profile != nil {
+		startupCommand = profileStartupWrapper(profile.ID, req.LaunchMode, startupCommand)
+	}
+	if req.LaunchMode == "exec" && startupCommand != "" {
 		sandboxID := sb.ID()
-		go func() {
-			// Stream to discard to avoid buffering long-running daemon logs in memory.
+		go func(command string) {
 			opts := &api.ExecOptions{Stdout: io.Discard, Stderr: io.Discard}
-			result, execErr := sb.Exec(vmCtx, startupCommand, opts)
+			execResult, execErr := sb.Exec(vmCtx, command, opts)
 			if execErr != nil {
 				fmt.Fprintf(os.Stderr, "matchlock ui: sandbox %s startup command failed: %v\n", sandboxID, execErr)
 				return
 			}
-			if result != nil && result.ExitCode != 0 {
-				fmt.Fprintf(os.Stderr, "matchlock ui: sandbox %s startup command exited with code %d\n", sandboxID, result.ExitCode)
+			if execResult != nil && execResult.ExitCode != 0 {
+				fmt.Fprintf(os.Stderr, "matchlock ui: sandbox %s startup command exited with code %d\n", sandboxID, execResult.ExitCode)
 			}
-		}()
+		}(startupCommand)
 	}
 
 	s.mu.Lock()
-	s.managed[sb.ID()] = &managedSandbox{
-		sb:     sb,
-		relay:  relay,
-		cancel: vmCancel,
-	}
+	s.managed[sb.ID()] = &managedSandbox{sb: sb, relay: relay, cancel: vmCancel}
 	s.mu.Unlock()
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":              sb.ID(),
+		"profile_id":      req.ProfileID,
+		"launch_mode":     req.LaunchMode,
 		"image":           req.Image,
 		"cached":          result.Cached,
 		"digest":          result.Digest,
