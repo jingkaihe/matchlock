@@ -10,8 +10,10 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +66,14 @@ type uiSandboxSummary struct {
 	Managed   bool      `json:"managed"`
 }
 
+type uiImageSummary struct {
+	Tag       string    `json:"tag"`
+	Source    string    `json:"source"`
+	Digest    string    `json:"digest"`
+	SizeMB    float64   `json:"size_mb"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type uiStartSandboxRequest struct {
 	Image      string `json:"image"`
 	Pull       bool   `json:"pull,omitempty"`
@@ -78,6 +88,10 @@ type uiPullImageRequest struct {
 	Image string `json:"image"`
 	Force bool   `json:"force,omitempty"`
 	Tag   string `json:"tag,omitempty"`
+}
+
+type uiDeleteImageRequest struct {
+	Tag string `json:"tag"`
 }
 
 func newUIServer(shutdownTimeout time.Duration) (*uiServer, error) {
@@ -99,6 +113,7 @@ func (s *uiServer) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/sandboxes", s.handleSandboxes)
 	mux.HandleFunc("/api/sandboxes/", s.handleSandboxActions)
+	mux.HandleFunc("/api/images", s.handleImages)
 	mux.HandleFunc("/api/images/pull", s.handlePullImage)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -145,6 +160,102 @@ func (s *uiServer) handleSandboxes(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
 	}
+}
+
+func (s *uiServer) handleImages(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListImages(w)
+	case http.MethodDelete:
+		s.handleDeleteImage(w, r)
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodDelete)
+	}
+}
+
+func (s *uiServer) handleListImages(w http.ResponseWriter) {
+	store := image.NewStore("")
+	localImages, err := store.List()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, errx.Wrap(ErrUIListImages, err).Error())
+		return
+	}
+
+	registryImages, err := image.ListRegistryCache("")
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, errx.Wrap(ErrUIListImages, err).Error())
+		return
+	}
+
+	items := make([]uiImageSummary, 0, len(localImages)+len(registryImages))
+	for _, img := range localImages {
+		source := img.Meta.Source
+		if source == "" {
+			source = "local"
+		}
+		items = append(items, uiImageSummary{
+			Tag:       img.Tag,
+			Source:    source,
+			Digest:    img.Meta.Digest,
+			SizeMB:    float64(img.Meta.Size) / (1024 * 1024),
+			CreatedAt: img.Meta.CreatedAt,
+		})
+	}
+	for _, img := range registryImages {
+		source := img.Meta.Source
+		if source == "" {
+			source = "registry"
+		}
+		items = append(items, uiImageSummary{
+			Tag:       img.Tag,
+			Source:    source,
+			Digest:    img.Meta.Digest,
+			SizeMB:    float64(img.Meta.Size) / (1024 * 1024),
+			CreatedAt: img.Meta.CreatedAt,
+		})
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"images": items})
+}
+
+func (s *uiServer) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
+	var req uiDeleteImageRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	tag := decodeTag(req.Tag)
+	if tag == "" {
+		writeAPIError(w, http.StatusBadRequest, "tag is required")
+		return
+	}
+
+	store := image.NewStore("")
+	localErr := store.Remove(tag)
+	if localErr != nil && !errors.Is(localErr, image.ErrImageNotFound) {
+		writeAPIError(w, http.StatusInternalServerError, errx.Wrap(ErrUIRemoveImage, localErr).Error())
+		return
+	}
+	if localErr == nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"tag": tag, "removed": true, "scope": "local"})
+		return
+	}
+
+	if err := image.RemoveRegistryCache(tag, ""); err != nil {
+		if errors.Is(err, image.ErrImageNotFound) {
+			writeAPIError(w, http.StatusNotFound, fmt.Sprintf("image %s not found", tag))
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, errx.Wrap(ErrUIRemoveImage, err).Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tag": tag, "removed": true, "scope": "registry"})
 }
 
 func (s *uiServer) handleListSandboxes(w http.ResponseWriter) {
@@ -310,6 +421,8 @@ func (s *uiServer) handleSandboxActions(w http.ResponseWriter, r *http.Request) 
 	switch {
 	case len(parts) == 2 && parts[1] == "stop":
 		s.handleStopSandbox(w, r, sandboxID)
+	case len(parts) == 2 && parts[1] == "rm":
+		s.handleRemoveSandbox(w, r, sandboxID)
 	case len(parts) == 3 && parts[1] == "terminal" && parts[2] == "ws":
 		s.handleTerminalWebsocket(w, r, sandboxID)
 	default:
@@ -358,6 +471,31 @@ func (s *uiServer) handleStopSandbox(w http.ResponseWriter, r *http.Request, san
 		"id":      sandboxID,
 		"status":  "stopping",
 		"managed": false,
+	})
+}
+
+func (s *uiServer) handleRemoveSandbox(w http.ResponseWriter, r *http.Request, sandboxID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.shutdownTimeout)
+	defer cancel()
+
+	if err := s.stopManagedSandbox(ctx, sandboxID); err != nil && !errors.Is(err, errSandboxNotManaged) {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := s.lifecycleMgr.Remove(sandboxID); err != nil {
+		writeAPIError(w, http.StatusConflict, errx.Wrap(ErrUIRemoveSandbox, err).Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":      sandboxID,
+		"removed": true,
 	})
 }
 
@@ -582,6 +720,18 @@ func startupCommandFromImageConfig(imageCfg *api.ImageConfig) string {
 		return ""
 	}
 	return api.ShellQuoteArgs(composed)
+}
+
+func decodeTag(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	decoded, err := url.QueryUnescape(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	return strings.TrimSpace(decoded)
 }
 
 type wsInputReader struct {
