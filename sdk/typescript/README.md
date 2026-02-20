@@ -4,7 +4,7 @@ TypeScript client for [Matchlock](https://github.com/jingkaihe/matchlock), with 
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 22+
 - `matchlock` CLI installed and available on `PATH` (or configured with `binaryPath`)
 
 ## Install (from source)

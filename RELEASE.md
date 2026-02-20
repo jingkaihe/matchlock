@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.21
+
+* Added a TypeScript SDK with Go/Python feature parity, tests, release/test GitHub Actions, and examples.
+
 * Changed CLI `-v host:guest` default to isolated `overlay` snapshot mounts, with `:host_fs` as the explicit direct host mount mode on both Linux and macOS ([#41](https://github.com/jingkaihe/matchlock/issues/41)).
 
 ## 0.1.20 
