@@ -3,6 +3,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
+import { formatCreatedAt, shortDigest, statusTone } from "./utils";
+
 type Sandbox = {
   id: string;
   pid: number;
@@ -83,34 +85,6 @@ async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return payload as T;
-}
-
-function formatCreatedAt(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-  return date.toLocaleString();
-}
-
-function statusTone(status: string): string {
-  if (status === "running") {
-    return "running";
-  }
-  if (status === "crashed") {
-    return "crashed";
-  }
-  return "stopped";
-}
-
-function shortDigest(value: string): string {
-  if (!value) {
-    return "-";
-  }
-  if (value.length <= 16) {
-    return value;
-  }
-  return `${value.slice(0, 16)}...`;
 }
 
 export function App() {
@@ -290,6 +264,21 @@ export function App() {
     terminal.open(termHostRef.current);
     fitAddon.fit();
     terminal.write("Matchlock terminal ready.\r\n");
+
+    terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (
+        event.type === "keydown" &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "l"
+      ) {
+        event.preventDefault();
+        sendTerminalInputData("\u000c");
+        return false;
+      }
+      return true;
+    });
 
     terminal.onData((data: string) => {
       sendTerminalInputData(data);

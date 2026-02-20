@@ -99,6 +99,32 @@ fi
 go test ./...
 """
 
+[tasks."fe:test"]
+description = "Run frontend unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -d cmd/matchlock/ui/node_modules ]; then
+  npm --prefix cmd/matchlock/ui ci
+fi
+npm --prefix cmd/matchlock/ui run test
+"""
+
+[tasks."fe:lint"]
+description = "Lint frontend code"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -d cmd/matchlock/ui/node_modules ]; then
+  npm --prefix cmd/matchlock/ui ci
+fi
+npm --prefix cmd/matchlock/ui run lint
+"""
+
+[tasks."check:frontend"]
+description = "Run frontend lint + tests"
+depends = ["fe:lint", "fe:test"]
+
 [tasks."test:coverage"]
 description = "Generate coverage report"
 run = """
@@ -157,8 +183,8 @@ description = "Run go mod tidy"
 run = "go mod tidy"
 
 [tasks.check]
-description = "Run all checks (Go + Python SDK)"
-depends = ["fmt", "vet", "lint", "test", "check:errx", "check:python-sdk"]
+description = "Run all checks (Go + Python SDK + frontend)"
+depends = ["fmt", "vet", "lint", "test", "check:errx", "check:frontend", "check:python-sdk"]
 
 # =============================================================================
 # Python SDK tasks
