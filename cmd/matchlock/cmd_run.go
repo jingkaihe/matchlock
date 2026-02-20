@@ -88,6 +88,7 @@ func init() {
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
+	runCmd.Flags().StringSlice("allow-private-host", nil, "Allow specific private IP addresses (bypasses block-private-ips for these hosts)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
@@ -116,6 +117,7 @@ func init() {
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
+	viper.BindPFlag("run.allow-private-host", runCmd.Flags().Lookup("allow-private-host"))
 	viper.BindPFlag("run.hostname", runCmd.Flags().Lookup("hostname"))
 	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
 	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
@@ -154,6 +156,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
+	allowPrivateHosts, _ := cmd.Flags().GetStringSlice("allow-private-host")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
 	envVars, _ := cmd.Flags().GetStringArray("env")
@@ -310,13 +313,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 			TimeoutSeconds: timeout,
 		},
 		Network: &api.NetworkConfig{
-			AllowedHosts:    allowHosts,
-			AddHosts:        addHosts,
-			BlockPrivateIPs: true,
-			Secrets:         parsedSecrets,
-			DNSServers:      dnsServers,
-			Hostname:        hostname,
-			MTU:             networkMTU,
+			AllowedHosts:        allowHosts,
+			AddHosts:            addHosts,
+			BlockPrivateIPs:     true,
+			AllowedPrivateHosts: allowPrivateHosts,
+			Secrets:             parsedSecrets,
+			DNSServers:          dnsServers,
+			Hostname:            hostname,
+			MTU:                 networkMTU,
 		},
 		VFS:      vfsConfig,
 		Env:      parsedEnv,

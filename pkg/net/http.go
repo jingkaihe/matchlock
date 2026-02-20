@@ -96,27 +96,28 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		if isStreamingResponse(modifiedResp) {
-			i.emitEvent(modifiedReq, modifiedResp, host, time.Since(start))
-			err := writeResponseHeadersAndStreamBody(guestConn, modifiedResp)
-			resp.Body.Close()
+		// Buffer the entire body so we can inspect it and avoid broken
+		// chunked re-encoding for streaming responses (SSE / LLM APIs).
+		body, err := io.ReadAll(modifiedResp.Body)
+		resp.Body.Close()
+		if err != nil {
 			pc.conn.Close()
-			if err != nil {
-				return
-			}
 			return
 		}
+
+		modifiedResp.Body = io.NopCloser(strings.NewReader(string(body)))
+		modifiedResp.ContentLength = int64(len(body))
+		modifiedResp.TransferEncoding = nil
+		modifiedResp.Header.Del("Transfer-Encoding")
+		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
 		i.emitEvent(modifiedReq, modifiedResp, host, duration)
 
 		if err := writeResponse(guestConn, modifiedResp); err != nil {
-			resp.Body.Close()
 			pc.conn.Close()
 			return
 		}
-
-		resp.Body.Close()
 
 		// Return the connection to the pool if neither side requested close.
 		if modifiedReq.Close || modifiedResp.Close {
@@ -197,25 +198,27 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 			return
 		}
 
-		if isStreamingResponse(modifiedResp) {
-			i.emitEvent(modifiedReq, modifiedResp, serverName, time.Since(start))
-			if err := writeResponseHeadersAndStreamBody(tlsConn, modifiedResp); err != nil {
-				resp.Body.Close()
-				return
-			}
-			resp.Body.Close()
+		// Buffer the entire body so we can inspect it, set Content-Length,
+		// and avoid broken chunked re-encoding for streaming responses
+		// (SSE / text/event-stream from LLM APIs).
+		body, err := io.ReadAll(modifiedResp.Body)
+		resp.Body.Close()
+		if err != nil {
 			return
 		}
+
+		modifiedResp.Body = io.NopCloser(strings.NewReader(string(body)))
+		modifiedResp.ContentLength = int64(len(body))
+		modifiedResp.TransferEncoding = nil
+		modifiedResp.Header.Del("Transfer-Encoding")
+		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {
-			resp.Body.Close()
 			return
 		}
-
-		resp.Body.Close()
 
 		if modifiedReq.Close || modifiedResp.Close {
 			return
@@ -324,6 +327,12 @@ func writeResponseHeadersAndStreamBody(conn net.Conn, resp *http.Response) error
 		return err
 	}
 
+	// Go's http.ReadResponse strips Transfer-Encoding and decodes the body.
+	// Re-add chunked encoding so the guest HTTP parser can process the
+	// streamed body incrementally (required for SSE / text/event-stream).
+	resp.Header.Set("Transfer-Encoding", "chunked")
+	resp.Header.Del("Content-Length")
+
 	if err := resp.Header.Write(bw); err != nil {
 		return err
 	}
@@ -338,13 +347,22 @@ func writeResponseHeadersAndStreamBody(conn net.Conn, resp *http.Response) error
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
-			if _, writeErr := conn.Write(buf[:n]); writeErr != nil {
-				return writeErr
+			// Write chunk: hex size, CRLF, data, CRLF
+			if _, err := fmt.Fprintf(conn, "%x\r\n", n); err != nil {
+				return err
+			}
+			if _, err := conn.Write(buf[:n]); err != nil {
+				return err
+			}
+			if _, err := conn.Write([]byte("\r\n")); err != nil {
+				return err
 			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
-				return nil
+				// Write terminal chunk: 0-length chunk + trailing CRLF
+				_, err := conn.Write([]byte("0\r\n\r\n"))
+				return err
 			}
 			return readErr
 		}

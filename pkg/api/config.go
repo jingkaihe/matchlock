@@ -76,10 +76,11 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts    []string          `json:"allowed_hosts,omitempty"`
-	AddHosts        []HostIPMapping   `json:"add_hosts,omitempty"`
-	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
-	Secrets         map[string]Secret `json:"secrets,omitempty"`
+	AllowedHosts        []string          `json:"allowed_hosts,omitempty"`
+	AddHosts            []HostIPMapping   `json:"add_hosts,omitempty"`
+	BlockPrivateIPs     bool              `json:"block_private_ips,omitempty"`
+	AllowedPrivateHosts []string          `json:"allowed_private_hosts,omitempty"`
+	Secrets             map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
 	Hostname        string            `json:"hostname,omitempty"`

@@ -47,3 +47,6 @@ firecracker-*.log
 /tmp/rootfs-build/
 /REQ.md
 /matchlock
+
+# Docs
+docs/

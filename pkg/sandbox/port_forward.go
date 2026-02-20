@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"time"
 	"sync"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -148,6 +149,13 @@ func (m *PortForwardManager) serveListener(ctx context.Context, spec listenerSpe
 
 func (m *PortForwardManager) proxyConn(ctx context.Context, clientConn net.Conn, remotePort int) {
 	defer clientConn.Close()
+
+	// Enable TCP keepalive on the host-side connection so idle WebSocket
+	// connections are not dropped by the OS or intermediate proxies.
+	if tc, ok := clientConn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(15 * time.Second)
+	}
 
 	dialCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

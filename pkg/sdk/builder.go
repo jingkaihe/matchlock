@@ -116,6 +116,12 @@ func (b *SandboxBuilder) AllowPrivateIPs() *SandboxBuilder {
 	return b.WithBlockPrivateIPs(false)
 }
 
+// AllowPrivateHost adds specific private IP addresses that bypass block-private-ips.
+func (b *SandboxBuilder) AllowPrivateHost(hosts ...string) *SandboxBuilder {
+	b.opts.AllowedPrivateHosts = append(b.opts.AllowedPrivateHosts, hosts...)
+	return b
+}
+
 // UnsetBlockPrivateIPs resets private IP blocking to API defaults.
 func (b *SandboxBuilder) UnsetBlockPrivateIPs() *SandboxBuilder {
 	b.opts.BlockPrivateIPs = false

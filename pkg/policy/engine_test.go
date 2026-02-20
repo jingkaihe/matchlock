@@ -64,6 +64,79 @@ func TestEngine_IsHostAllowed_BlockPrivateIPs(t *testing.T) {
 	}
 }
 
+func TestEngine_IsHostAllowed_AllowedPrivateHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     true,
+		AllowedPrivateHosts: []string{"192.168.1.100"},
+	})
+
+	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Explicitly allowed private IP should be allowed")
+	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
+	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
+	assert.True(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
+}
+
+func TestEngine_IsHostAllowed_AllowedPrivateHostsGlob(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     true,
+		AllowedPrivateHosts: []string{"192.168.64.*"},
+	})
+
+	assert.True(t, engine.IsHostAllowed("192.168.64.1"), "IP matching glob should be allowed")
+	assert.True(t, engine.IsHostAllowed("192.168.64.255"), "IP matching glob should be allowed")
+	assert.False(t, engine.IsHostAllowed("192.168.65.1"), "IP not matching glob should be blocked")
+	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
+}
+
+func TestEngine_IsHostAllowed_EmptyAllowedPrivateHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     true,
+		AllowedPrivateHosts: []string{},
+	})
+
+	assert.False(t, engine.IsHostAllowed("192.168.1.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
+	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
+	assert.True(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
+}
+
+func TestEngine_IsHostAllowed_AllowedPrivateHostsNoBlock(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     false,
+		AllowedPrivateHosts: []string{"192.168.1.100"},
+	})
+
+	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP should be allowed when BlockPrivateIPs is false")
+	assert.True(t, engine.IsHostAllowed("192.168.1.101"), "Private IP should be allowed when BlockPrivateIPs is false")
+	assert.True(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be allowed when BlockPrivateIPs is false")
+}
+
+func TestEngine_IsHostAllowed_PrivateHostNeedsAllowedHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     true,
+		AllowedPrivateHosts: []string{"192.168.1.100"},
+		AllowedHosts:        []string{"example.com", "192.168.1.100"},
+	})
+
+	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP in both AllowedPrivateHosts and AllowedHosts should be allowed")
+	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Private IP not in AllowedPrivateHosts should be blocked")
+	assert.True(t, engine.IsHostAllowed("example.com"), "Public host in AllowedHosts should be allowed")
+	assert.False(t, engine.IsHostAllowed("other.com"), "Host not in AllowedHosts should be blocked")
+}
+
+func TestEngine_IsHostAllowed_MultipleAllowedPrivateHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		BlockPrivateIPs:     true,
+		AllowedPrivateHosts: []string{"192.168.1.100", "10.0.0.5", "172.16.0.*"},
+	})
+
+	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "First allowed private IP should pass")
+	assert.True(t, engine.IsHostAllowed("10.0.0.5"), "Second allowed private IP should pass")
+	assert.True(t, engine.IsHostAllowed("172.16.0.1"), "IP matching glob pattern should pass")
+	assert.True(t, engine.IsHostAllowed("172.16.0.254"), "IP matching glob pattern should pass")
+	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
+	assert.False(t, engine.IsHostAllowed("10.0.0.6"), "Non-allowed private IP should be blocked")
+}
+
 func TestEngine_IsHostAllowed_WithPort(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		AllowedHosts: []string{"api.example.com"},

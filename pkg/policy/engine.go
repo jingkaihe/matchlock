@@ -59,7 +59,9 @@ func (e *Engine) IsHostAllowed(host string) bool {
 
 	if e.config.BlockPrivateIPs {
 		if isPrivateIP(host) {
-			return false
+			if !e.isPrivateHostAllowed(host) {
+				return false
+			}
 		}
 	}
 
@@ -73,6 +75,15 @@ func (e *Engine) IsHostAllowed(host string) bool {
 		}
 	}
 
+	return false
+}
+
+func (e *Engine) isPrivateHostAllowed(host string) bool {
+	for _, pattern := range e.config.AllowedPrivateHosts {
+		if matchGlob(pattern, host) {
+			return true
+		}
+	}
 	return false
 }
 

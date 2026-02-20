@@ -214,6 +214,9 @@ type CreateOptions struct {
 	// BlockPrivateIPsSet marks whether BlockPrivateIPs was explicitly set.
 	// When false, the SDK preserves API defaults for private IP blocking.
 	BlockPrivateIPsSet bool
+	// AllowedPrivateHosts lists specific private IP addresses or patterns
+	// that bypass block-private-ips when it is enabled.
+	AllowedPrivateHosts []string
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
 	// Env defines non-secret environment variables for command execution.
@@ -499,9 +502,10 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasDNSServers := len(opts.DNSServers) > 0
 	hasHostname := len(opts.Hostname) > 0
 	hasMTU := opts.NetworkMTU > 0
+	hasAllowedPrivateHosts := len(opts.AllowedPrivateHosts) > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts
 	if !includeNetwork {
 		return nil
 	}
@@ -515,6 +519,9 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	network := map[string]interface{}{
 		"allowed_hosts":     opts.AllowedHosts,
 		"block_private_ips": blockPrivateIPs,
+	}
+	if hasAllowedPrivateHosts {
+		network["allowed_private_hosts"] = opts.AllowedPrivateHosts
 	}
 	if hasAddHosts {
 		network["add_hosts"] = opts.AddHosts
