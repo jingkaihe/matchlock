@@ -45,10 +45,10 @@ mise install
 ```
 
 ```bash
-# macOS (usable, codesigned binary for usage and acceptance tests)
+# macOS (usable, codesigned CLI + standalone UI binaries for usage and acceptance tests)
 mise run build
 
-# Linux (usable binary + one-time capability/network setup)
+# Linux (usable binaries + one-time capability/network setup)
 mise run build && sudo ./bin/matchlock setup linux
 ```
 
@@ -56,6 +56,7 @@ Linux sudo rule:
 - Use `sudo` only for the one-time `setup linux` command above.
 - Do not run `matchlock run` or `matchlock exec` with `sudo`.
 - NEVER EVER run `matchlock` with `sudo`.
+- `setup linux` now also applies `cap_net_admin,cap_net_raw` to `matchlock-ui` when present.
 
 ## Test and Check
 
@@ -150,6 +151,9 @@ matchlock list
 matchlock kill <vm-id>
 matchlock prune
 matchlock rpc
+
+# standalone UI binary
+./bin/matchlock-ui --host 127.0.0.1 --port 8540
 ```
 
 ## Known Constraints

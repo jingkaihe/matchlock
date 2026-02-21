@@ -43,6 +43,7 @@ This command requires root privileges.`,
 func init() {
 	setupLinuxCmd.Flags().String("user", "", "Username to configure (default: current user or SUDO_USER)")
 	setupLinuxCmd.Flags().String("binary", "", "Path to matchlock binary (default: auto-detect)")
+	setupLinuxCmd.Flags().String("ui-binary", "", "Path to matchlock-ui binary (default: sibling of --binary)")
 	setupLinuxCmd.Flags().String("install-dir", "/usr/local/bin", "Directory to install Firecracker")
 	setupLinuxCmd.Flags().Bool("skip-firecracker", false, "Skip Firecracker installation")
 	setupLinuxCmd.Flags().Bool("skip-permissions", false, "Skip permission setup")
@@ -63,6 +64,7 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 	installDir, _ := cmd.Flags().GetString("install-dir")
 	userName, _ := cmd.Flags().GetString("user")
 	binaryPath, _ := cmd.Flags().GetString("binary")
+	uiBinaryPath, _ := cmd.Flags().GetString("ui-binary")
 
 	if userName == "" {
 		userName = os.Getenv("SUDO_USER")
@@ -82,6 +84,9 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 			binaryPath = "./bin/matchlock"
 		}
 	}
+	if uiBinaryPath == "" {
+		uiBinaryPath = filepath.Join(filepath.Dir(binaryPath), "matchlock-ui")
+	}
 
 	fmt.Printf("Setting up matchlock for user: %s\n\n", userName)
 
@@ -93,7 +98,7 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 	}
 
 	if !skipPermissions {
-		if err := setupPermissions(userName, binaryPath); err != nil {
+		if err := setupPermissions(userName, binaryPath, uiBinaryPath); err != nil {
 			fmt.Printf("⚠ Permission setup failed: %v\n", err)
 		}
 		fmt.Println()
@@ -248,7 +253,7 @@ func checkKVM() {
 	}
 }
 
-func setupPermissions(userName, binaryPath string) error {
+func setupPermissions(userName, binaryPath, uiBinaryPath string) error {
 	fmt.Println("=== Setting up permissions ===")
 
 	if err := addUserToKVMGroup(userName); err != nil {
@@ -256,7 +261,12 @@ func setupPermissions(userName, binaryPath string) error {
 	}
 
 	if err := setCapabilities(binaryPath); err != nil {
-		fmt.Printf("⚠ Could not set capabilities: %v\n", err)
+		fmt.Printf("⚠ Could not set capabilities on %s: %v\n", binaryPath, err)
+	}
+	if uiBinaryPath != "" && uiBinaryPath != binaryPath {
+		if err := setCapabilities(uiBinaryPath); err != nil {
+			fmt.Printf("⚠ Could not set capabilities on %s: %v\n", uiBinaryPath, err)
+		}
 	}
 
 	if err := setupTunDevice(userName); err != nil {
@@ -292,7 +302,7 @@ func setCapabilities(binaryPath string) error {
 	if err := exec.Command("setcap", "cap_net_admin,cap_net_raw+ep", binaryPath).Run(); err != nil {
 		return err
 	}
-	fmt.Printf("✓ Set capabilities on %s\n", binaryPath)
+	fmt.Printf("✓ Set cap_net_admin,cap_net_raw on %s\n", binaryPath)
 	return nil
 }
 

@@ -60,10 +60,14 @@ printf '{\n  "auth_mode": "apikey",\n  "OPENAI_API_KEY": "%s"\n}\n' "$OPENAI_API
 chmod 600 "$auth_file"
 
 gh_bin="$(command -v gh)"
-git config --global credential.https://github.com.helper ""
-git config --global --add credential.https://github.com.helper "!${gh_bin} auth git-credential"
-git config --global credential.https://gist.github.com.helper ""
-git config --global --add credential.https://gist.github.com.helper "!${gh_bin} auth git-credential"
+set_git_helper() {
+    local host="$1"
+    local key="credential.https://${host}.helper"
+    git config --global --unset-all "$key" || true
+    git config --global --add "$key" "!${gh_bin} auth git-credential"
+}
+set_git_helper github.com
+set_git_helper gist.github.com
 if [ -n "${GIT_USER_EMAIL:-}" ]; then
     git config --global user.email "$GIT_USER_EMAIL"
 fi

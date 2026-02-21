@@ -26,6 +26,7 @@ const (
 	relayMsgExit            uint8 = 7
 	relayMsgExecPipe        uint8 = 8
 	relayMsgPortForward     uint8 = 9
+	relayMsgResize          uint8 = 10
 )
 
 type relayExecRequest struct {
@@ -183,6 +184,9 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutWriter := &relayWriter{conn: conn, msgType: relayMsgStdout}
+	resizeCh := make(chan [2]uint16, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Read stdin from relay client and write to pipe
 	go func() {
@@ -190,18 +194,45 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 		for {
 			msgType, data, err := readRelayMsg(conn)
 			if err != nil {
+				cancel()
 				return
 			}
-			if msgType == relayMsgStdin {
-				stdinWriter.Write(data)
+			switch msgType {
+			case relayMsgStdin:
+				if len(data) == 0 {
+					return
+				}
+				if _, writeErr := stdinWriter.Write(data); writeErr != nil {
+					cancel()
+					return
+				}
+			case relayMsgResize:
+				if len(data) < 4 {
+					continue
+				}
+				rows := binary.BigEndian.Uint16(data[0:2])
+				cols := binary.BigEndian.Uint16(data[2:4])
+				if rows == 0 || cols == 0 {
+					continue
+				}
+				select {
+				case resizeCh <- [2]uint16{rows, cols}:
+				default:
+					select {
+					case <-resizeCh:
+					default:
+					}
+					select {
+					case resizeCh <- [2]uint16{rows, cols}:
+					default:
+					}
+				}
 			}
 		}
 	}()
 
-	resizeCh := make(chan [2]uint16, 1)
-
 	exitCode, err := interactiveMachine.ExecInteractive(
-		context.Background(), req.Command, opts,
+		ctx, req.Command, opts,
 		req.Rows, req.Cols,
 		stdinReader, stdoutWriter, resizeCh,
 	)
@@ -259,15 +290,13 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 	}()
 
 	result, err := r.sb.Exec(ctx, req.Command, opts)
-
-	exitCode := 0
 	if err != nil {
-		exitCode = 1
-	} else {
-		exitCode = result.ExitCode
+		_ = sendRelayMsg(conn, relayMsgStderr, []byte(err.Error()+"\n"))
+		sendRelayExit(conn, 1)
+		return
 	}
 
-	sendRelayExit(conn, exitCode)
+	sendRelayExit(conn, result.ExitCode)
 }
 
 func (r *ExecRelay) handlePortForward(conn net.Conn, data []byte) {
@@ -450,12 +479,19 @@ func ExecViaRelay(ctx context.Context, socketPath, command, workingDir, user str
 }
 
 // ExecInteractiveViaRelay connects to an exec relay socket and runs an interactive command.
-func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDir, user string, rows, cols uint16, stdin io.Reader, stdout io.Writer) (int, error) {
+func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDir, user string, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return 1, errx.Wrap(ErrRelayConnect, err)
 	}
 	defer conn.Close()
+
+	var sendMu sync.Mutex
+	sendFrame := func(msgType uint8, data []byte) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return sendRelayMsg(conn, msgType, data)
+	}
 
 	req := relayExecInteractiveRequest{
 		Command:    command,
@@ -465,12 +501,14 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 		Cols:       cols,
 	}
 	reqData, _ := json.Marshal(req)
-	if err := sendRelayMsg(conn, relayMsgExecInteractive, reqData); err != nil {
+	if err := sendFrame(relayMsgExecInteractive, reqData); err != nil {
 		return 1, errx.Wrap(ErrRelaySend, err)
 	}
 
 	done := make(chan int, 1)
 	errCh := make(chan error, 1)
+	stopCh := make(chan struct{})
+	defer close(stopCh)
 
 	// Read stdout/exit from relay
 	go func() {
@@ -500,13 +538,39 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				sendRelayMsg(conn, relayMsgStdin, buf[:n])
+				_ = sendFrame(relayMsgStdin, buf[:n])
 			}
 			if err != nil {
 				return
 			}
 		}
 	}()
+
+	if resizeCh != nil {
+		go func() {
+			payload := make([]byte, 4)
+			for {
+				select {
+				case <-stopCh:
+					return
+				case <-ctx.Done():
+					return
+				case size, ok := <-resizeCh:
+					if !ok {
+						return
+					}
+					if size[0] == 0 || size[1] == 0 {
+						continue
+					}
+					binary.BigEndian.PutUint16(payload[0:2], size[0])
+					binary.BigEndian.PutUint16(payload[2:4], size[1])
+					if err := sendFrame(relayMsgResize, payload); err != nil {
+						return
+					}
+				}
+			}
+		}()
+	}
 
 	select {
 	case exitCode := <-done:

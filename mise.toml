@@ -36,8 +36,17 @@ fi
 
 mkdir -p bin
 
+# Build embedded UI assets for standalone UI binary.
+if [ -f cmd/matchlock-ui/ui/package.json ]; then
+  if [ ! -d cmd/matchlock-ui/ui/node_modules ]; then
+    npm --prefix cmd/matchlock-ui/ui ci
+  fi
+  go generate ./cmd/matchlock-ui
+fi
+
 LDFLAGS="-X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
 go build -ldflags="$LDFLAGS" -o bin/matchlock ./cmd/matchlock
+go build -ldflags="$LDFLAGS" -o bin/matchlock-ui ./cmd/matchlock-ui
 
 # Codesign on macOS (Virtualization.framework requires entitlement)
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -64,7 +73,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
   cp bin/guest-init "$OUTPUT_DIR/guest-init"
 fi
 
-echo "Built: bin/matchlock, bin/guest-init ($GOARCH)"
+echo "Built: bin/matchlock, bin/matchlock-ui, bin/guest-init ($GOARCH)"
 """
 
 [tasks.clean]
@@ -77,7 +86,45 @@ run = "rm -rf bin/"
 
 [tasks.test]
 description = "Run all tests"
-run = "go test ./..."
+run = """
+#!/usr/bin/env bash
+set -e
+
+if [ -f cmd/matchlock-ui/ui/package.json ] && [ ! -f cmd/matchlock-ui/ui/dist/app.js ]; then
+  if [ ! -d cmd/matchlock-ui/ui/node_modules ]; then
+    npm --prefix cmd/matchlock-ui/ui ci
+  fi
+  go generate ./cmd/matchlock-ui
+fi
+
+go test ./...
+"""
+
+[tasks."fe:test"]
+description = "Run frontend unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -d cmd/matchlock-ui/ui/node_modules ]; then
+  npm --prefix cmd/matchlock-ui/ui ci
+fi
+npm --prefix cmd/matchlock-ui/ui run test
+"""
+
+[tasks."fe:lint"]
+description = "Lint frontend code"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -d cmd/matchlock-ui/ui/node_modules ]; then
+  npm --prefix cmd/matchlock-ui/ui ci
+fi
+npm --prefix cmd/matchlock-ui/ui run lint
+"""
+
+[tasks."check:frontend"]
+description = "Run frontend lint + tests"
+depends = ["fe:lint", "fe:test"]
 
 [tasks."test:coverage"]
 description = "Generate coverage report"
@@ -146,8 +193,8 @@ description = "Run go mod tidy"
 run = "go mod tidy"
 
 [tasks.check]
-description = "Run all checks (Go + Python SDK)"
-depends = ["fmt", "vet", "lint", "test", "check:errx", "check:python-sdk"]
+description = "Run all checks (Go + Python SDK + frontend)"
+depends = ["fmt", "vet", "lint", "test", "check:errx", "check:frontend", "check:python-sdk"]
 
 # =============================================================================
 # Python SDK tasks
