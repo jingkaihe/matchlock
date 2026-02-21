@@ -20,24 +20,15 @@ func (b *Builder) platformOptions() []remote.Option {
 	return nil
 }
 
-func (b *Builder) createEROFS(sourceDir, destPath string, meta map[string]fileMeta) error {
+func (b *Builder) createEROFSFromTar(tarPath, destPath string) error {
 	mkfsPath, err := exec.LookPath("mkfs.erofs")
 	if err != nil {
 		return errx.With(ErrToolNotFound, ": mkfs.erofs; install erofs-utils")
 	}
 
-	// Best-effort mode sync so mkfs.erofs captures image file modes.
-	for relPath, fm := range meta {
-		if relPath == "" || relPath == "/" {
-			continue
-		}
-		hostPath := filepath.Join(sourceDir, strings.TrimPrefix(relPath, "/"))
-		_ = os.Chmod(hostPath, fm.mode)
-	}
-
 	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
 	// Force 4K EROFS blocks so guest kernels with 4K page support can mount layers.
-	cmd := exec.Command(mkfsPath, "--quiet", "-b", "4096", tmpPath, sourceDir)
+	cmd := exec.Command(mkfsPath, "--quiet", "-b", "4096", "--tar=f", tmpPath, tarPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
 		return errx.With(ErrCreateExt4, ": mkfs.erofs: %w: %s", err, out)

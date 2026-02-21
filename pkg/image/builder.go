@@ -177,17 +177,13 @@ func (b *Builder) ensureSquashedPrefixLayerBlob(layers []v1.Layer) (LayerRef, er
 		return LayerRef{}, errx.With(ErrExtract, ": append layers for squash: %w", err)
 	}
 
-	extractDir, err := os.MkdirTemp("", "matchlock-layer-squash-*")
-	if err != nil {
-		return LayerRef{}, errx.Wrap(ErrCreateTemp, err)
-	}
-	defer os.RemoveAll(extractDir)
-
-	fileMetas, err := b.extractImage(img, extractDir)
+	tarPath, err := b.exportImageAsTar(img)
 	if err != nil {
 		return LayerRef{}, err
 	}
-	if err := b.createEROFS(extractDir, blobPath, fileMetas); err != nil {
+	defer os.Remove(tarPath)
+
+	if err := b.createEROFSFromTar(tarPath, blobPath); err != nil {
 		return LayerRef{}, err
 	}
 
@@ -196,6 +192,27 @@ func (b *Builder) ensureSquashedPrefixLayerBlob(layers []v1.Layer) (LayerRef, er
 		return LayerRef{}, errx.With(ErrCreateExt4, ": stat squashed blob %s: %w", blobPath, err)
 	}
 	return LayerRef{Digest: digest, FSType: layerFSTypeEROFS, Path: blobPath, Size: fileStoredBytes(fi)}, nil
+}
+
+func (b *Builder) exportImageAsTar(img v1.Image) (string, error) {
+	reader := mutate.Extract(img)
+	defer reader.Close()
+
+	tmpTar, err := os.CreateTemp("", "matchlock-layer-squash-*.tar")
+	if err != nil {
+		return "", errx.Wrap(ErrCreateTemp, err)
+	}
+
+	if _, err := io.Copy(tmpTar, reader); err != nil {
+		_ = tmpTar.Close()
+		_ = os.Remove(tmpTar.Name())
+		return "", errx.With(ErrExtract, ": write tar stream: %w", err)
+	}
+	if err := tmpTar.Close(); err != nil {
+		_ = os.Remove(tmpTar.Name())
+		return "", errx.With(ErrExtract, ": close tar stream: %w", err)
+	}
+	return tmpTar.Name(), nil
 }
 
 func newBuildResult(layers []LayerRef, digest string, size int64, cached bool, oci *OCIConfig) *BuildResult {
