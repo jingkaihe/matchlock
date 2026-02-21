@@ -137,6 +137,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 	if config.Network != nil {
 		if err := config.Network.Validate(); err != nil {
+			stateMgr.Unregister(id)
 			return nil, err
 		}
 	}
@@ -159,19 +160,32 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	// Allocate unique subnet for this VM
-	subnetAlloc := state.NewSubnetAllocator()
-	subnetInfo, err := subnetAlloc.Allocate(id)
-	if err != nil {
-		cleanupRootDisks()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrAllocateSubnet, err)
+	var (
+		subnetAlloc *state.SubnetAllocator
+		subnetInfo  *state.SubnetInfo
+		err         error
+	)
+	releaseSubnet := func() {
+		if subnetAlloc != nil {
+			_ = subnetAlloc.Release(id)
+		}
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.GatewayIP = subnetInfo.GatewayIP
-		r.GuestIP = subnetInfo.GuestIP
-		r.SubnetCIDR = subnetInfo.Subnet
-	})
+
+	// Allocate unique subnet for this VM when networking is enabled.
+	if !noNetwork {
+		subnetAlloc = state.NewSubnetAllocator()
+		subnetInfo, err = subnetAlloc.Allocate(id)
+		if err != nil {
+			cleanupRootDisks()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrAllocateSubnet, err)
+		}
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.GatewayIP = subnetInfo.GatewayIP
+			r.GuestIP = subnetInfo.GuestIP
+			r.SubnetCIDR = subnetInfo.Subnet
+		})
+	}
 
 	backend := linux.NewLinuxBackend()
 
@@ -183,7 +197,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var extraDisks []vm.DiskConfig
 	for _, d := range config.ExtraDisks {
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInvalidDiskCfg, err)
 		}
@@ -194,9 +208,18 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
+	}
+
+	gatewayIP := ""
+	guestIP := ""
+	subnetCIDR := ""
+	if subnetInfo != nil {
+		gatewayIP = subnetInfo.GatewayIP
+		guestIP = subnetInfo.GuestIP
+		subnetCIDR = subnetInfo.GatewayIP + "/24"
 	}
 
 	vmConfig := &vm.VMConfig{
@@ -213,9 +236,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		LogPath:             stateMgr.LogPath(id),
 		VsockCID:            3,
 		VsockPath:           stateMgr.Dir(id) + "/vsock.sock",
-		GatewayIP:           subnetInfo.GatewayIP,
-		GuestIP:             subnetInfo.GuestIP,
-		SubnetCIDR:          subnetInfo.GatewayIP + "/24",
+		GatewayIP:           gatewayIP,
+		GuestIP:             guestIP,
+		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
 		ExtraDisks:          extraDisks,
@@ -229,7 +252,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		cleanupRootDisks()
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
@@ -263,7 +286,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if err != nil {
 		machine.Close(ctx)
 		cleanupRootDisks()
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
 	}
@@ -275,7 +298,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	events := make(chan api.Event, 100)
 
 	// Set up transparent proxy for HTTP/HTTPS interception
-	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0"
 
 	var proxy *sandboxnet.TransparentProxy
@@ -293,7 +315,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 		if err != nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateProxy, err)
 		}
@@ -304,7 +326,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrFirewallSetup, err)
 		}
@@ -344,7 +366,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			fwRules.Cleanup()
 		}
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
