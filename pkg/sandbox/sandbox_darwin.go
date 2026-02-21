@@ -48,6 +48,7 @@ type Options struct {
 	KernelPath    string
 	InitramfsPath string
 	RootfsPaths   []string // Required: immutable lower image paths (base->top)
+	RootfsFSTypes []string // Optional fs type per lower image (defaults to erofs).
 }
 
 func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
@@ -105,6 +106,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		initramfsPath = DefaultInitramfsPath()
 	}
 	rootfsPaths := opts.RootfsPaths
+	rootfsFSTypes := normalizeOverlayLowerFSTypes(rootfsPaths, opts.RootfsFSTypes)
 	bootstrapRootfsPath := filepath.Join(stateMgr.Dir(id), "bootstrap.ext4")
 	upperRootfsPath := filepath.Join(stateMgr.Dir(id), "upper.ext4")
 	cleanupRootDisks := func() {
@@ -177,31 +179,37 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks)); err != nil {
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, err
+	}
 
 	vmConfig := &vm.VMConfig{
-		ID:                id,
-		KernelPath:        kernelPath,
-		InitramfsPath:     initramfsPath,
-		RootfsPath:        bootstrapRootfsPath,
-		OverlayEnabled:    true,
-		OverlayLowerPaths: rootfsPaths,
-		OverlayUpperPath:  upperRootfsPath,
-		CPUs:              config.Resources.CPUs,
-		MemoryMB:          config.Resources.MemoryMB,
-		SocketPath:        stateMgr.SocketPath(id) + ".sock",
-		LogPath:           stateMgr.LogPath(id),
-		GatewayIP:         subnetInfo.GatewayIP,
-		GuestIP:           subnetInfo.GuestIP,
-		SubnetCIDR:        subnetInfo.GatewayIP + "/24",
-		Workspace:         workspace,
-		UseInterception:   needsInterception,
-		Privileged:        config.Privileged,
-		PrebuiltRootfs:    bootstrapRootfsPath,
-		ExtraDisks:        extraDisks,
-		DNSServers:        config.Network.GetDNSServers(),
-		Hostname:          hostname,
-		AddHosts:          config.Network.AddHosts,
-		MTU:               config.Network.GetMTU(),
+		ID:                  id,
+		KernelPath:          kernelPath,
+		InitramfsPath:       initramfsPath,
+		RootfsPath:          bootstrapRootfsPath,
+		OverlayEnabled:      true,
+		OverlayLowerPaths:   rootfsPaths,
+		OverlayLowerFSTypes: rootfsFSTypes,
+		OverlayUpperPath:    upperRootfsPath,
+		CPUs:                config.Resources.CPUs,
+		MemoryMB:            config.Resources.MemoryMB,
+		SocketPath:          stateMgr.SocketPath(id) + ".sock",
+		LogPath:             stateMgr.LogPath(id),
+		GatewayIP:           subnetInfo.GatewayIP,
+		GuestIP:             subnetInfo.GuestIP,
+		SubnetCIDR:          subnetInfo.GatewayIP + "/24",
+		Workspace:           workspace,
+		UseInterception:     needsInterception,
+		Privileged:          config.Privileged,
+		PrebuiltRootfs:      bootstrapRootfsPath,
+		ExtraDisks:          extraDisks,
+		DNSServers:          config.Network.GetDNSServers(),
+		Hostname:            hostname,
+		AddHosts:            config.Network.AddHosts,
+		MTU:                 config.Network.GetMTU(),
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"

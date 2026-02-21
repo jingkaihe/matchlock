@@ -16,6 +16,7 @@ const (
 	imageScopeLocal    = "local"
 	imageScopeRegistry = "registry"
 	blobsDirName       = "blobs"
+	layerFSTypeEROFS   = "erofs"
 )
 
 type OCIConfig struct {
@@ -37,6 +38,7 @@ type ImageMeta struct {
 
 type LayerRef struct {
 	Digest string
+	FSType string
 	Size   int64
 	Path   string
 }
@@ -81,7 +83,11 @@ func (s *Store) CacheRoot() string {
 }
 
 func (s *Store) BlobPath(digest string) string {
-	return blobPathForDigest(s.cacheRoot, digest)
+	return blobPathForLayer(s.cacheRoot, digest, layerFSTypeEROFS)
+}
+
+func (s *Store) BlobPathWithFS(digest, fsType string) string {
+	return blobPathForLayer(s.cacheRoot, digest, fsType)
 }
 
 func (s *Store) ready() error {
@@ -120,7 +126,13 @@ func (s *Store) Save(tag string, layers []LayerRef, meta ImageMeta) error {
 	if meta.Size <= 0 {
 		meta.Size = imageSizeFromLayers(normLayers)
 	}
-	return upsertImageMetaWithLayers(s.db, imageScopeLocal, tag, meta, normLayers, primaryRootfsPath(normLayers))
+	if err := upsertImageMetaWithLayers(s.db, imageScopeLocal, tag, meta, normLayers, primaryRootfsPath(normLayers)); err != nil {
+		return err
+	}
+	if _, err := pruneUnreferencedBlobs(s.db, s.cacheRoot); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Get(tag string) (*BuildResult, error) {
@@ -148,7 +160,7 @@ func (s *Store) Remove(tag string) error {
 	if !deleted {
 		return errx.With(ErrImageNotFound, ": %q", tag)
 	}
-	if err := pruneUnreferencedBlobs(s.db, s.cacheRoot); err != nil {
+	if _, err := pruneUnreferencedBlobs(s.db, s.cacheRoot); err != nil {
 		return err
 	}
 
@@ -158,6 +170,13 @@ func (s *Store) Remove(tag string) error {
 		return errx.With(ErrStoreSave, ": remove legacy local rootfs dir: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) GC() (int, error) {
+	if err := s.ready(); err != nil {
+		return 0, err
+	}
+	return pruneUnreferencedBlobs(s.db, s.cacheRoot)
 }
 
 // SaveRegistryCache records metadata for a registry-cached image.
@@ -201,7 +220,13 @@ func SaveRegistryCache(tag string, cacheDir string, layers []LayerRef, meta Imag
 		meta.Size = imageSizeFromLayers(normLayers)
 	}
 
-	return upsertImageMetaWithLayers(db, imageScopeRegistry, tag, meta, normLayers, primaryRootfsPath(normLayers))
+	if err := upsertImageMetaWithLayers(db, imageScopeRegistry, tag, meta, normLayers, primaryRootfsPath(normLayers)); err != nil {
+		return err
+	}
+	if _, err := pruneUnreferencedBlobs(db, cacheDir); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GetRegistryCache returns a registry-cached image metadata entry as a BuildResult.
@@ -236,7 +261,7 @@ func RemoveRegistryCache(tag string, cacheDir string) error {
 	if !deleted {
 		return errx.With(ErrImageNotFound, ": %q", tag)
 	}
-	if err := pruneUnreferencedBlobs(db, cacheDir); err != nil {
+	if _, err := pruneUnreferencedBlobs(db, cacheDir); err != nil {
 		return err
 	}
 
@@ -248,6 +273,18 @@ func RemoveRegistryCache(tag string, cacheDir string) error {
 		}
 	}
 	return nil
+}
+
+func GC(cacheDir string) (int, error) {
+	if cacheDir == "" {
+		cacheDir = defaultImageCacheDir()
+	}
+	db, err := openImageDBForCacheDir(cacheDir)
+	if err != nil {
+		return 0, errx.With(ErrStoreRead, ": open registry metadata DB: %w", err)
+	}
+	defer db.Close()
+	return pruneUnreferencedBlobs(db, cacheDir)
 }
 
 // ListRegistryCache lists images cached from registry pulls (non-local store).
@@ -311,16 +348,19 @@ func upsertImageMetaWithLayers(db *sql.DB, scope, tag string, meta ImageMeta, la
 		return errx.With(ErrStoreSave, ": clear image layers: %w", err)
 	}
 
-	stmt, err := tx.Prepare(`INSERT INTO image_layers(scope, tag, ordinal, digest, size) VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO image_layers(scope, tag, ordinal, digest, fs_type, size) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return errx.With(ErrStoreSave, ": prepare layer insert: %w", err)
 	}
 	defer stmt.Close()
 
 	for ordinal, layer := range layers {
-		if _, err := stmt.Exec(scope, tag, ordinal, layer.Digest, layer.Size); err != nil {
+		if _, err := stmt.Exec(scope, tag, ordinal, layer.Digest, layer.FSType, layer.Size); err != nil {
 			return errx.With(ErrStoreSave, ": insert layer %d: %w", ordinal, err)
 		}
+	}
+	if err := syncLayerRefCounts(tx); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -353,6 +393,7 @@ func getImageBuildResult(db *sql.DB, scope, tag, cacheRoot string) (*BuildResult
 	return &BuildResult{
 		RootfsPath:   primaryLowerPath(lowerPaths),
 		LowerPaths:   lowerPaths,
+		LowerFSTypes: layerFSTypes(layers),
 		Layers:       layers,
 		Digest:       info.Meta.Digest,
 		Size:         size,
@@ -364,7 +405,7 @@ func getImageBuildResult(db *sql.DB, scope, tag, cacheRoot string) (*BuildResult
 
 func getImageLayers(db *sql.DB, scope, tag, cacheRoot string) ([]LayerRef, error) {
 	rows, err := db.Query(
-		`SELECT digest, size
+		`SELECT digest, fs_type, size
 		   FROM image_layers
 		  WHERE scope = ? AND tag = ?
 		  ORDER BY ordinal ASC`,
@@ -379,10 +420,15 @@ func getImageLayers(db *sql.DB, scope, tag, cacheRoot string) ([]LayerRef, error
 	var layers []LayerRef
 	for rows.Next() {
 		var layer LayerRef
-		if err := rows.Scan(&layer.Digest, &layer.Size); err != nil {
+		if err := rows.Scan(&layer.Digest, &layer.FSType, &layer.Size); err != nil {
 			return nil, errx.With(ErrStoreRead, ": scan image layer: %w", err)
 		}
-		layer.Path = blobPathForDigest(cacheRoot, layer.Digest)
+		fsType, err := normalizeLayerFSType(layer.FSType)
+		if err != nil {
+			return nil, err
+		}
+		layer.FSType = fsType
+		layer.Path = blobPathForLayer(cacheRoot, layer.Digest, layer.FSType)
 		layers = append(layers, layer)
 	}
 	if err := rows.Err(); err != nil {
@@ -504,6 +550,9 @@ func deleteImageWithLayers(db *sql.DB, scope, tag string) (bool, error) {
 	if _, err := tx.Exec(`DELETE FROM image_layers WHERE scope = ? AND tag = ?`, scope, tag); err != nil {
 		return false, errx.With(ErrStoreSave, ": remove image layers: %w", err)
 	}
+	if err := syncLayerRefCounts(tx); err != nil {
+		return false, err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return false, errx.With(ErrStoreSave, ": commit delete transaction: %w", err)
@@ -515,15 +564,23 @@ func normalizeLayerRefs(layers []LayerRef, cacheRoot string) ([]LayerRef, error)
 	norm := make([]LayerRef, 0, len(layers))
 	for i, layer := range layers {
 		if layer.Digest == "" {
-			if d, ok := digestFromBlobPath(layer.Path); ok {
+			if d, fsType, ok := digestAndFSTypeFromBlobPath(layer.Path); ok {
 				layer.Digest = d
+				if layer.FSType == "" {
+					layer.FSType = fsType
+				}
 			}
 		}
 		if layer.Digest == "" {
 			return nil, errx.With(ErrStoreSave, ": missing digest for layer %d", i)
 		}
+		fsType, err := normalizeLayerFSType(layer.FSType)
+		if err != nil {
+			return nil, err
+		}
+		layer.FSType = fsType
 		if layer.Path == "" {
-			layer.Path = blobPathForDigest(cacheRoot, layer.Digest)
+			layer.Path = blobPathForLayer(cacheRoot, layer.Digest, layer.FSType)
 		}
 		if layer.Size <= 0 {
 			if fi, err := os.Stat(layer.Path); err == nil {
@@ -538,7 +595,7 @@ func normalizeLayerRefs(layers []LayerRef, cacheRoot string) ([]LayerRef, error)
 func ensureLayersInCache(layers []LayerRef, cacheRoot string) ([]LayerRef, error) {
 	out := make([]LayerRef, 0, len(layers))
 	for _, layer := range layers {
-		targetPath := blobPathForDigest(cacheRoot, layer.Digest)
+		targetPath := blobPathForLayer(cacheRoot, layer.Digest, layer.FSType)
 		if layer.Path != targetPath {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 				return nil, errx.Wrap(ErrCreateDir, err)
@@ -617,6 +674,18 @@ func layerDigests(layers []LayerRef) []string {
 	return digests
 }
 
+func layerFSTypes(layers []LayerRef) []string {
+	fsTypes := make([]string, 0, len(layers))
+	for _, layer := range layers {
+		fsType, err := normalizeLayerFSType(layer.FSType)
+		if err != nil {
+			fsType = layerFSTypeEROFS
+		}
+		fsTypes = append(fsTypes, fsType)
+	}
+	return fsTypes
+}
+
 func primaryRootfsPath(layers []LayerRef) string {
 	if len(layers) == 0 {
 		return ""
@@ -632,79 +701,139 @@ func primaryLowerPath(paths []string) string {
 }
 
 func blobPathForDigest(cacheRoot, digest string) string {
+	return blobPathForLayer(cacheRoot, digest, layerFSTypeEROFS)
+}
+
+func blobPathForLayer(cacheRoot, digest, fsType string) string {
 	if cacheRoot == "" {
 		cacheRoot = defaultImageCacheDir()
 	}
-	return filepath.Join(cacheRoot, blobsDirName, blobFileNameForDigest(digest))
+	return filepath.Join(cacheRoot, blobsDirName, blobFileNameForLayer(digest, fsType))
 }
 
-func blobFileNameForDigest(digest string) string {
+func blobFileNameForLayer(digest, fsType string) string {
+	normalized, err := normalizeLayerFSType(fsType)
+	if err != nil {
+		normalized = layerFSTypeEROFS
+	}
 	if digest == "" {
-		return "unknown.ext4"
+		return "unknown." + normalized
 	}
 	safe := strings.ReplaceAll(digest, ":", "_")
 	safe = strings.ReplaceAll(safe, "/", "_")
-	return safe + ".ext4"
+	return safe + "." + normalized
 }
 
-func digestFromBlobPath(path string) (string, bool) {
+func digestAndFSTypeFromBlobPath(path string) (string, string, bool) {
 	name := filepath.Base(path)
-	if !strings.HasSuffix(name, ".ext4") {
-		return "", false
+	i := strings.LastIndexByte(name, '.')
+	if i <= 0 || i == len(name)-1 {
+		return "", "", false
 	}
-	stem := strings.TrimSuffix(name, ".ext4")
+	stem := name[:i]
+	fsType := name[i+1:]
+	normalizedFS, err := normalizeLayerFSType(fsType)
+	if err != nil {
+		return "", "", false
+	}
 	idx := strings.IndexByte(stem, '_')
 	if idx <= 0 || idx >= len(stem)-1 {
-		return "", false
+		return "", "", false
 	}
-	return stem[:idx] + ":" + stem[idx+1:], true
+	return stem[:idx] + ":" + stem[idx+1:], normalizedFS, true
 }
 
-func pruneUnreferencedBlobs(db *sql.DB, cacheRoot string) error {
-	rows, err := db.Query(`SELECT DISTINCT digest FROM image_layers`)
+func normalizeLayerFSType(fsType string) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(fsType))
+	if v == "" {
+		return layerFSTypeEROFS, nil
+	}
+	switch v {
+	case layerFSTypeEROFS:
+		return v, nil
+	default:
+		return "", errx.With(ErrLayerFS, ": %q (supported: %s)", fsType, layerFSTypeEROFS)
+	}
+}
+
+func syncLayerRefCounts(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM layer_refs`); err != nil {
+		return errx.With(ErrStoreSave, ": clear layer refs: %w", err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO layer_refs(digest, fs_type, ref_count, size, updated_at)
+		 SELECT digest, COALESCE(fs_type, 'erofs'), COUNT(*), MAX(size), ?
+		   FROM image_layers
+		  GROUP BY digest, COALESCE(fs_type, 'erofs')`,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return errx.With(ErrStoreSave, ": rebuild layer refs: %w", err)
+	}
+	return nil
+}
+
+func pruneUnreferencedBlobs(db *sql.DB, cacheRoot string) (int, error) {
+	rows, err := db.Query(`SELECT digest, fs_type FROM layer_refs WHERE ref_count > 0`)
 	if err != nil {
-		return errx.With(ErrStoreRead, ": query referenced blobs: %w", err)
+		return 0, errx.With(ErrStoreRead, ": query referenced blobs: %w", err)
 	}
 	defer rows.Close()
 
 	referenced := make(map[string]struct{})
 	for rows.Next() {
-		var digest string
-		if err := rows.Scan(&digest); err != nil {
-			return errx.With(ErrStoreRead, ": scan referenced blob: %w", err)
+		var (
+			digest string
+			fsType string
+		)
+		if err := rows.Scan(&digest, &fsType); err != nil {
+			return 0, errx.With(ErrStoreRead, ": scan referenced blob: %w", err)
 		}
-		if digest != "" {
-			referenced[digest] = struct{}{}
+		if digest == "" {
+			continue
 		}
+		normalizedFS, err := normalizeLayerFSType(fsType)
+		if err != nil {
+			continue
+		}
+		referenced[digest+"|"+normalizedFS] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return errx.With(ErrStoreRead, ": iterate referenced blobs: %w", err)
+		return 0, errx.With(ErrStoreRead, ": iterate referenced blobs: %w", err)
 	}
 
 	blobsDir := filepath.Join(cacheRoot, blobsDirName)
 	entries, err := os.ReadDir(blobsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return errx.With(ErrStoreSave, ": read blobs directory: %w", err)
+		return 0, errx.With(ErrStoreSave, ": read blobs directory: %w", err)
 	}
 
+	removed := 0
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		path := filepath.Join(blobsDir, entry.Name())
-		digest, ok := digestFromBlobPath(path)
+		digest, fsType, ok := digestAndFSTypeFromBlobPath(path)
 		if !ok {
+			// Remove legacy layer blobs that are no longer supported.
+			if strings.HasPrefix(entry.Name(), "sha256_") && filepath.Ext(entry.Name()) != "."+layerFSTypeEROFS {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return removed, errx.With(ErrStoreSave, ": remove legacy blob %q: %w", entry.Name(), err)
+				}
+				removed++
+			}
 			continue
 		}
-		if _, used := referenced[digest]; used {
+		if _, used := referenced[digest+"|"+fsType]; used {
 			continue
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return errx.With(ErrStoreSave, ": remove unreferenced blob %q: %w", entry.Name(), err)
+			return removed, errx.With(ErrStoreSave, ": remove unreferenced blob %q: %w", entry.Name(), err)
 		}
+		removed++
 	}
-	return nil
+	return removed, nil
 }

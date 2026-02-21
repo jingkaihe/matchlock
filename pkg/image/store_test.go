@@ -1,6 +1,7 @@
 package image
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,6 +48,8 @@ func TestStoreRoundTrip(t *testing.T) {
 	assert.True(t, result.Cached)
 	require.Len(t, result.LowerPaths, 1)
 	assert.Equal(t, layer.Path, result.LowerPaths[0])
+	require.Len(t, result.LowerFSTypes, 1)
+	assert.Equal(t, layerFSTypeEROFS, result.LowerFSTypes[0])
 }
 
 func TestStoreList(t *testing.T) {
@@ -97,6 +100,21 @@ func TestStoreRemoveSharedLayer(t *testing.T) {
 	assert.Equal(t, layer.Path, result.LowerPaths[0])
 }
 
+func TestLayerRefCountsUpdatedOnSaveAndRemove(t *testing.T) {
+	store, cacheRoot := newTestStore(t)
+	layer := writeTestLayer(t, cacheRoot, "sha256:shared", "data")
+
+	require.NoError(t, store.Save("app1:latest", []LayerRef{layer}, ImageMeta{Digest: "sha256:image1"}))
+	require.NoError(t, store.Save("app2:latest", []LayerRef{layer}, ImageMeta{Digest: "sha256:image2"}))
+
+	refCount := readLayerRefCount(t, cacheRoot, "sha256:shared", layerFSTypeEROFS)
+	assert.Equal(t, 2, refCount)
+
+	require.NoError(t, store.Remove("app1:latest"))
+	refCount = readLayerRefCount(t, cacheRoot, "sha256:shared", layerFSTypeEROFS)
+	assert.Equal(t, 1, refCount)
+}
+
 func TestStoreRemoveNotFound(t *testing.T) {
 	store, _ := newTestStore(t)
 	require.Error(t, store.Remove("nonexistent:tag"))
@@ -127,9 +145,9 @@ func TestStoreListNonexistentDir(t *testing.T) {
 func TestStoreOverwrite(t *testing.T) {
 	store, cacheRoot := newTestStore(t)
 	layer1 := writeTestLayer(t, cacheRoot, "sha256:v1", "version1")
-	layer2 := writeTestLayer(t, cacheRoot, "sha256:v2", "version2")
 
 	require.NoError(t, store.Save("myapp:latest", []LayerRef{layer1}, ImageMeta{Digest: "sha256:imagev1"}))
+	layer2 := writeTestLayer(t, cacheRoot, "sha256:v2", "version2")
 	require.NoError(t, store.Save("myapp:latest", []LayerRef{layer2}, ImageMeta{Digest: "sha256:imagev2"}))
 
 	result, err := store.Get("myapp:latest")
@@ -195,5 +213,21 @@ func TestGetRegistryCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.LowerPaths, 2)
 	assert.Equal(t, []string{layerA.Path, layerB.Path}, result.LowerPaths)
+	assert.Equal(t, []string{layerFSTypeEROFS, layerFSTypeEROFS}, result.LowerFSTypes)
 	assert.Equal(t, "sha256:image", result.Digest)
+}
+
+func readLayerRefCount(t *testing.T, cacheRoot, digest, fsType string) int {
+	t.Helper()
+	db, err := openImageDBForCacheDir(cacheRoot)
+	require.NoError(t, err)
+	defer db.Close()
+
+	var count int
+	err = db.QueryRow(`SELECT ref_count FROM layer_refs WHERE digest = ? AND fs_type = ?`, digest, fsType).Scan(&count)
+	if err == sql.ErrNoRows {
+		return 0
+	}
+	require.NoError(t, err)
+	return count
 }

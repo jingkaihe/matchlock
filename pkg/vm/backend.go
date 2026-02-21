@@ -17,34 +17,35 @@ type DiskConfig struct {
 }
 
 type VMConfig struct {
-	ID                string
-	KernelPath        string
-	InitramfsPath     string // Optional initramfs/initrd path
-	RootfsPath        string
-	OverlayEnabled    bool     // Boot via overlay root assembly in guest-init
-	OverlayLowerPaths []string // Host paths to read-only lower images attached as extra disks
-	OverlayUpperPath  string   // Host path to writable upper image attached as extra disk
-	CPUs              int
-	MemoryMB          int
-	NetworkFD         int
-	VsockCID          uint32
-	VsockPath         string
-	SocketPath        string
-	LogPath           string
-	KernelArgs        string
-	Env               map[string]string
-	GatewayIP         string              // Host TAP IP (e.g., 192.168.100.1)
-	GuestIP           string              // Guest IP (e.g., 192.168.100.2)
-	SubnetCIDR        string              // CIDR notation (e.g., 192.168.100.1/24)
-	Workspace         string              // Guest VFS mount point (default: /workspace)
-	UseInterception   bool                // Use network interception (MITM proxy)
-	Privileged        bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
-	DNSServers        []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
-	Hostname          string              // Hostname for the guest (default: vm's ID)
-	AddHosts          []api.HostIPMapping // Additional /etc/hosts entries injected at boot
-	MTU               int                 // Guest interface/network stack MTU (default: 1500)
-	PrebuiltRootfs    string              // Pre-prepared rootfs path (skips internal copy if set)
-	ExtraDisks        []DiskConfig        // Additional block devices to attach
+	ID                  string
+	KernelPath          string
+	InitramfsPath       string // Optional initramfs/initrd path
+	RootfsPath          string
+	OverlayEnabled      bool     // Boot via overlay root assembly in guest-init
+	OverlayLowerPaths   []string // Host paths to read-only lower images attached as extra disks
+	OverlayLowerFSTypes []string // Filesystem type per lower image (erofs)
+	OverlayUpperPath    string   // Host path to writable upper image attached as extra disk
+	CPUs                int
+	MemoryMB            int
+	NetworkFD           int
+	VsockCID            uint32
+	VsockPath           string
+	SocketPath          string
+	LogPath             string
+	KernelArgs          string
+	Env                 map[string]string
+	GatewayIP           string              // Host TAP IP (e.g., 192.168.100.1)
+	GuestIP             string              // Guest IP (e.g., 192.168.100.2)
+	SubnetCIDR          string              // CIDR notation (e.g., 192.168.100.1/24)
+	Workspace           string              // Guest VFS mount point (default: /workspace)
+	UseInterception     bool                // Use network interception (MITM proxy)
+	Privileged          bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
+	DNSServers          []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
+	Hostname            string              // Hostname for the guest (default: vm's ID)
+	AddHosts            []api.HostIPMapping // Additional /etc/hosts entries injected at boot
+	MTU                 int                 // Guest interface/network stack MTU (default: 1500)
+	PrebuiltRootfs      string              // Pre-prepared rootfs path (skips internal copy if set)
+	ExtraDisks          []DiskConfig        // Additional block devices to attach
 }
 
 type Backend interface {

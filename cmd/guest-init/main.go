@@ -72,6 +72,7 @@ type bootConfig struct {
 type overlayBootConfig struct {
 	Enabled      bool
 	LowerDevices []string
+	LowerFSTypes []string
 	UpperDevice  string
 }
 
@@ -211,6 +212,17 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			}
 			cfg.Overlay.Enabled = true
 
+		case strings.HasPrefix(field, "matchlock.overlay.lowerfs="):
+			spec := strings.TrimPrefix(field, "matchlock.overlay.lowerfs=")
+			cfg.Overlay.LowerFSTypes = cfg.Overlay.LowerFSTypes[:0]
+			for _, fs := range strings.Split(spec, ",") {
+				fs = strings.TrimSpace(strings.ToLower(fs))
+				if fs != "" {
+					cfg.Overlay.LowerFSTypes = append(cfg.Overlay.LowerFSTypes, fs)
+				}
+			}
+			cfg.Overlay.Enabled = true
+
 		case strings.HasPrefix(field, "matchlock.overlay.upper="):
 			cfg.Overlay.UpperDevice = strings.TrimPrefix(field, "matchlock.overlay.upper=")
 			cfg.Overlay.Enabled = true
@@ -235,6 +247,9 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	if cfg.Overlay.Enabled {
 		if len(cfg.Overlay.LowerDevices) == 0 || cfg.Overlay.UpperDevice == "" {
 			return nil, errx.With(ErrInvalidOverlayCfg, ": lowers=%v upper=%q", cfg.Overlay.LowerDevices, cfg.Overlay.UpperDevice)
+		}
+		if len(cfg.Overlay.LowerFSTypes) > 0 && len(cfg.Overlay.LowerFSTypes) != len(cfg.Overlay.LowerDevices) {
+			return nil, errx.With(ErrInvalidOverlayCfg, ": lowerfs=%v does not match lowers=%v", cfg.Overlay.LowerFSTypes, cfg.Overlay.LowerDevices)
 		}
 	}
 
@@ -298,12 +313,21 @@ func setupOverlayRoot(cfg overlayBootConfig) error {
 	lowerDirs := make([]string, 0, len(cfg.LowerDevices))
 	for i, dev := range cfg.LowerDevices {
 		lowerDev := filepath.Join("/dev", dev)
+		lowerFS := "erofs"
+		if i < len(cfg.LowerFSTypes) && cfg.LowerFSTypes[i] != "" {
+			switch cfg.LowerFSTypes[i] {
+			case "erofs":
+				lowerFS = cfg.LowerFSTypes[i]
+			default:
+				return errx.With(ErrInvalidOverlayCfg, " invalid lower fs type %q for %s", cfg.LowerFSTypes[i], lowerDev)
+			}
+		}
 		lowerDir := filepath.Join(lowerDirBase, strconv.Itoa(i))
 		if err := os.MkdirAll(lowerDir, 0755); err != nil {
 			return errx.With(ErrOverlaySetup, " mkdir lower %s: %w", lowerDir, err)
 		}
-		if err := unix.Mount(lowerDev, lowerDir, "ext4", uintptr(unix.MS_RDONLY), ""); err != nil {
-			return errx.With(ErrOverlaySetup, " mount lower %s -> %s: %w", lowerDev, lowerDir, err)
+		if err := unix.Mount(lowerDev, lowerDir, lowerFS, uintptr(unix.MS_RDONLY), ""); err != nil {
+			return errx.With(ErrOverlaySetup, " mount lower %s (%s) -> %s: %w", lowerDev, lowerFS, lowerDir, err)
 		}
 		lowerDirs = append(lowerDirs, lowerDir)
 	}

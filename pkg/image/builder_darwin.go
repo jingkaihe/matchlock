@@ -157,3 +157,31 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 
 	return nil
 }
+
+func (b *Builder) createEROFS(sourceDir, destPath string, meta map[string]fileMeta) error {
+	mkfsPath, err := exec.LookPath("mkfs.erofs")
+	if err != nil {
+		return errx.With(ErrToolNotFound, ": mkfs.erofs not in PATH; install erofs-utils")
+	}
+
+	// Best-effort mode sync so mkfs.erofs captures image file modes.
+	for relPath, fm := range meta {
+		if relPath == "" || relPath == "/" {
+			continue
+		}
+		hostPath := filepath.Join(sourceDir, strings.TrimPrefix(relPath, "/"))
+		_ = os.Chmod(hostPath, fm.mode)
+	}
+
+	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
+	cmd := exec.Command(mkfsPath, "--quiet", tmpPath, sourceDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpPath)
+		return errx.With(ErrCreateExt4, ": mkfs.erofs: %w: %s", err, out)
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return errx.With(ErrCreateExt4, ": rename erofs image: %w", err)
+	}
+	return nil
+}

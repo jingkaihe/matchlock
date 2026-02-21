@@ -39,7 +39,10 @@ func runRPC(cmd *cobra.Command, args []string) error {
 			return nil, errx.Wrap(ErrBuildRootfs, err)
 		}
 
-		return sandbox.New(ctx, config, &sandbox.Options{RootfsPaths: result.LowerPaths})
+		return sandbox.New(ctx, config, &sandbox.Options{
+			RootfsPaths:   result.LowerPaths,
+			RootfsFSTypes: result.LowerFSTypes,
+		})
 	}
 
 	return rpc.RunRPC(ctx, factory)

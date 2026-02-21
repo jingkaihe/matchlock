@@ -59,6 +59,8 @@ type Options struct {
 	KernelPath string
 	// RootfsPaths are immutable lower image paths in base->top order (required).
 	RootfsPaths []string
+	// RootfsFSTypes optionally declares filesystem type per lower image.
+	RootfsFSTypes []string
 }
 
 // New creates a new sandbox VM with the given configuration.
@@ -69,6 +71,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
+	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
 
 	id := config.GetID()
 	hostname := config.GetHostname()
@@ -183,30 +186,36 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, err
+	}
 
 	vmConfig := &vm.VMConfig{
-		ID:                id,
-		KernelPath:        kernelPath,
-		RootfsPath:        bootstrapRootfsPath,
-		OverlayEnabled:    true,
-		OverlayLowerPaths: opts.RootfsPaths,
-		OverlayUpperPath:  upperRootfsPath,
-		CPUs:              config.Resources.CPUs,
-		MemoryMB:          config.Resources.MemoryMB,
-		SocketPath:        stateMgr.SocketPath(id) + ".sock",
-		LogPath:           stateMgr.LogPath(id),
-		VsockCID:          3,
-		VsockPath:         stateMgr.Dir(id) + "/vsock.sock",
-		GatewayIP:         subnetInfo.GatewayIP,
-		GuestIP:           subnetInfo.GuestIP,
-		SubnetCIDR:        subnetInfo.GatewayIP + "/24",
-		Workspace:         workspace,
-		Privileged:        config.Privileged,
-		ExtraDisks:        extraDisks,
-		DNSServers:        config.Network.GetDNSServers(),
-		Hostname:          hostname,
-		AddHosts:          config.Network.AddHosts,
-		MTU:               config.Network.GetMTU(),
+		ID:                  id,
+		KernelPath:          kernelPath,
+		RootfsPath:          bootstrapRootfsPath,
+		OverlayEnabled:      true,
+		OverlayLowerPaths:   opts.RootfsPaths,
+		OverlayLowerFSTypes: rootfsFSTypes,
+		OverlayUpperPath:    upperRootfsPath,
+		CPUs:                config.Resources.CPUs,
+		MemoryMB:            config.Resources.MemoryMB,
+		SocketPath:          stateMgr.SocketPath(id) + ".sock",
+		LogPath:             stateMgr.LogPath(id),
+		VsockCID:            3,
+		VsockPath:           stateMgr.Dir(id) + "/vsock.sock",
+		GatewayIP:           subnetInfo.GatewayIP,
+		GuestIP:             subnetInfo.GuestIP,
+		SubnetCIDR:          subnetInfo.GatewayIP + "/24",
+		Workspace:           workspace,
+		Privileged:          config.Privileged,
+		ExtraDisks:          extraDisks,
+		DNSServers:          config.Network.GetDNSServers(),
+		Hostname:            hostname,
+		AddHosts:            config.Network.AddHosts,
+		MTU:                 config.Network.GetMTU(),
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)

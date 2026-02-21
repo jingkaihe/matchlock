@@ -181,13 +181,24 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	devLetter := 'b' // vda is rootfs
 	if config.OverlayEnabled {
 		lowerDevs := make([]string, 0, len(config.OverlayLowerPaths))
-		for range config.OverlayLowerPaths {
+		lowerFS := make([]string, 0, len(config.OverlayLowerPaths))
+		for i := range config.OverlayLowerPaths {
 			lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
+			fsType := "erofs"
+			if i < len(config.OverlayLowerFSTypes) && config.OverlayLowerFSTypes[i] != "" {
+				fsType = config.OverlayLowerFSTypes[i]
+			}
+			lowerFS = append(lowerFS, fsType)
 			devLetter++
 		}
 		upperDev := fmt.Sprintf("vd%c", devLetter)
 		devLetter++
-		diskArgs += fmt.Sprintf(" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.upper=%s", strings.Join(lowerDevs, ","), upperDev)
+		diskArgs += fmt.Sprintf(
+			" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.lowerfs=%s matchlock.overlay.upper=%s",
+			strings.Join(lowerDevs, ","),
+			strings.Join(lowerFS, ","),
+			upperDev,
+		)
 	}
 	for _, disk := range config.ExtraDisks {
 		dev := fmt.Sprintf("vd%c", devLetter)

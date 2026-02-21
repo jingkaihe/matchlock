@@ -281,7 +281,10 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		},
 	}
 
-	sandboxOpts := &sandbox.Options{RootfsPaths: buildResult.LowerPaths}
+	sandboxOpts := &sandbox.Options{
+		RootfsPaths:   buildResult.LowerPaths,
+		RootfsFSTypes: buildResult.LowerFSTypes,
+	}
 	sb, err := sandbox.New(ctx, config, sandboxOpts)
 	if err != nil {
 		return errx.Wrap(ErrCreateBuildSandbox, err)

@@ -283,13 +283,24 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		devLetter := 'b' // vda is rootfs
 		if m.config.OverlayEnabled {
 			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))
-			for range m.config.OverlayLowerPaths {
+			lowerFS := make([]string, 0, len(m.config.OverlayLowerPaths))
+			for i := range m.config.OverlayLowerPaths {
 				lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
+				fsType := "erofs"
+				if i < len(m.config.OverlayLowerFSTypes) && m.config.OverlayLowerFSTypes[i] != "" {
+					fsType = m.config.OverlayLowerFSTypes[i]
+				}
+				lowerFS = append(lowerFS, fsType)
 				devLetter++
 			}
 			upperDev := fmt.Sprintf("vd%c", devLetter)
 			devLetter++
-			kernelArgs += fmt.Sprintf(" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.upper=%s", strings.Join(lowerDevs, ","), upperDev)
+			kernelArgs += fmt.Sprintf(
+				" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.lowerfs=%s matchlock.overlay.upper=%s",
+				strings.Join(lowerDevs, ","),
+				strings.Join(lowerFS, ","),
+				upperDev,
+			)
 		}
 		for _, disk := range m.config.ExtraDisks {
 			dev := fmt.Sprintf("vd%c", devLetter)

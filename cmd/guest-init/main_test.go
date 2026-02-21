@@ -79,7 +79,7 @@ func TestParseBootConfigRejectsInvalidAddHost(t *testing.T) {
 func TestParseBootConfigOverlayRoot(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
-	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb,vdc matchlock.overlay.upper=vdd"
+	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb,vdc matchlock.overlay.lowerfs=erofs,erofs matchlock.overlay.upper=vdd"
 	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
@@ -87,6 +87,7 @@ func TestParseBootConfigOverlayRoot(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.True(t, cfg.Overlay.Enabled)
 	assert.Equal(t, []string{"vdb", "vdc"}, cfg.Overlay.LowerDevices)
+	assert.Equal(t, []string{"erofs", "erofs"}, cfg.Overlay.LowerFSTypes)
 	assert.Equal(t, "vdd", cfg.Overlay.UpperDevice)
 }
 
@@ -94,6 +95,18 @@ func TestParseBootConfigOverlayRequiresBothDevices(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
 	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidOverlayCfg)
+}
+
+func TestParseBootConfigOverlayLowerFSMismatch(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb,vdc matchlock.overlay.lowerfs=erofs matchlock.overlay.upper=vdd"
 	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
 
 	cfg, err := parseBootConfig(cmdline)

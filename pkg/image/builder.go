@@ -3,6 +3,8 @@ package image
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path"
@@ -13,6 +15,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
@@ -31,11 +34,15 @@ type BuildOptions struct {
 }
 
 func NewBuilder(opts *BuildOptions) *Builder {
+	if opts == nil {
+		opts = &BuildOptions{}
+	}
 	cacheDir := opts.CacheDir
 	if cacheDir == "" {
 		home, _ := os.UserHomeDir()
 		cacheDir = filepath.Join(home, ".cache", "matchlock", "images")
 	}
+
 	return &Builder{
 		cacheDir:  cacheDir,
 		forcePull: opts.ForcePull,
@@ -47,8 +54,9 @@ type BuildResult struct {
 	// RootfsPath is retained as a convenience alias to the first lower layer path.
 	RootfsPath string
 	// LowerPaths are ordered from OCI base layer -> top layer.
-	LowerPaths []string
-	Layers     []LayerRef
+	LowerPaths   []string
+	LowerFSTypes []string
+	Layers       []LayerRef
 
 	Digest       string
 	LayerDigests []string
@@ -135,59 +143,59 @@ func (b *Builder) ingestImageLayers(img v1.Image) ([]LayerRef, error) {
 	if err != nil {
 		return nil, errx.With(ErrExtract, ": enumerate image layers: %w", err)
 	}
-
-	seen := make(map[string]LayerRef, len(ociLayers))
-	layers := make([]LayerRef, 0, len(ociLayers))
-	for i, layer := range ociLayers {
-		diffID, err := layer.DiffID()
-		if err != nil {
-			return nil, errx.With(ErrImageDigest, ": layer %d diffid: %w", i, err)
-		}
-		digest := diffID.String()
-		if cached, ok := seen[digest]; ok {
-			layers = append(layers, cached)
-			continue
-		}
-		ref, err := b.ensureLayerBlob(layer, digest)
-		if err != nil {
-			return nil, errx.With(ErrCreateExt4, ": layer %d (%s): %w", i, digest, err)
-		}
-		seen[digest] = ref
-		layers = append(layers, ref)
+	if len(ociLayers) == 0 {
+		return nil, errx.With(ErrExtract, ": no layers")
 	}
-	return layers, nil
+
+	return b.ingestFullySquashedLayers(ociLayers)
 }
 
-func (b *Builder) ensureLayerBlob(layer v1.Layer, digest string) (LayerRef, error) {
-	blobPath := blobPathForDigest(b.cacheDir, digest)
-	if fi, err := os.Stat(blobPath); err == nil && fi.Size() > 0 {
-		return LayerRef{Digest: digest, Path: blobPath, Size: fileStoredBytes(fi)}, nil
+func (b *Builder) ingestFullySquashedLayers(ociLayers []v1.Layer) ([]LayerRef, error) {
+	squashed, err := b.ensureSquashedPrefixLayerBlob(ociLayers)
+	if err != nil {
+		return nil, err
 	}
+	return []LayerRef{squashed}, nil
+}
 
+func (b *Builder) ensureSquashedPrefixLayerBlob(layers []v1.Layer) (LayerRef, error) {
+	digest, err := squashLayerDigest(layers)
+	if err != nil {
+		return LayerRef{}, errx.With(ErrImageDigest, ": squash digest: %w", err)
+	}
+	blobPath := blobPathForLayer(b.cacheDir, digest, layerFSTypeEROFS)
+	if fi, err := os.Stat(blobPath); err == nil && fi.Size() > 0 {
+		return LayerRef{Digest: digest, FSType: layerFSTypeEROFS, Path: blobPath, Size: fileStoredBytes(fi)}, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(blobPath), 0755); err != nil {
 		return LayerRef{}, errx.Wrap(ErrCreateDir, err)
 	}
 
-	extractDir, err := os.MkdirTemp("", "matchlock-layer-*")
+	img := empty.Image
+	img, err = mutate.AppendLayers(img, layers...)
+	if err != nil {
+		return LayerRef{}, errx.With(ErrExtract, ": append layers for squash: %w", err)
+	}
+
+	extractDir, err := os.MkdirTemp("", "matchlock-layer-squash-*")
 	if err != nil {
 		return LayerRef{}, errx.Wrap(ErrCreateTemp, err)
 	}
 	defer os.RemoveAll(extractDir)
 
-	fileMetas, specials, err := b.extractLayer(layer, extractDir)
+	fileMetas, err := b.extractImage(img, extractDir)
 	if err != nil {
 		return LayerRef{}, err
 	}
-
-	if err := b.createExt4(extractDir, blobPath, fileMetas, specials); err != nil {
+	if err := b.createEROFS(extractDir, blobPath, fileMetas); err != nil {
 		return LayerRef{}, err
 	}
 
 	fi, err := os.Stat(blobPath)
 	if err != nil {
-		return LayerRef{}, errx.With(ErrCreateExt4, ": stat blob %s: %w", blobPath, err)
+		return LayerRef{}, errx.With(ErrCreateExt4, ": stat squashed blob %s: %w", blobPath, err)
 	}
-	return LayerRef{Digest: digest, Path: blobPath, Size: fileStoredBytes(fi)}, nil
+	return LayerRef{Digest: digest, FSType: layerFSTypeEROFS, Path: blobPath, Size: fileStoredBytes(fi)}, nil
 }
 
 func newBuildResult(layers []LayerRef, digest string, size int64, cached bool, oci *OCIConfig) *BuildResult {
@@ -198,6 +206,7 @@ func newBuildResult(layers []LayerRef, digest string, size int64, cached bool, o
 	return &BuildResult{
 		RootfsPath:   primaryLowerPath(lowerPaths),
 		LowerPaths:   lowerPaths,
+		LowerFSTypes: layerFSTypes(layers),
 		Layers:       layers,
 		Digest:       digest,
 		LayerDigests: layerDigests(layers),
@@ -235,22 +244,58 @@ func (b *Builder) layersFromResult(result *BuildResult) ([]LayerRef, error) {
 	if len(result.LayerDigests) > 0 {
 		layers := make([]LayerRef, 0, len(result.LayerDigests))
 		for _, digest := range result.LayerDigests {
-			layers = append(layers, LayerRef{Digest: digest, Path: blobPathForDigest(b.cacheDir, digest)})
+			fsType := layerFSTypeEROFS
+			layers = append(layers, LayerRef{
+				Digest: digest,
+				FSType: fsType,
+				Path:   blobPathForLayer(b.cacheDir, digest, fsType),
+			})
 		}
 		return normalizeLayerRefs(layers, b.cacheDir)
 	}
 	if len(result.LowerPaths) > 0 {
 		layers := make([]LayerRef, 0, len(result.LowerPaths))
 		for _, p := range result.LowerPaths {
-			digest, ok := digestFromBlobPath(p)
+			digest, fsType, ok := digestAndFSTypeFromBlobPath(p)
 			if !ok {
 				return nil, errx.With(ErrStoreSave, ": cannot infer layer digest from path %q", p)
 			}
-			layers = append(layers, LayerRef{Digest: digest, Path: p})
+			layers = append(layers, LayerRef{Digest: digest, FSType: fsType, Path: p})
 		}
 		return normalizeLayerRefs(layers, b.cacheDir)
 	}
 	return nil, errx.With(ErrStoreSave, ": no layers in build result")
+}
+
+func squashLayerDigest(layers []v1.Layer) (string, error) {
+	h := sha256.New()
+	_, _ = h.Write([]byte("matchlock-squash-v1\n"))
+	for i, layer := range layers {
+		diffID, err := layer.DiffID()
+		if err != nil {
+			return "", errx.With(ErrImageDigest, ": layer %d diffid: %w", i, err)
+		}
+		_, _ = h.Write([]byte(diffID.String()))
+		_, _ = h.Write([]byte{'\n'})
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func squashPrefixCount(totalLayers, threshold int) int {
+	if threshold <= 1 {
+		return totalLayers
+	}
+	if totalLayers <= threshold {
+		return 0
+	}
+	return totalLayers - (threshold - 1)
 }
 
 // ensureRealDir ensures that every component of path under root is a real

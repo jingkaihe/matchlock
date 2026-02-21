@@ -247,7 +247,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
 	}
 
-	sandboxOpts := &sandbox.Options{RootfsPaths: buildResult.LowerPaths}
+	sandboxOpts := &sandbox.Options{
+		RootfsPaths:   buildResult.LowerPaths,
+		RootfsFSTypes: buildResult.LowerFSTypes,
+	}
 
 	vfsConfig := &api.VFSConfig{Workspace: workspace}
 	if len(volumes) > 0 {

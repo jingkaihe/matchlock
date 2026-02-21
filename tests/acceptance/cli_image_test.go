@@ -119,3 +119,9 @@ func TestCLIImageRmIdempotent(t *testing.T) {
 	_, _, exitCode = runCLI(t, "image", "rm", img)
 	assert.NotEqual(t, 0, exitCode, "second image rm should fail for already-removed image")
 }
+
+func TestCLIImageGC(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "image", "gc")
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "Removed")
+}

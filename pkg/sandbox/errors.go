@@ -45,6 +45,8 @@ var (
 	ErrPrepareOverlayMount   = errors.New("prepare overlay mount snapshot")
 	ErrCopyOverlaySource     = errors.New("copy overlay mount source")
 	ErrRemoveOverlaySnapshot = errors.New("remove overlay mount snapshot")
+	ErrOverlayLayerLimit     = errors.New("overlay layer limit exceeded")
+	ErrOverlayDiskLimit      = errors.New("overlay disk device limit exceeded")
 	ErrFirewallCleanup       = errors.New("firewall cleanup")
 	ErrNATCleanup            = errors.New("NAT cleanup")
 	ErrNetworkFile           = errors.New("get network file")
