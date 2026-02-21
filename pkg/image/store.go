@@ -166,12 +166,6 @@ func (s *Store) Remove(tag string) error {
 	if _, err := pruneUnreferencedBlobs(s.db, s.cacheRoot); err != nil {
 		return err
 	}
-
-	// Cleanup legacy per-tag local directory if present.
-	dir := filepath.Join(s.baseDir, sanitizeRef(tag))
-	if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
-		return errx.With(ErrStoreSave, ": remove legacy local rootfs dir: %w", err)
-	}
 	return nil
 }
 
@@ -267,14 +261,6 @@ func RemoveRegistryCache(tag string, cacheDir string) error {
 	}
 	if _, err := pruneUnreferencedBlobs(db, cacheDir); err != nil {
 		return err
-	}
-
-	// Cleanup legacy per-tag registry directory if present.
-	dir := filepath.Join(cacheDir, sanitizeRef(tag))
-	if dir != filepath.Clean(cacheDir) && dir != filepath.Join(cacheDir, "local") {
-		if err := os.RemoveAll(dir); err != nil && !os.IsNotExist(err) {
-			return errx.With(ErrStoreSave, ": remove legacy registry cache dir: %w", err)
-		}
 	}
 	return nil
 }
