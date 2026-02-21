@@ -153,6 +153,12 @@ func (b *SandboxBuilder) WithNetworkMTU(mtu int) *SandboxBuilder {
 	return b
 }
 
+// WithNoNetwork disables guest network egress entirely (no guest NIC).
+func (b *SandboxBuilder) WithNoNetwork() *SandboxBuilder {
+	b.opts.NoNetwork = true
+	return b
+}
+
 // WithPortForward adds a host-to-guest port mapping.
 func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuilder {
 	b.opts.PortForwards = append(b.opts.PortForwards, api.PortForward{

@@ -88,6 +88,7 @@ class TestCreateOptions:
         assert opts.allowed_hosts == []
         assert opts.block_private_ips is False
         assert opts.block_private_ips_set is False
+        assert opts.no_network is False
         assert opts.mounts == {}
         assert opts.env == {}
         assert opts.vfs_interception is None

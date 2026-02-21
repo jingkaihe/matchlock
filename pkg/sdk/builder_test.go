@@ -157,6 +157,14 @@ func TestBuilderNetworkMTU(t *testing.T) {
 	require.Equal(t, 1200, opts.NetworkMTU)
 }
 
+func TestBuilderNoNetwork(t *testing.T) {
+	opts := New("alpine:latest").
+		WithNoNetwork().
+		Options()
+
+	require.True(t, opts.NoNetwork)
+}
+
 func TestBuilderPortForwards(t *testing.T) {
 	opts := New("alpine:latest").
 		WithPortForward(18080, 8080).

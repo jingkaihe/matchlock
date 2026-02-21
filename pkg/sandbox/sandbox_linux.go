@@ -76,6 +76,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -134,8 +135,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			return nil, err
+		}
+	}
+
 	// Create CAPool early and inject cert into writable upper before VM creation
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error
@@ -216,6 +223,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Hostname:            hostname,
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -227,11 +235,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	linuxMachine := machine.(*linux.LinuxMachine)
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.TAPName = linuxMachine.TapName()
-		r.FirewallTable = "matchlock_" + linuxMachine.TapName()
-		r.NATTable = "matchlock_nat_" + linuxMachine.TapName()
-	})
+	if tapName := linuxMachine.TapName(); tapName != "" {
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.TAPName = tapName
+			r.FirewallTable = "matchlock_" + tapName
+			r.NATTable = "matchlock_nat_" + tapName
+		})
+	}
 
 	// Auto-add secret hosts to allowed hosts if secrets are defined
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -301,10 +311,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	// Set up basic NAT for guest network access using nftables
-	natRules := sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
-	if err := natRules.Setup(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
-		natRules = nil
+	var natRules *sandboxnet.NFTablesNAT
+	if !noNetwork {
+		natRules = sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+		if err := natRules.Setup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
+			natRules = nil
+		}
 	}
 
 	// Create VFS providers

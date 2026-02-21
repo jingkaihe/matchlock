@@ -44,39 +44,45 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
-	tapName := tapNameForVMID(config.ID)
-	tapFD, err := CreateTAP(tapName)
-	if err != nil {
-		return nil, errx.Wrap(ErrTAPCreate, err)
-	}
+	tapName := ""
+	tapFD := -1
+	if !config.NoNetwork {
+		tapName = tapNameForVMID(config.ID)
+		var err error
+		tapFD, err = CreateTAP(tapName)
+		if err != nil {
+			return nil, errx.Wrap(ErrTAPCreate, err)
+		}
 
-	// Use configured subnet or default to 192.168.100.0/24
-	subnetCIDR := config.SubnetCIDR
-	if subnetCIDR == "" {
-		subnetCIDR = "192.168.100.1/24"
-	}
+		// Use configured subnet or default to 192.168.100.0/24
+		subnetCIDR := config.SubnetCIDR
+		if subnetCIDR == "" {
+			subnetCIDR = "192.168.100.1/24"
+		}
 
-	// Initial TAP configuration (will be refreshed after Firecracker starts)
-	if err := ConfigureInterface(tapName, subnetCIDR); err != nil {
+		// Initial TAP configuration (will be refreshed after Firecracker starts)
+		if err := ConfigureInterface(tapName, subnetCIDR); err != nil {
+			syscall.Close(tapFD)
+			DeleteInterface(tapName)
+			return nil, errx.Wrap(ErrTAPConfigure, err)
+		}
+
+		if err := SetMTU(tapName, effectiveMTU(config.MTU)); err != nil {
+			syscall.Close(tapFD)
+			DeleteInterface(tapName)
+			return nil, errx.Wrap(ErrTAPSetMTU, err)
+		}
+
+		// Close the FD - Firecracker will re-open the device by name
 		syscall.Close(tapFD)
-		DeleteInterface(tapName)
-		return nil, errx.Wrap(ErrTAPConfigure, err)
+		tapFD = -1
 	}
-
-	if err := SetMTU(tapName, effectiveMTU(config.MTU)); err != nil {
-		syscall.Close(tapFD)
-		DeleteInterface(tapName)
-		return nil, errx.Wrap(ErrTAPSetMTU, err)
-	}
-
-	// Close the FD - Firecracker will re-open the device by name
-	syscall.Close(tapFD)
 
 	m := &LinuxMachine{
 		id:         config.ID,
 		config:     config,
 		tapName:    tapName,
-		tapFD:      -1, // FD closed, Firecracker will open it
+		tapFD:      tapFD,
 		macAddress: GenerateMAC(config.ID),
 	}
 
@@ -140,17 +146,18 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	m.pid = m.cmd.Process.Pid
 	m.started = true
 
-	// Give Firecracker a moment to open the TAP device, then configure it
-	time.Sleep(100 * time.Millisecond)
+	if m.tapName != "" {
+		// Give Firecracker a moment to open the TAP device, then configure it.
+		time.Sleep(100 * time.Millisecond)
 
-	// Re-configure the TAP interface (Firecracker resets it when opening)
-	// Use configured subnet or default
-	subnetCIDR := m.config.SubnetCIDR
-	if subnetCIDR == "" {
-		subnetCIDR = "192.168.100.1/24"
+		// Re-configure the TAP interface (Firecracker resets it when opening).
+		subnetCIDR := m.config.SubnetCIDR
+		if subnetCIDR == "" {
+			subnetCIDR = "192.168.100.1/24"
+		}
+		_ = ConfigureInterface(m.tapName, subnetCIDR)
+		_ = SetMTU(m.tapName, effectiveMTU(m.config.MTU))
 	}
-	ConfigureInterface(m.tapName, subnetCIDR)
-	SetMTU(m.tapName, effectiveMTU(m.config.MTU))
 
 	// Wait for VM to be ready
 	if m.config.VsockCID > 0 {
@@ -256,14 +263,6 @@ func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
-		guestIP := m.config.GuestIP
-		if guestIP == "" {
-			guestIP = "192.168.100.2"
-		}
-		gatewayIP := m.config.GatewayIP
-		if gatewayIP == "" {
-			gatewayIP = "192.168.100.1"
-		}
 		workspace := m.config.Workspace
 		if workspace == "" {
 			workspace = "/workspace"
@@ -273,10 +272,23 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 			hostname = m.config.ID
 		}
 
-		mtu := effectiveMTU(m.config.MTU)
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s matchlock.workspace=%s matchlock.dns=%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), hostname, workspace, vm.KernelDNSParam(m.config.DNSServers))
-		kernelArgs += fmt.Sprintf(" matchlock.mtu=%d", mtu)
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s matchlock.workspace=%s matchlock.dns=%s",
+			hostname, workspace, vm.KernelDNSParam(m.config.DNSServers))
+		if m.config.NoNetwork {
+			kernelArgs += " ip=off matchlock.no_network=1"
+		} else {
+			guestIP := m.config.GuestIP
+			if guestIP == "" {
+				guestIP = "192.168.100.2"
+			}
+			gatewayIP := m.config.GatewayIP
+			if gatewayIP == "" {
+				gatewayIP = "192.168.100.1"
+			}
+			mtu := effectiveMTU(m.config.MTU)
+			kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.0::eth0:off%s matchlock.mtu=%d",
+				guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), mtu)
+		}
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
@@ -374,12 +386,21 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	cfg.Drives = drives
 	cfg.MachineConfig.VCPUCount = m.config.CPUs
 	cfg.MachineConfig.MemSizeMiB = m.config.MemoryMB
-	cfg.NetworkInterfaces = []struct {
+	cfg.NetworkInterfaces = make([]struct {
 		IfaceID     string `json:"iface_id"`
 		GuestMAC    string `json:"guest_mac"`
 		HostDevName string `json:"host_dev_name"`
-	}{
-		{IfaceID: "eth0", GuestMAC: m.macAddress, HostDevName: m.tapName},
+	}, 0, 1)
+	if !m.config.NoNetwork {
+		cfg.NetworkInterfaces = append(cfg.NetworkInterfaces, struct {
+			IfaceID     string `json:"iface_id"`
+			GuestMAC    string `json:"guest_mac"`
+			HostDevName string `json:"host_dev_name"`
+		}{
+			IfaceID:     "eth0",
+			GuestMAC:    m.macAddress,
+			HostDevName: m.tapName,
+		})
 	}
 
 	if m.config.VsockCID > 0 {

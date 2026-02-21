@@ -65,6 +65,7 @@ type bootConfig struct {
 	AddHosts   []hostIPMapping
 	Workspace  string
 	MTU        int
+	NoNetwork  bool
 	Disks      []diskMount
 	Overlay    overlayBootConfig
 }
@@ -123,7 +124,9 @@ func runInit() {
 		fatal(err)
 	}
 
-	bringUpNetwork(networkInterface, cfg.MTU)
+	if !cfg.NoNetwork {
+		bringUpNetwork(networkInterface, cfg.MTU)
+	}
 	mountExtraDisks(cfg.Disks)
 
 	if err := startGuestFused(guestFusedPath); err != nil {
@@ -188,6 +191,10 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				return nil, errx.With(ErrInvalidMTU, ": %q", v)
 			}
 			cfg.MTU = mtu
+
+		case strings.HasPrefix(field, "matchlock.no_network="):
+			v := strings.TrimPrefix(field, "matchlock.no_network=")
+			cfg.NoNetwork = v == "1" || strings.EqualFold(v, "true")
 
 		case strings.HasPrefix(field, "matchlock.disk."):
 			spec := strings.TrimPrefix(field, "matchlock.disk.")

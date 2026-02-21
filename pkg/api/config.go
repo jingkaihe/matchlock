@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
 // DefaultWorkspace is the default mount point for the VFS in the guest
@@ -79,6 +80,7 @@ type NetworkConfig struct {
 	AllowedHosts    []string          `json:"allowed_hosts,omitempty"`
 	AddHosts        []HostIPMapping   `json:"add_hosts,omitempty"`
 	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
+	NoNetwork       bool              `json:"no_network,omitempty"`
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
@@ -100,6 +102,20 @@ func (n *NetworkConfig) GetMTU() int {
 		return n.MTU
 	}
 	return DefaultNetworkMTU
+}
+
+// Validate checks network config invariants.
+func (n *NetworkConfig) Validate() error {
+	if n == nil || !n.NoNetwork {
+		return nil
+	}
+	if len(n.AllowedHosts) > 0 {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.allowed_hosts")
+	}
+	if len(n.Secrets) > 0 {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
+	}
+	return nil
 }
 
 type Secret struct {

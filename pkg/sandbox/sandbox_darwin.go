@@ -62,6 +62,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
+
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			return nil, err
+		}
+	}
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -120,7 +127,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}()
 
 	// Determine if we need network interception (calculated before VM creation)
-	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsInterception := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
 	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
 	var caPool *sandboxnet.CAPool
@@ -210,6 +217,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Hostname:            hostname,
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"

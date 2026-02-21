@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestComposeCommand_NilImageConfig(t *testing.T) {
@@ -93,4 +94,35 @@ func TestGetHostname_NilNetworkFallsBackToGeneratedID(t *testing.T) {
 	hostname := cfg.GetHostname()
 	assert.Regexp(t, `^vm-[0-9a-f]{8}$`, hostname)
 	assert.Equal(t, hostname, cfg.ID)
+}
+
+func TestNetworkConfigValidateNoNetworkWithAllowedHosts(t *testing.T) {
+	cfg := &NetworkConfig{
+		NoNetwork:    true,
+		AllowedHosts: []string{"api.openai.com"},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network")
+}
+
+func TestNetworkConfigValidateNoNetworkWithSecrets(t *testing.T) {
+	cfg := &NetworkConfig{
+		NoNetwork: true,
+		Secrets: map[string]Secret{
+			"API_KEY": {Value: "secret", Hosts: []string{"api.openai.com"}},
+		},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network")
+}
+
+func TestNetworkConfigValidateNoNetworkOnly(t *testing.T) {
+	cfg := &NetworkConfig{NoNetwork: true}
+	require.NoError(t, cfg.Validate())
 }
