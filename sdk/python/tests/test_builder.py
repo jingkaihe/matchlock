@@ -79,6 +79,7 @@ class TestSandboxChaining:
         assert isinstance(s.add_secret("k", "v"), Sandbox)
         assert isinstance(s.with_dns_servers("1.1.1.1"), Sandbox)
         assert isinstance(s.with_network_mtu(1200), Sandbox)
+        assert isinstance(s.with_no_network(), Sandbox)
         assert isinstance(s.mount("/p", MountConfig()), Sandbox)
         assert isinstance(s.mount_host_dir("/g", "/h"), Sandbox)
         assert isinstance(s.mount_host_dir_readonly("/g", "/h"), Sandbox)
@@ -156,6 +157,10 @@ class TestSandboxNetwork:
     def test_network_mtu(self):
         opts = Sandbox("img").with_network_mtu(1200).options()
         assert opts.network_mtu == 1200
+
+    def test_no_network(self):
+        opts = Sandbox("img").with_no_network().options()
+        assert opts.no_network is True
 
 
 class TestSandboxSecrets:

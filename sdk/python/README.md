@@ -145,6 +145,11 @@ If you use `CreateOptions(...)` directly instead of the builder, set both:
 - `block_private_ips_set=True`
 - `block_private_ips=<True|False>`
 
+For fully offline sandboxes (no guest NIC / no egress), use:
+
+- Builder: `.with_no_network()`
+- Direct options: `CreateOptions(no_network=True)`
+
 ### Filesystem Mounts
 
 Mount host directories or use in-memory/snapshot filesystems:
@@ -241,6 +246,7 @@ Fluent builder for sandbox configuration.
 | `.allow_private_ips()` | Explicitly allow private IP ranges |
 | `.unset_block_private_ips()` | Reset private IP behavior to SDK default semantics |
 | `.with_network_mtu(mtu)` | Override guest network stack/interface MTU |
+| `.with_no_network()` | Disable guest network egress entirely |
 | `.add_secret(name, value, *hosts)` | Inject a secret for specific hosts |
 | `.mount(guest_path, config)` | Add a VFS mount with custom `MountConfig` |
 | `.mount_host_dir(guest, host)` | Mount a host directory (read-write) |
@@ -272,7 +278,7 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
+| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |

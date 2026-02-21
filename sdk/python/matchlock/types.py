@@ -264,6 +264,9 @@ class CreateOptions:
     block_private_ips_set: bool = False
     """Whether block_private_ips was explicitly set by the caller."""
 
+    no_network: bool = False
+    """Disable guest network egress entirely (no guest NIC)."""
+
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
 

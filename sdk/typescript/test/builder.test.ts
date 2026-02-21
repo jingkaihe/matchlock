@@ -57,6 +57,11 @@ describe("Sandbox builder", () => {
     expect(unset.blockPrivateIPsSet).toBe(false);
   });
 
+  it("supports no-network option", () => {
+    const opts = new Sandbox("img").withNoNetwork().options();
+    expect(opts.noNetwork).toBe(true);
+  });
+
   it("builds mount and env config", () => {
     const opts = new Sandbox("img")
       .withEnv("FOO", "bar")

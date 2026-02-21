@@ -62,6 +62,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
+
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			return nil, err
+		}
+	}
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -83,17 +90,29 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}()
 
-	subnetAlloc := state.NewSubnetAllocator()
-	subnetInfo, err := subnetAlloc.Allocate(id)
-	if err != nil {
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrAllocateSubnet, err)
+	var (
+		subnetAlloc *state.SubnetAllocator
+		subnetInfo  *state.SubnetInfo
+		err         error
+	)
+	releaseSubnet := func() {
+		if subnetAlloc != nil {
+			_ = subnetAlloc.Release(id)
+		}
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.GatewayIP = subnetInfo.GatewayIP
-		r.GuestIP = subnetInfo.GuestIP
-		r.SubnetCIDR = subnetInfo.Subnet
-	})
+	if !noNetwork {
+		subnetAlloc = state.NewSubnetAllocator()
+		subnetInfo, err = subnetAlloc.Allocate(id)
+		if err != nil {
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrAllocateSubnet, err)
+		}
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.GatewayIP = subnetInfo.GatewayIP
+			r.GuestIP = subnetInfo.GuestIP
+			r.SubnetCIDR = subnetInfo.Subnet
+		})
+	}
 
 	backend := darwin.NewDarwinBackend()
 
@@ -120,14 +139,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}()
 
 	// Determine if we need network interception (calculated before VM creation)
-	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsInterception := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
 	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
 	var caPool *sandboxnet.CAPool
 	if needsInterception {
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateCAPool, err)
 		}
@@ -135,7 +154,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 	// Prepare bootstrap root disk (vda) and writable upper disk for overlay root.
 	if err := createBootstrapRootfs(bootstrapRootfsPath); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareBootstrapRoot, err)
 	}
@@ -144,12 +163,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
 	}
 	if err := createExt4Image(upperRootfsPath, diskSizeMB); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateRootfs, err)
 	}
 	if err := prepareOverlayUpperRootfs(upperRootfsPath); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
@@ -160,7 +179,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Inject CA cert into writable upper before backend.Create() attaches disks.
 	if caPool != nil {
 		if err := injectConfigFileIntoRootfs(upperRootfsPath, "/upper/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInjectCACert, err)
 		}
@@ -169,7 +188,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var extraDisks []vm.DiskConfig
 	for _, d := range config.ExtraDisks {
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInvalidDiskCfg, err)
 		}
@@ -180,9 +199,18 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks)); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
+	}
+
+	gatewayIP := ""
+	guestIP := ""
+	subnetCIDR := ""
+	if subnetInfo != nil {
+		gatewayIP = subnetInfo.GatewayIP
+		guestIP = subnetInfo.GuestIP
+		subnetCIDR = subnetInfo.GatewayIP + "/24"
 	}
 
 	vmConfig := &vm.VMConfig{
@@ -198,9 +226,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		MemoryMB:            config.Resources.MemoryMB,
 		SocketPath:          stateMgr.SocketPath(id) + ".sock",
 		LogPath:             stateMgr.LogPath(id),
-		GatewayIP:           subnetInfo.GatewayIP,
-		GuestIP:             subnetInfo.GuestIP,
-		SubnetCIDR:          subnetInfo.GatewayIP + "/24",
+		GatewayIP:           gatewayIP,
+		GuestIP:             guestIP,
+		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		UseInterception:     needsInterception,
 		Privileged:          config.Privileged,
@@ -210,6 +238,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Hostname:            hostname,
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
@@ -220,14 +249,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// startup instability in Virtualization.framework.
 	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
 	if err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
@@ -258,15 +287,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		networkFile := darwinMachine.NetworkFile()
 		if networkFile == nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, ErrNetworkFile
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
 			File:       networkFile,
-			GatewayIP:  subnetInfo.GatewayIP,
-			GuestIP:    subnetInfo.GuestIP,
+			GatewayIP:  gatewayIP,
+			GuestIP:    guestIP,
 			MTU:        uint32(config.Network.GetMTU()),
 			Policy:     policyEngine,
 			Events:     events,
@@ -275,7 +304,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 		if err != nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrNetworkStack, err)
 		}
@@ -298,7 +327,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			netStack.Close()
 		}
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrVFSListener, err)
 	}

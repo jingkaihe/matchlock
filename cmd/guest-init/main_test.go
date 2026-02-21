@@ -76,6 +76,17 @@ func TestParseBootConfigRejectsInvalidAddHost(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidAddHost)
 }
 
+func TestParseBootConfigNoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.no_network=1"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.NoNetwork)
+}
+
 func TestParseBootConfigOverlayRoot(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")

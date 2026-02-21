@@ -76,6 +76,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -134,8 +135,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			stateMgr.Unregister(id)
+			return nil, err
+		}
+	}
+
 	// Create CAPool early and inject cert into writable upper before VM creation
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error
@@ -152,19 +160,32 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	// Allocate unique subnet for this VM
-	subnetAlloc := state.NewSubnetAllocator()
-	subnetInfo, err := subnetAlloc.Allocate(id)
-	if err != nil {
-		cleanupRootDisks()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrAllocateSubnet, err)
+	var (
+		subnetAlloc *state.SubnetAllocator
+		subnetInfo  *state.SubnetInfo
+		err         error
+	)
+	releaseSubnet := func() {
+		if subnetAlloc != nil {
+			_ = subnetAlloc.Release(id)
+		}
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.GatewayIP = subnetInfo.GatewayIP
-		r.GuestIP = subnetInfo.GuestIP
-		r.SubnetCIDR = subnetInfo.Subnet
-	})
+
+	// Allocate unique subnet for this VM when networking is enabled.
+	if !noNetwork {
+		subnetAlloc = state.NewSubnetAllocator()
+		subnetInfo, err = subnetAlloc.Allocate(id)
+		if err != nil {
+			cleanupRootDisks()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrAllocateSubnet, err)
+		}
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.GatewayIP = subnetInfo.GatewayIP
+			r.GuestIP = subnetInfo.GuestIP
+			r.SubnetCIDR = subnetInfo.Subnet
+		})
+	}
 
 	backend := linux.NewLinuxBackend()
 
@@ -176,7 +197,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var extraDisks []vm.DiskConfig
 	for _, d := range config.ExtraDisks {
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInvalidDiskCfg, err)
 		}
@@ -187,9 +208,18 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
+	}
+
+	gatewayIP := ""
+	guestIP := ""
+	subnetCIDR := ""
+	if subnetInfo != nil {
+		gatewayIP = subnetInfo.GatewayIP
+		guestIP = subnetInfo.GuestIP
+		subnetCIDR = subnetInfo.GatewayIP + "/24"
 	}
 
 	vmConfig := &vm.VMConfig{
@@ -206,9 +236,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		LogPath:             stateMgr.LogPath(id),
 		VsockCID:            3,
 		VsockPath:           stateMgr.Dir(id) + "/vsock.sock",
-		GatewayIP:           subnetInfo.GatewayIP,
-		GuestIP:             subnetInfo.GuestIP,
-		SubnetCIDR:          subnetInfo.GatewayIP + "/24",
+		GatewayIP:           gatewayIP,
+		GuestIP:             guestIP,
+		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
 		ExtraDisks:          extraDisks,
@@ -216,22 +246,25 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Hostname:            hostname,
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		cleanupRootDisks()
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 
 	linuxMachine := machine.(*linux.LinuxMachine)
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.TAPName = linuxMachine.TapName()
-		r.FirewallTable = "matchlock_" + linuxMachine.TapName()
-		r.NATTable = "matchlock_nat_" + linuxMachine.TapName()
-	})
+	if tapName := linuxMachine.TapName(); tapName != "" {
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.TAPName = tapName
+			r.FirewallTable = "matchlock_" + tapName
+			r.NATTable = "matchlock_nat_" + tapName
+		})
+	}
 
 	// Auto-add secret hosts to allowed hosts if secrets are defined
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -253,7 +286,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if err != nil {
 		machine.Close(ctx)
 		cleanupRootDisks()
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
 	}
@@ -265,7 +298,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	events := make(chan api.Event, 100)
 
 	// Set up transparent proxy for HTTP/HTTPS interception
-	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0"
 
 	var proxy *sandboxnet.TransparentProxy
@@ -283,7 +315,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 		if err != nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateProxy, err)
 		}
@@ -294,17 +326,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrFirewallSetup, err)
 		}
 	}
 
 	// Set up basic NAT for guest network access using nftables
-	natRules := sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
-	if err := natRules.Setup(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
-		natRules = nil
+	var natRules *sandboxnet.NFTablesNAT
+	if !noNetwork {
+		natRules = sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+		if err := natRules.Setup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
+			natRules = nil
+		}
 	}
 
 	// Create VFS providers
@@ -331,7 +366,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			fwRules.Cleanup()
 		}
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}

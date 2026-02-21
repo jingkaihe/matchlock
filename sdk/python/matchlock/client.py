@@ -684,6 +684,10 @@ class Client:
             raise MatchlockError("image is required (e.g., alpine:latest)")
         if opts.network_mtu < 0:
             raise MatchlockError("network mtu must be > 0")
+        if opts.no_network and (opts.allowed_hosts or opts.secrets):
+            raise MatchlockError(
+                "no network cannot be combined with allowed hosts or secrets"
+            )
 
         (
             wire_vfs,
@@ -740,6 +744,7 @@ class Client:
         has_dns_servers = bool(opts.dns_servers)
         has_hostname = bool(opts.hostname)
         has_mtu = opts.network_mtu > 0
+        has_no_network = opts.no_network
 
         block_private_ips, has_block_private_override = (
             self._resolve_create_block_private_ips(opts)
@@ -751,10 +756,21 @@ class Client:
             or has_dns_servers
             or has_hostname
             or has_mtu
+            or has_no_network
             or has_block_private_override
         )
         if not include_network:
             return None
+
+        if has_no_network:
+            no_network_cfg: dict[str, Any] = {
+                "no_network": True,
+            }
+            if has_dns_servers:
+                no_network_cfg["dns_servers"] = opts.dns_servers
+            if has_hostname:
+                no_network_cfg["hostname"] = opts.hostname
+            return no_network_cfg
 
         # Create config merges replace network defaults wholesale. Preserve
         # default private-IP blocking unless explicitly overridden.

@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+* Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+
 ## 0.1.23
 
 * Reworked image/runtime storage to an OCI layer-aware model: shared EROFS layer blobs in metadata DB plus overlay-root boot with a per-VM writable upper disk (replacing monolithic rootfs images).
