@@ -89,7 +89,7 @@ func (r *Reconciler) ReconcileVM(vmID string, forceRunning bool) (ReconcileRepor
 	if !store.Exists() {
 		if err := store.Init(vmID, "unknown", vmDir); err == nil {
 			_ = store.SetResource(func(res *Resources) {
-				res.RootfsPath = filepath.Join(vmDir, "rootfs.ext4")
+				res.RootfsPath = filepath.Join(vmDir, "upper.ext4")
 			})
 		}
 	}
@@ -142,7 +142,7 @@ func (r *Reconciler) reconcileSubnet(vmID string, store *Store, report *Reconcil
 func (r *Reconciler) reconcileRootfs(rec *Record, store *Store, report *ReconcileReport) error {
 	rootfsPath := rec.Resources.RootfsPath
 	if rootfsPath == "" {
-		rootfsPath = filepath.Join(r.stateMgr.Dir(rec.VMID), "rootfs.ext4")
+		rootfsPath = filepath.Join(r.stateMgr.Dir(rec.VMID), "upper.ext4")
 	}
 	if rootfsPath == "" {
 		_ = store.MarkCleanup("rootfs_remove", nil)
@@ -156,6 +156,17 @@ func (r *Reconciler) reconcileRootfs(rec *Record, store *Store, report *Reconcil
 	}
 	_ = store.MarkCleanup("rootfs_remove", nil)
 	report.addCleaned("rootfs_remove")
+
+	bootstrapPath := filepath.Join(r.stateMgr.Dir(rec.VMID), "bootstrap.ext4")
+	bootstrapErr := os.Remove(bootstrapPath)
+	if bootstrapErr != nil && !os.IsNotExist(bootstrapErr) {
+		_ = store.MarkCleanup("bootstrap_remove", bootstrapErr)
+		report.addFailed("bootstrap_remove", bootstrapErr)
+		return errx.With(bootstrapErr, ": %s", bootstrapPath)
+	}
+	_ = store.MarkCleanup("bootstrap_remove", nil)
+	report.addCleaned("bootstrap_remove")
+
 	return nil
 }
 

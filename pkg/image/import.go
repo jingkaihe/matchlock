@@ -2,9 +2,9 @@ package image
 
 import (
 	"context"
-
 	"io"
 	"os"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
@@ -12,6 +12,8 @@ import (
 )
 
 func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*BuildResult, error) {
+	_ = ctx
+
 	tmpTar, err := os.CreateTemp("", "matchlock-import-*.tar")
 	if err != nil {
 		return nil, errx.With(ErrCreateTemp, ": tarball: %w", err)
@@ -22,7 +24,9 @@ func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*Bu
 		tmpTar.Close()
 		return nil, errx.With(ErrTarball, ": read: %w", err)
 	}
-	tmpTar.Close()
+	if err := tmpTar.Close(); err != nil {
+		return nil, errx.With(ErrTarball, ": close: %w", err)
+	}
 
 	img, err := tarball.ImageFromPath(tmpTar.Name(), nil)
 	if err != nil {
@@ -34,41 +38,27 @@ func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*Bu
 		return nil, errx.Wrap(ErrImageDigest, err)
 	}
 
-	extractDir, err := os.MkdirTemp("", "matchlock-extract-*")
+	layers, err := b.ingestImageLayers(img)
 	if err != nil {
-		return nil, errx.With(ErrCreateTemp, ": dir: %w", err)
-	}
-	defer os.RemoveAll(extractDir)
-
-	fileMetas, err := b.extractImage(img, extractDir)
-	if err != nil {
-		return nil, errx.Wrap(ErrExtract, err)
-	}
-
-	rootfsTmp, err := os.CreateTemp("", "matchlock-rootfs-*.ext4")
-	if err != nil {
-		return nil, errx.With(ErrCreateTemp, ": rootfs: %w", err)
-	}
-	rootfsTmp.Close()
-	rootfsPath := rootfsTmp.Name()
-
-	if err := b.createExt4(extractDir, rootfsPath, fileMetas); err != nil {
-		os.Remove(rootfsPath)
-		return nil, errx.Wrap(ErrCreateExt4, err)
+		return nil, err
 	}
 
 	ociConfig := extractOCIConfig(img)
-
+	totalSize := imageSizeFromLayers(layers)
 	meta := ImageMeta{
-		Digest: digest.String(),
-		Source: "import",
-		OCI:    ociConfig,
+		Digest:    digest.String(),
+		Size:      totalSize,
+		Source:    "import",
+		CreatedAt: time.Now().UTC(),
+		OCI:       ociConfig,
 	}
-	if err := b.store.Save(tag, rootfsPath, meta); err != nil {
-		os.Remove(rootfsPath)
+	if err := b.store.Save(tag, layers, meta); err != nil {
 		return nil, errx.Wrap(ErrStoreSave, err)
 	}
-	os.Remove(rootfsPath)
 
-	return b.store.Get(tag)
+	result, err := b.store.Get(tag)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

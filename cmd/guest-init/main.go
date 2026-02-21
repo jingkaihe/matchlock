@@ -42,6 +42,11 @@ const (
 	workspaceWaitStep = 100 * time.Millisecond
 	workspaceWaitMax  = 30 * time.Second
 	fuseSuperMagic    = 0x65735546
+
+	overlayLowerMount = "/run/matchlock/lower"
+	overlayUpperMount = "/run/matchlock/upperfs"
+	overlayMergedRoot = "/run/matchlock/merged"
+	overlayPutOldDir  = ".old-root"
 )
 
 type diskMount struct {
@@ -61,6 +66,13 @@ type bootConfig struct {
 	Workspace  string
 	MTU        int
 	Disks      []diskMount
+	Overlay    overlayBootConfig
+}
+
+type overlayBootConfig struct {
+	Enabled      bool
+	LowerDevices []string
+	UpperDevice  string
 }
 
 func main() {
@@ -87,11 +99,17 @@ func runtimeRole() string {
 }
 
 func runInit() {
-	prepareBaseFilesystems()
+	prepareEarlyFilesystems()
 	cfg, err := parseBootConfig(procCmdlinePath)
 	if err != nil {
 		fatal(err)
 	}
+	if cfg.Overlay.Enabled {
+		if err := setupOverlayRoot(cfg.Overlay); err != nil {
+			fatal(err)
+		}
+	}
+	prepareBaseFilesystems()
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
@@ -178,6 +196,25 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			}
 			cfg.Disks = append(cfg.Disks, diskMount{Device: spec[:i], Path: spec[i+1:]})
 
+		case strings.HasPrefix(field, "matchlock.overlay="):
+			v := strings.TrimPrefix(field, "matchlock.overlay=")
+			cfg.Overlay.Enabled = v == "1" || strings.EqualFold(v, "true")
+
+		case strings.HasPrefix(field, "matchlock.overlay.lower="):
+			spec := strings.TrimPrefix(field, "matchlock.overlay.lower=")
+			cfg.Overlay.LowerDevices = cfg.Overlay.LowerDevices[:0]
+			for _, dev := range strings.Split(spec, ",") {
+				dev = strings.TrimSpace(dev)
+				if dev != "" {
+					cfg.Overlay.LowerDevices = append(cfg.Overlay.LowerDevices, dev)
+				}
+			}
+			cfg.Overlay.Enabled = true
+
+		case strings.HasPrefix(field, "matchlock.overlay.upper="):
+			cfg.Overlay.UpperDevice = strings.TrimPrefix(field, "matchlock.overlay.upper=")
+			cfg.Overlay.Enabled = true
+
 		case strings.HasPrefix(field, "matchlock.add_host."):
 			spec := strings.TrimPrefix(field, "matchlock.add_host.")
 			i := strings.IndexByte(spec, '=')
@@ -195,8 +232,21 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	if len(cfg.DNSServers) == 0 {
 		return nil, ErrMissingDNS
 	}
+	if cfg.Overlay.Enabled {
+		if len(cfg.Overlay.LowerDevices) == 0 || cfg.Overlay.UpperDevice == "" {
+			return nil, errx.With(ErrInvalidOverlayCfg, ": lowers=%v upper=%q", cfg.Overlay.LowerDevices, cfg.Overlay.UpperDevice)
+		}
+	}
 
 	return cfg, nil
+}
+
+func prepareEarlyFilesystems() {
+	_ = unix.Mount("", "/", "", unix.MS_REMOUNT, "rw")
+	_ = os.MkdirAll("/proc", 0555)
+	_ = os.MkdirAll("/dev", 0755)
+	mountIgnore("proc", "/proc", "proc", 0, "")
+	mountIgnore("dev", "/dev", "devtmpfs", 0, "")
 }
 
 func prepareBaseFilesystems() {
@@ -205,9 +255,6 @@ func prepareBaseFilesystems() {
 	_ = os.MkdirAll("/proc", 0555)
 	_ = os.MkdirAll("/sys", 0555)
 	_ = os.MkdirAll("/dev", 0755)
-	_ = os.MkdirAll("/dev/pts", 0755)
-	_ = os.MkdirAll("/dev/shm", 01777)
-	_ = os.MkdirAll("/dev/mqueue", 0755)
 	_ = os.MkdirAll("/run", 0755)
 	_ = os.MkdirAll("/tmp", 01777)
 	_ = os.MkdirAll("/sys/fs/bpf", 0755)
@@ -216,6 +263,12 @@ func prepareBaseFilesystems() {
 	mountIgnore("proc", "/proc", "proc", 0, "")
 	mountIgnore("sys", "/sys", "sysfs", 0, "")
 	mountIgnore("dev", "/dev", "devtmpfs", 0, "")
+
+	// /dev is now a separate devtmpfs mount; create these paths on that mount.
+	_ = os.MkdirAll("/dev/pts", 0755)
+	_ = os.MkdirAll("/dev/shm", 01777)
+	_ = os.MkdirAll("/dev/mqueue", 0755)
+
 	mountIgnore("devpts", "/dev/pts", "devpts", 0, "")
 	mountIgnore("tmpfs", "/dev/shm", "tmpfs", 0, "")
 	mountIgnore("mqueue", "/dev/mqueue", "mqueue", 0, "")
@@ -223,6 +276,68 @@ func prepareBaseFilesystems() {
 	mountIgnore("tmpfs", "/tmp", "tmpfs", 0, "")
 	mountIgnore("bpf", "/sys/fs/bpf", "bpf", 0, "")
 	mountIgnore("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, "")
+}
+
+func setupOverlayRoot(cfg overlayBootConfig) error {
+	if len(cfg.LowerDevices) == 0 || cfg.UpperDevice == "" {
+		return errx.With(ErrInvalidOverlayCfg, ": lowers=%v upper=%q", cfg.LowerDevices, cfg.UpperDevice)
+	}
+	upperDev := filepath.Join("/dev", cfg.UpperDevice)
+	lowerDirBase := overlayLowerMount
+	upperDir := overlayUpperMount
+	overlayUpperDir := filepath.Join(upperDir, "upper")
+	workDir := filepath.Join(upperDir, "work")
+	merged := overlayMergedRoot
+
+	for _, dir := range []string{lowerDirBase, upperDir, merged} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return errx.With(ErrOverlaySetup, " mkdir %s: %w", dir, err)
+		}
+	}
+
+	lowerDirs := make([]string, 0, len(cfg.LowerDevices))
+	for i, dev := range cfg.LowerDevices {
+		lowerDev := filepath.Join("/dev", dev)
+		lowerDir := filepath.Join(lowerDirBase, strconv.Itoa(i))
+		if err := os.MkdirAll(lowerDir, 0755); err != nil {
+			return errx.With(ErrOverlaySetup, " mkdir lower %s: %w", lowerDir, err)
+		}
+		if err := unix.Mount(lowerDev, lowerDir, "ext4", uintptr(unix.MS_RDONLY), ""); err != nil {
+			return errx.With(ErrOverlaySetup, " mount lower %s -> %s: %w", lowerDev, lowerDir, err)
+		}
+		lowerDirs = append(lowerDirs, lowerDir)
+	}
+	if err := unix.Mount(upperDev, upperDir, "ext4", 0, ""); err != nil {
+		return errx.With(ErrOverlaySetup, " mount upper %s -> %s: %w", upperDev, upperDir, err)
+	}
+	if err := os.MkdirAll(overlayUpperDir, 0755); err != nil {
+		return errx.With(ErrOverlaySetup, " mkdir upperdir %s: %w", overlayUpperDir, err)
+	}
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return errx.With(ErrOverlaySetup, " mkdir workdir %s: %w", workDir, err)
+	}
+
+	orderedLower := make([]string, 0, len(lowerDirs))
+	for i := len(lowerDirs) - 1; i >= 0; i-- {
+		orderedLower = append(orderedLower, lowerDirs[i])
+	}
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", strings.Join(orderedLower, ":"), overlayUpperDir, workDir)
+	if err := unix.Mount("overlay", merged, "overlay", 0, opts); err != nil {
+		return errx.With(ErrOverlaySetup, " mount overlay root: %w", err)
+	}
+
+	putOld := filepath.Join(merged, overlayPutOldDir)
+	if err := os.MkdirAll(putOld, 0755); err != nil {
+		return errx.With(ErrOverlaySetup, " mkdir put_old: %w", err)
+	}
+
+	if err := unix.PivotRoot(merged, putOld); err != nil {
+		return errx.With(ErrOverlaySetup, " pivot_root: %w", err)
+	}
+	if err := os.Chdir("/"); err != nil {
+		return errx.With(ErrOverlaySetup, " chdir /: %w", err)
+	}
+	return nil
 }
 
 func configureCgroupDelegation() {

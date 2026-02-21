@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -27,7 +28,7 @@ func (b *Builder) platformOptions() []remote.Option {
 
 // createExt4 creates an ext4 filesystem on macOS using e2fsprogs
 // Requires: brew install e2fsprogs && brew link e2fsprogs
-func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMeta) error {
+func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMeta, specials map[string]layerSpecial) error {
 	// Check for mke2fs in PATH
 	mke2fsPath, err := exec.LookPath("mke2fs")
 	if err != nil {
@@ -45,7 +46,7 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 		totalSize += info.Size()
 	})
 
-	sizeMB := (totalSize / (1024 * 1024)) + 64
+	sizeMB := estimateLayerImageSizeMB(totalSize)
 
 	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
 
@@ -106,6 +107,39 @@ func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMet
 	if err != nil {
 		os.Remove(tmpPath)
 		return errx.With(ErrCreateExt4, ": walk source dir: %w", err)
+	}
+
+	if len(specials) > 0 {
+		specialPaths := make([]string, 0, len(specials))
+		for ext4Path := range specials {
+			specialPaths = append(specialPaths, ext4Path)
+		}
+		sort.Strings(specialPaths)
+
+		for _, ext4Path := range specialPaths {
+			if hasDebugfsUnsafeChars(ext4Path) {
+				continue
+			}
+			special := specials[ext4Path]
+			switch special.kind {
+			case layerSpecialWhiteout:
+				relPath := strings.TrimPrefix(ext4Path, "/")
+				if relPath == "" {
+					continue
+				}
+				debugfsCommands.WriteString(fmt.Sprintf("mknod %s c 0 0\n", relPath))
+				debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s uid %d\n", ext4Path, special.uid))
+				debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s gid %d\n", ext4Path, special.gid))
+				mode := uint32(0o20000 | (uint32(special.mode) & 0o7777))
+				debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s mode 0%o\n", ext4Path, mode))
+			case layerSpecialOpaque:
+				target := ext4Path
+				if target == "" {
+					target = "/"
+				}
+				debugfsCommands.WriteString(fmt.Sprintf("ea_set %s trusted.overlay.opaque y\n", target))
+			}
+		}
 	}
 
 	// Run debugfs to populate the filesystem

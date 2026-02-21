@@ -121,7 +121,7 @@ func runImageImport(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Imported: %s\n", tag)
-	fmt.Printf("Rootfs: %s\n", result.RootfsPath)
+	fmt.Printf("Layers: %d\n", len(result.LowerPaths))
 	fmt.Printf("Size: %.1f MB\n", float64(result.Size)/(1024*1024))
 	return nil
 }

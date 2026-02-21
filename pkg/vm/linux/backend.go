@@ -280,9 +280,21 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
-		for i, disk := range m.config.ExtraDisks {
-			dev := string(rune('b' + i)) // vdb, vdc, ...
-			kernelArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
+		devLetter := 'b' // vda is rootfs
+		if m.config.OverlayEnabled {
+			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))
+			for range m.config.OverlayLowerPaths {
+				lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
+				devLetter++
+			}
+			upperDev := fmt.Sprintf("vd%c", devLetter)
+			devLetter++
+			kernelArgs += fmt.Sprintf(" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.upper=%s", strings.Join(lowerDevs, ","), upperDev)
+		}
+		for _, disk := range m.config.ExtraDisks {
+			dev := fmt.Sprintf("vd%c", devLetter)
+			devLetter++
+			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
 		}
 		for i, mapping := range m.config.AddHosts {
 			kernelArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)
@@ -298,6 +310,22 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 
 	drives := []fcDrive{
 		{DriveID: "rootfs", PathOnHost: m.config.RootfsPath, IsRootDevice: true, IsReadOnly: false},
+	}
+	if m.config.OverlayEnabled {
+		for i, lower := range m.config.OverlayLowerPaths {
+			drives = append(drives, fcDrive{
+				DriveID:      fmt.Sprintf("overlay-lower-%d", i),
+				PathOnHost:   lower,
+				IsRootDevice: false,
+				IsReadOnly:   true,
+			})
+		}
+		drives = append(drives, fcDrive{
+			DriveID:      "overlay-upper",
+			PathOnHost:   m.config.OverlayUpperPath,
+			IsRootDevice: false,
+			IsReadOnly:   false,
+		})
 	}
 	for i, disk := range m.config.ExtraDisks {
 		drives = append(drives, fcDrive{

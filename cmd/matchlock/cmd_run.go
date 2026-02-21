@@ -175,7 +175,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	user, _ := cmd.Flags().GetString("user")
 	entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
-	command := api.ShellQuoteArgs(args)
+	resolvedCommand := append([]string(nil), args...)
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -238,15 +238,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if imageCfg != nil {
 		composed := imageCfg.ComposeCommand(args)
 		if len(composed) > 0 {
-			command = api.ShellQuoteArgs(composed)
+			resolvedCommand = composed
 		}
 	}
+	command := api.ShellQuoteArgs(resolvedCommand)
 
 	if rm && command == "" && !interactiveMode {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
 	}
 
-	sandboxOpts := &sandbox.Options{RootfsPath: buildResult.RootfsPath}
+	sandboxOpts := &sandbox.Options{RootfsPaths: buildResult.LowerPaths}
 
 	vfsConfig := &api.VFSConfig{Workspace: workspace}
 	if len(volumes) > 0 {

@@ -64,5 +64,21 @@ CREATE INDEX IF NOT EXISTS idx_images_scope_created ON images(scope, created_at 
 CREATE INDEX IF NOT EXISTS idx_images_digest ON images(digest);
 `,
 		},
+		{
+			Version: 2,
+			Name:    "create_image_layers",
+			SQL: `
+CREATE TABLE IF NOT EXISTS image_layers (
+  scope TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  digest TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (scope, tag, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_image_layers_ref ON image_layers(scope, tag);
+CREATE INDEX IF NOT EXISTS idx_image_layers_digest ON image_layers(digest);
+`,
+		},
 	}
 }
