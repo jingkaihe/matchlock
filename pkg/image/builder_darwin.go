@@ -166,7 +166,7 @@ func (b *Builder) createEROFSFromTar(tarPath, destPath string) error {
 
 	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
 	// Force 4K EROFS blocks so guest kernels with 4K page support can mount layers.
-	cmd := exec.Command(mkfsPath, "--quiet", "-b", "4096", "--tar=f", tmpPath, tarPath)
+	cmd := exec.Command(mkfsPath, "--quiet", "-b", "4096", "--aufs", "--tar=f", tmpPath, tarPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
 		return errx.With(ErrCreateExt4, ": mkfs.erofs: %w: %s", err, out)

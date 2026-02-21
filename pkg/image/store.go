@@ -34,6 +34,8 @@ type ImageMeta struct {
 	CreatedAt time.Time  `json:"created_at"`
 	Source    string     `json:"source,omitempty"`
 	OCI       *OCIConfig `json:"oci,omitempty"`
+	// RuntimeRootfsPath optionally pins the preferred runtime lower blob (hot squash cache).
+	RuntimeRootfsPath string `json:"-"`
 }
 
 type LayerRef struct {
@@ -126,7 +128,8 @@ func (s *Store) Save(tag string, layers []LayerRef, meta ImageMeta) error {
 	if meta.Size <= 0 {
 		meta.Size = imageSizeFromLayers(normLayers)
 	}
-	if err := upsertImageMetaWithLayers(s.db, imageScopeLocal, tag, meta, normLayers, primaryRootfsPath(normLayers)); err != nil {
+	rootfsPath := meta.RuntimeRootfsPath
+	if err := upsertImageMetaWithLayers(s.db, imageScopeLocal, tag, meta, normLayers, rootfsPath); err != nil {
 		return err
 	}
 	if _, err := pruneUnreferencedBlobs(s.db, s.cacheRoot); err != nil {
@@ -220,7 +223,8 @@ func SaveRegistryCache(tag string, cacheDir string, layers []LayerRef, meta Imag
 		meta.Size = imageSizeFromLayers(normLayers)
 	}
 
-	if err := upsertImageMetaWithLayers(db, imageScopeRegistry, tag, meta, normLayers, primaryRootfsPath(normLayers)); err != nil {
+	rootfsPath := meta.RuntimeRootfsPath
+	if err := upsertImageMetaWithLayers(db, imageScopeRegistry, tag, meta, normLayers, rootfsPath); err != nil {
 		return err
 	}
 	if _, err := pruneUnreferencedBlobs(db, cacheDir); err != nil {
@@ -389,18 +393,53 @@ func getImageBuildResult(db *sql.DB, scope, tag, cacheRoot string) (*BuildResult
 	if size <= 0 {
 		size = imageSizeFromLayers(layers)
 	}
-	lowerPaths := layerPaths(layers)
+	runtimeLayers := layers
+	if runtimeLayer, ok := runtimeLayerFromRootfsPath(info.RootfsPath); ok &&
+		!containsLayerDigest(layers, runtimeLayer.Digest, runtimeLayer.FSType) {
+		runtimeLayers = []LayerRef{runtimeLayer}
+	}
+	lowerPaths := layerPaths(runtimeLayers)
 	return &BuildResult{
-		RootfsPath:   primaryLowerPath(lowerPaths),
-		LowerPaths:   lowerPaths,
-		LowerFSTypes: layerFSTypes(layers),
-		Layers:       layers,
-		Digest:       info.Meta.Digest,
-		Size:         size,
-		Cached:       true,
-		OCI:          info.Meta.OCI,
-		LayerDigests: layerDigests(layers),
+		RootfsPath:      primaryLowerPath(lowerPaths),
+		LowerPaths:      lowerPaths,
+		LowerFSTypes:    layerFSTypes(runtimeLayers),
+		Layers:          runtimeLayers,
+		CanonicalLayers: layers,
+		Digest:          info.Meta.Digest,
+		Size:            size,
+		Cached:          true,
+		OCI:             info.Meta.OCI,
+		LayerDigests:    layerDigests(runtimeLayers),
 	}, nil
+}
+
+func runtimeLayerFromRootfsPath(rootfsPath string) (LayerRef, bool) {
+	if rootfsPath == "" {
+		return LayerRef{}, false
+	}
+	digest, fsType, ok := digestAndFSTypeFromBlobPath(rootfsPath)
+	if !ok {
+		return LayerRef{}, false
+	}
+	fi, err := os.Stat(rootfsPath)
+	if err != nil || fi.Size() <= 0 {
+		return LayerRef{}, false
+	}
+	return LayerRef{
+		Digest: digest,
+		FSType: fsType,
+		Size:   fileStoredBytes(fi),
+		Path:   rootfsPath,
+	}, true
+}
+
+func containsLayerDigest(layers []LayerRef, digest, fsType string) bool {
+	for _, layer := range layers {
+		if layer.Digest == digest && layer.FSType == fsType {
+			return true
+		}
+	}
+	return false
 }
 
 func getImageLayers(db *sql.DB, scope, tag, cacheRoot string) ([]LayerRef, error) {
@@ -799,6 +838,26 @@ func pruneUnreferencedBlobs(db *sql.DB, cacheRoot string) (int, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return 0, errx.With(ErrStoreRead, ": iterate referenced blobs: %w", err)
+	}
+
+	rootRows, err := db.Query(`SELECT rootfs_path FROM images WHERE rootfs_path <> ''`)
+	if err != nil {
+		return 0, errx.With(ErrStoreRead, ": query runtime rootfs paths: %w", err)
+	}
+	defer rootRows.Close()
+	for rootRows.Next() {
+		var path string
+		if err := rootRows.Scan(&path); err != nil {
+			return 0, errx.With(ErrStoreRead, ": scan runtime rootfs path: %w", err)
+		}
+		digest, fsType, ok := digestAndFSTypeFromBlobPath(path)
+		if !ok {
+			continue
+		}
+		referenced[digest+"|"+fsType] = struct{}{}
+	}
+	if err := rootRows.Err(); err != nil {
+		return 0, errx.With(ErrStoreRead, ": iterate runtime rootfs paths: %w", err)
 	}
 
 	blobsDir := filepath.Join(cacheRoot, blobsDirName)

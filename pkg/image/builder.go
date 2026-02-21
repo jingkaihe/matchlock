@@ -57,6 +57,8 @@ type BuildResult struct {
 	LowerPaths   []string
 	LowerFSTypes []string
 	Layers       []LayerRef
+	// CanonicalLayers are the per-OCI-layer blobs used for dedupe and GC.
+	CanonicalLayers []LayerRef
 
 	Digest       string
 	LayerDigests []string
@@ -116,38 +118,47 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, errx.Wrap(ErrImageDigest, err)
 	}
 
-	layers, err := b.ingestImageLayers(img)
+	runtimeLayers, canonicalLayers, err := b.ingestImageLayers(img)
 	if err != nil {
 		return nil, err
 	}
 
 	ociConfig := extractOCIConfig(img)
-	totalSize := imageSizeFromLayers(layers)
+	totalSize := imageSizeFromLayers(runtimeLayers)
 	meta := ImageMeta{
-		Tag:       imageRef,
-		Digest:    digest.String(),
-		Size:      totalSize,
-		CreatedAt: time.Now().UTC(),
-		Source:    "registry",
-		OCI:       ociConfig,
+		Tag:               imageRef,
+		Digest:            digest.String(),
+		Size:              totalSize,
+		CreatedAt:         time.Now().UTC(),
+		Source:            "registry",
+		OCI:               ociConfig,
+		RuntimeRootfsPath: primaryRootfsPath(runtimeLayers),
 	}
-	if err := SaveRegistryCache(imageRef, b.cacheDir, layers, meta); err != nil {
+	if err := SaveRegistryCache(imageRef, b.cacheDir, canonicalLayers, meta); err != nil {
 		return nil, errx.Wrap(ErrMetadata, err)
 	}
 
-	return newBuildResult(layers, digest.String(), totalSize, false, ociConfig), nil
+	return newBuildResult(runtimeLayers, canonicalLayers, digest.String(), totalSize, false, ociConfig), nil
 }
 
-func (b *Builder) ingestImageLayers(img v1.Image) ([]LayerRef, error) {
+func (b *Builder) ingestImageLayers(img v1.Image) ([]LayerRef, []LayerRef, error) {
 	ociLayers, err := img.Layers()
 	if err != nil {
-		return nil, errx.With(ErrExtract, ": enumerate image layers: %w", err)
+		return nil, nil, errx.With(ErrExtract, ": enumerate image layers: %w", err)
 	}
 	if len(ociLayers) == 0 {
-		return nil, errx.With(ErrExtract, ": no layers")
+		return nil, nil, errx.With(ErrExtract, ": no layers")
 	}
 
-	return b.ingestFullySquashedLayers(ociLayers)
+	canonicalLayers, err := b.ingestPerLayerBlobs(ociLayers)
+	if err != nil {
+		return nil, nil, err
+	}
+	runtimeLayers, err := b.ingestFullySquashedLayers(ociLayers)
+	if err != nil {
+		return nil, nil, err
+	}
+	return runtimeLayers, canonicalLayers, nil
 }
 
 func (b *Builder) ingestFullySquashedLayers(ociLayers []v1.Layer) ([]LayerRef, error) {
@@ -156,6 +167,54 @@ func (b *Builder) ingestFullySquashedLayers(ociLayers []v1.Layer) ([]LayerRef, e
 		return nil, err
 	}
 	return []LayerRef{squashed}, nil
+}
+
+func (b *Builder) ingestPerLayerBlobs(ociLayers []v1.Layer) ([]LayerRef, error) {
+	layers := make([]LayerRef, 0, len(ociLayers))
+	seen := make(map[string]LayerRef, len(ociLayers))
+	for i, layer := range ociLayers {
+		diffID, err := layer.DiffID()
+		if err != nil {
+			return nil, errx.With(ErrImageDigest, ": layer %d diffid: %w", i, err)
+		}
+		digest := diffID.String()
+		if cached, ok := seen[digest]; ok {
+			layers = append(layers, cached)
+			continue
+		}
+		ref, err := b.ensureLayerBlob(layer, digest)
+		if err != nil {
+			return nil, errx.With(ErrCreateExt4, ": layer %d (%s): %w", i, digest, err)
+		}
+		seen[digest] = ref
+		layers = append(layers, ref)
+	}
+	return layers, nil
+}
+
+func (b *Builder) ensureLayerBlob(layer v1.Layer, digest string) (LayerRef, error) {
+	blobPath := blobPathForLayer(b.cacheDir, digest, layerFSTypeEROFS)
+	if fi, err := os.Stat(blobPath); err == nil && fi.Size() > 0 {
+		return LayerRef{Digest: digest, FSType: layerFSTypeEROFS, Path: blobPath, Size: fileStoredBytes(fi)}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0755); err != nil {
+		return LayerRef{}, errx.Wrap(ErrCreateDir, err)
+	}
+
+	tarPath, err := b.exportLayerAsTar(layer)
+	if err != nil {
+		return LayerRef{}, err
+	}
+	defer os.Remove(tarPath)
+
+	if err := b.createEROFSFromTar(tarPath, blobPath); err != nil {
+		return LayerRef{}, err
+	}
+	fi, err := os.Stat(blobPath)
+	if err != nil {
+		return LayerRef{}, errx.With(ErrCreateExt4, ": stat layer blob %s: %w", blobPath, err)
+	}
+	return LayerRef{Digest: digest, FSType: layerFSTypeEROFS, Path: blobPath, Size: fileStoredBytes(fi)}, nil
 }
 
 func (b *Builder) ensureSquashedPrefixLayerBlob(layers []v1.Layer) (LayerRef, error) {
@@ -215,21 +274,48 @@ func (b *Builder) exportImageAsTar(img v1.Image) (string, error) {
 	return tmpTar.Name(), nil
 }
 
-func newBuildResult(layers []LayerRef, digest string, size int64, cached bool, oci *OCIConfig) *BuildResult {
-	lowerPaths := layerPaths(layers)
+func (b *Builder) exportLayerAsTar(layer v1.Layer) (string, error) {
+	reader, err := layer.Uncompressed()
+	if err != nil {
+		return "", errx.With(ErrExtract, ": layer uncompressed stream: %w", err)
+	}
+	defer reader.Close()
+
+	tmpTar, err := os.CreateTemp("", "matchlock-layer-*.tar")
+	if err != nil {
+		return "", errx.Wrap(ErrCreateTemp, err)
+	}
+	if _, err := io.Copy(tmpTar, reader); err != nil {
+		_ = tmpTar.Close()
+		_ = os.Remove(tmpTar.Name())
+		return "", errx.With(ErrExtract, ": write layer tar: %w", err)
+	}
+	if err := tmpTar.Close(); err != nil {
+		_ = os.Remove(tmpTar.Name())
+		return "", errx.With(ErrExtract, ": close layer tar: %w", err)
+	}
+	return tmpTar.Name(), nil
+}
+
+func newBuildResult(runtimeLayers, canonicalLayers []LayerRef, digest string, size int64, cached bool, oci *OCIConfig) *BuildResult {
+	if len(canonicalLayers) == 0 {
+		canonicalLayers = runtimeLayers
+	}
+	lowerPaths := layerPaths(runtimeLayers)
 	if size <= 0 {
-		size = imageSizeFromLayers(layers)
+		size = imageSizeFromLayers(runtimeLayers)
 	}
 	return &BuildResult{
-		RootfsPath:   primaryLowerPath(lowerPaths),
-		LowerPaths:   lowerPaths,
-		LowerFSTypes: layerFSTypes(layers),
-		Layers:       layers,
-		Digest:       digest,
-		LayerDigests: layerDigests(layers),
-		Size:         size,
-		Cached:       cached,
-		OCI:          oci,
+		RootfsPath:      primaryLowerPath(lowerPaths),
+		LowerPaths:      lowerPaths,
+		LowerFSTypes:    layerFSTypes(runtimeLayers),
+		Layers:          runtimeLayers,
+		CanonicalLayers: canonicalLayers,
+		Digest:          digest,
+		LayerDigests:    layerDigests(runtimeLayers),
+		Size:            size,
+		Cached:          cached,
+		OCI:             oci,
 	}
 }
 
@@ -239,10 +325,11 @@ func (b *Builder) SaveTag(tag string, result *BuildResult) error {
 		return err
 	}
 	meta := ImageMeta{
-		Digest: result.Digest,
-		Size:   result.Size,
-		Source: "tag",
-		OCI:    result.OCI,
+		Digest:            result.Digest,
+		Size:              result.Size,
+		Source:            "tag",
+		OCI:               result.OCI,
+		RuntimeRootfsPath: result.RootfsPath,
 	}
 	return b.store.Save(tag, layers, meta)
 }
@@ -254,6 +341,9 @@ func (b *Builder) Store() *Store {
 func (b *Builder) layersFromResult(result *BuildResult) ([]LayerRef, error) {
 	if result == nil {
 		return nil, errx.With(ErrStoreSave, ": nil build result")
+	}
+	if len(result.CanonicalLayers) > 0 {
+		return normalizeLayerRefs(result.CanonicalLayers, b.cacheDir)
 	}
 	if len(result.Layers) > 0 {
 		return normalizeLayerRefs(result.Layers, b.cacheDir)

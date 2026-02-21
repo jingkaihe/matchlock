@@ -217,6 +217,49 @@ func TestGetRegistryCache(t *testing.T) {
 	assert.Equal(t, "sha256:image", result.Digest)
 }
 
+func TestStoreGetPrefersRuntimeRootfsPath(t *testing.T) {
+	store, cacheRoot := newTestStore(t)
+	layerA := writeTestLayer(t, cacheRoot, "sha256:a", "a")
+	layerB := writeTestLayer(t, cacheRoot, "sha256:b", "b")
+	squash := writeTestLayer(t, cacheRoot, "sha256:squash", "squashed")
+
+	require.NoError(t, store.Save("myapp:latest", []LayerRef{layerA, layerB}, ImageMeta{
+		Digest:            "sha256:image",
+		CreatedAt:         time.Now().UTC(),
+		RuntimeRootfsPath: squash.Path,
+	}))
+
+	result, err := store.Get("myapp:latest")
+	require.NoError(t, err)
+	require.Len(t, result.LowerPaths, 1)
+	assert.Equal(t, squash.Path, result.LowerPaths[0])
+	require.Len(t, result.CanonicalLayers, 2)
+	assert.Equal(t, layerA.Digest, result.CanonicalLayers[0].Digest)
+	assert.Equal(t, layerB.Digest, result.CanonicalLayers[1].Digest)
+}
+
+func TestStoreGCKeepsRuntimeRootfsPathBlob(t *testing.T) {
+	store, cacheRoot := newTestStore(t)
+	layer := writeTestLayer(t, cacheRoot, "sha256:canonical", "canonical")
+	squash := writeTestLayer(t, cacheRoot, "sha256:squash", "squashed")
+
+	require.NoError(t, store.Save("myapp:latest", []LayerRef{layer}, ImageMeta{
+		Digest:            "sha256:image",
+		CreatedAt:         time.Now().UTC(),
+		RuntimeRootfsPath: squash.Path,
+	}))
+
+	removed, err := store.GC()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+	_, err = os.Stat(squash.Path)
+	require.NoError(t, err, "runtime squash blob should remain referenced")
+
+	require.NoError(t, store.Remove("myapp:latest"))
+	_, err = os.Stat(squash.Path)
+	assert.True(t, os.IsNotExist(err), "runtime squash blob should be removed after image delete")
+}
+
 func readLayerRefCount(t *testing.T, cacheRoot, digest, fsType string) int {
 	t.Helper()
 	db, err := openImageDBForCacheDir(cacheRoot)

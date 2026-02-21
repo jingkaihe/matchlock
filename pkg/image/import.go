@@ -38,21 +38,22 @@ func (b *Builder) Import(ctx context.Context, reader io.Reader, tag string) (*Bu
 		return nil, errx.Wrap(ErrImageDigest, err)
 	}
 
-	layers, err := b.ingestImageLayers(img)
+	runtimeLayers, canonicalLayers, err := b.ingestImageLayers(img)
 	if err != nil {
 		return nil, err
 	}
 
 	ociConfig := extractOCIConfig(img)
-	totalSize := imageSizeFromLayers(layers)
+	totalSize := imageSizeFromLayers(runtimeLayers)
 	meta := ImageMeta{
-		Digest:    digest.String(),
-		Size:      totalSize,
-		Source:    "import",
-		CreatedAt: time.Now().UTC(),
-		OCI:       ociConfig,
+		Digest:            digest.String(),
+		Size:              totalSize,
+		Source:            "import",
+		CreatedAt:         time.Now().UTC(),
+		OCI:               ociConfig,
+		RuntimeRootfsPath: primaryRootfsPath(runtimeLayers),
 	}
-	if err := b.store.Save(tag, layers, meta); err != nil {
+	if err := b.store.Save(tag, canonicalLayers, meta); err != nil {
 		return nil, errx.Wrap(ErrStoreSave, err)
 	}
 
