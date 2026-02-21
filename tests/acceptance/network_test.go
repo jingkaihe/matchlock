@@ -117,6 +117,23 @@ func TestNoAllowlistPermitsAll(t *testing.T) {
 	assert.Contains(t, result.Stdout+result.Stderr, `"url"`, "expected open allowlist to permit httpbin.org")
 }
 
+func TestNoNetworkDisablesEgressAndNIC(t *testing.T) {
+	t.Parallel()
+	sandbox := sdk.New("alpine:latest").
+		WithNoNetwork()
+
+	client := launchWithBuilder(t, sandbox)
+
+	result, err := client.Exec(context.Background(), "sh -c 'ls /sys/class/net; wget -q -T 5 -O - http://example.com/ >/dev/null 2>&1 || echo BLOCKED'")
+	require.NoError(t, err, "Exec")
+
+	combined := result.Stdout + result.Stderr
+	assert.Contains(t, combined, "lo")
+	assert.NotContains(t, combined, "eth0")
+	assert.Contains(t, combined, "BLOCKED")
+	assert.NotContains(t, combined, "Example Domain")
+}
+
 // ---------------------------------------------------------------------------
 // Secret MITM injection tests
 // ---------------------------------------------------------------------------
