@@ -174,7 +174,8 @@ func (b *Builder) createEROFS(sourceDir, destPath string, meta map[string]fileMe
 	}
 
 	tmpPath := destPath + "." + uuid.New().String() + ".tmp"
-	cmd := exec.Command(mkfsPath, "--quiet", tmpPath, sourceDir)
+	// Force 4K EROFS blocks so guest kernels with 4K page support can mount layers.
+	cmd := exec.Command(mkfsPath, "--quiet", "-b", "4096", tmpPath, sourceDir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmpPath)
 		return errx.With(ErrCreateExt4, ": mkfs.erofs: %w: %s", err, out)
