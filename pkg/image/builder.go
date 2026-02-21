@@ -732,9 +732,3 @@ func lstatWalkDir(dir string, fn func(string, os.FileInfo) error) error {
 func hasDebugfsUnsafeChars(path string) bool {
 	return strings.ContainsAny(path, "\n\r\x00")
 }
-
-func sanitizeRef(ref string) string {
-	ref = strings.ReplaceAll(ref, "/", "_")
-	ref = strings.ReplaceAll(ref, ":", "_")
-	return ref
-}
