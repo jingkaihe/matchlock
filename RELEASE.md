@@ -1,6 +1,13 @@
 # Release Notes
 
-## Unreleased
+## 0.1.23
+
+* Reworked image/runtime storage to an OCI layer-aware model: shared EROFS layer blobs in metadata DB plus overlay-root boot with a per-VM writable upper disk (replacing monolithic rootfs images).
+* Manual tidy-up (full local reset):
+  * `matchlock kill --all`
+  * `matchlock prune`
+  * `rm -rf ~/.matchlock`
+  * `rm -rf ~/.cache/matchlock`
 
 ## 0.1.22
 

@@ -103,6 +103,15 @@ PARALLEL="${MATCHLOCK_ACCEPTANCE_PARALLEL:-4}"
 MATCHLOCK_BIN="$PWD/bin/matchlock" go test -tags acceptance -timeout 600s -parallel "$PARALLEL" -v ./tests/acceptance/
 """
 
+[tasks."test:regression"]
+description = "Run storage/startup regression harness (acceptance subset)"
+run = """
+#!/usr/bin/env bash
+set -e
+PARALLEL="${MATCHLOCK_ACCEPTANCE_PARALLEL:-2}"
+MATCHLOCK_BIN="$PWD/bin/matchlock" MATCHLOCK_RUN_REGRESSION=1 go test -tags acceptance -timeout 1200s -parallel "$PARALLEL" -v ./tests/acceptance/ -run 'TestStorageRegression_|TestStartupLatencyHarness'
+"""
+
 # =============================================================================
 # Development tasks
 # =============================================================================

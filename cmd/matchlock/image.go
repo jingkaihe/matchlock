@@ -44,10 +44,17 @@ The tarball format is the same as "docker save" output.`,
 	RunE: runImageImport,
 }
 
+var imageGCCmd = &cobra.Command{
+	Use:   "gc",
+	Short: "Garbage-collect unreferenced layer blobs",
+	RunE:  runImageGC,
+}
+
 func init() {
 	imageCmd.AddCommand(imageLsCmd)
 	imageCmd.AddCommand(imageRmCmd)
 	imageCmd.AddCommand(imageImportCmd)
+	imageCmd.AddCommand(imageGCCmd)
 	rootCmd.AddCommand(imageCmd)
 }
 
@@ -121,7 +128,16 @@ func runImageImport(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Imported: %s\n", tag)
-	fmt.Printf("Rootfs: %s\n", result.RootfsPath)
+	fmt.Printf("Layers: %d\n", len(result.LowerPaths))
 	fmt.Printf("Size: %.1f MB\n", float64(result.Size)/(1024*1024))
+	return nil
+}
+
+func runImageGC(cmd *cobra.Command, args []string) error {
+	removed, err := image.GC("")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Removed %d unreferenced blobs\n", removed)
 	return nil
 }

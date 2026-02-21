@@ -16,4 +16,5 @@ var (
 	ErrStoreRead      = errors.New("read from store")
 	ErrMetadata       = errors.New("metadata")
 	ErrImageNotFound  = errors.New("image not found")
+	ErrLayerFS        = errors.New("invalid layer filesystem type")
 )

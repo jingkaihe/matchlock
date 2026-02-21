@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -177,9 +178,32 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	}
 
 	diskArgs := ""
-	for i, disk := range config.ExtraDisks {
-		dev := string(rune('b' + i))
-		diskArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
+	devLetter := 'b' // vda is rootfs
+	if config.OverlayEnabled {
+		lowerDevs := make([]string, 0, len(config.OverlayLowerPaths))
+		lowerFS := make([]string, 0, len(config.OverlayLowerPaths))
+		for i := range config.OverlayLowerPaths {
+			lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
+			fsType := "erofs"
+			if i < len(config.OverlayLowerFSTypes) && config.OverlayLowerFSTypes[i] != "" {
+				fsType = config.OverlayLowerFSTypes[i]
+			}
+			lowerFS = append(lowerFS, fsType)
+			devLetter++
+		}
+		upperDev := fmt.Sprintf("vd%c", devLetter)
+		devLetter++
+		diskArgs += fmt.Sprintf(
+			" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.lowerfs=%s matchlock.overlay.upper=%s",
+			strings.Join(lowerDevs, ","),
+			strings.Join(lowerFS, ","),
+			upperDev,
+		)
+	}
+	for _, disk := range config.ExtraDisks {
+		dev := fmt.Sprintf("vd%c", devLetter)
+		devLetter++
+		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
 	}
 
 	addHostArgs := ""
@@ -232,6 +256,40 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 	}
 
 	devices := []vz.StorageDeviceConfiguration{storageConfig}
+
+	if config.OverlayEnabled {
+		for _, lowerPath := range config.OverlayLowerPaths {
+			lowerAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+				lowerPath,
+				true,
+				vz.DiskImageCachingModeAutomatic,
+				vz.DiskImageSynchronizationModeFsync,
+			)
+			if err != nil {
+				return errx.Wrap(ErrDiskAttachment, err)
+			}
+			lowerConfig, err := vz.NewVirtioBlockDeviceConfiguration(lowerAttachment)
+			if err != nil {
+				return errx.Wrap(ErrStorageConfig, err)
+			}
+			devices = append(devices, lowerConfig)
+		}
+
+		upperAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+			config.OverlayUpperPath,
+			false,
+			vz.DiskImageCachingModeAutomatic,
+			vz.DiskImageSynchronizationModeFsync,
+		)
+		if err != nil {
+			return errx.Wrap(ErrDiskAttachment, err)
+		}
+		upperConfig, err := vz.NewVirtioBlockDeviceConfiguration(upperAttachment)
+		if err != nil {
+			return errx.Wrap(ErrStorageConfig, err)
+		}
+		devices = append(devices, upperConfig)
+	}
 
 	for i, disk := range config.ExtraDisks {
 		extraAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
