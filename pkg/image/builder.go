@@ -388,13 +388,6 @@ func squashLayerDigest(layers []v1.Layer) (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func squashPrefixCount(totalLayers, threshold int) int {
 	if threshold <= 1 {
 		return totalLayers
