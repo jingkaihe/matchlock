@@ -91,7 +91,7 @@ func init() {
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
-	runCmd.Flags().Bool("no-network", false, "Disable sandbox network egress entirely")
+	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
