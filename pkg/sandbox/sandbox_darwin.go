@@ -548,6 +548,10 @@ func (s *Sandbox) Close(ctx context.Context) error {
 
 	close(s.events)
 	markCleanup("events_close", nil)
+
+	flushGuestDisks(s.machine)
+	markCleanup("guest_sync", nil)
+
 	if err := s.stateMgr.Unregister(s.id); err != nil {
 		errs = append(errs, errx.Wrap(ErrUnregisterState, err))
 		markCleanup("state_unregister", err)

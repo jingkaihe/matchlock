@@ -213,7 +213,11 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	for _, disk := range config.ExtraDisks {
 		dev := fmt.Sprintf("vd%c", devLetter)
 		devLetter++
-		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
+		diskMount := disk.GuestMount
+		if disk.ReadOnly {
+			diskMount += ",ro"
+		}
+		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 	}
 
 	addHostArgs := ""

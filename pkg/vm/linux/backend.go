@@ -318,7 +318,11 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		for _, disk := range m.config.ExtraDisks {
 			dev := fmt.Sprintf("vd%c", devLetter)
 			devLetter++
-			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
+			diskMount := disk.GuestMount
+			if disk.ReadOnly {
+				diskMount += ",ro"
+			}
+			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 		}
 		for i, mapping := range m.config.AddHosts {
 			kernelArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)

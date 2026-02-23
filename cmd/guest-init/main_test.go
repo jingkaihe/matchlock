@@ -87,6 +87,30 @@ func TestParseBootConfigNoNetwork(t *testing.T) {
 	assert.True(t, cfg.NoNetwork)
 }
 
+func TestParseBootConfigDiskReadonly(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.disk.vdb=/var/lib/buildkit,ro"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.Len(t, cfg.Disks, 1)
+	assert.Equal(t, "vdb", cfg.Disks[0].Device)
+	assert.Equal(t, "/var/lib/buildkit", cfg.Disks[0].Path)
+	assert.True(t, cfg.Disks[0].ReadOnly)
+}
+
+func TestParseBootConfigDiskInvalidOption(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.disk.vdb=/var/lib/buildkit,wat"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidDiskMount)
+}
+
 func TestParseBootConfigOverlayRoot(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")

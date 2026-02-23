@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -53,6 +55,13 @@ Volume Mounts (-v):
   /host/path:subdir:host_fs        Read-write host mount to <workspace>/subdir
   /host/path:subdir:ro             Read-only host mount to <workspace>/subdir
 
+Raw Disk Mounts (--disk):
+  Attach an ext4 disk image directly as a block device.
+  Use @<name> to mount a named volume:
+  /host/cache.ext4:/var/lib/buildkit
+  @buildkit-cache:/var/lib/buildkit
+  /host/data.ext4:/mnt/data:ro
+
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
   *.example.com          Allow all subdomains (api.example.com, a.b.example.com)
@@ -85,6 +94,7 @@ func init() {
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, fmt.Sprintf("Volume mount (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
+	runCmd.Flags().StringSlice("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:ro] or @volume_name:guest_mount[:ro])")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
@@ -114,6 +124,7 @@ func init() {
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
+	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
@@ -159,6 +170,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
+	diskMountSpecs, _ := cmd.Flags().GetStringSlice("disk")
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
@@ -289,6 +301,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		vfsConfig.Mounts = mounts
 	}
 
+	extraDisks := make([]api.DiskMount, 0, len(diskMountSpecs))
+	for _, spec := range diskMountSpecs {
+		diskMount, err := parseDiskMountSpec(spec)
+		if err != nil {
+			return errx.With(ErrInvalidDiskMount, " %q: %w", spec, err)
+		}
+		extraDisks = append(extraDisks, diskMount)
+	}
+
 	var parsedSecrets map[string]api.Secret
 	if len(secrets) > 0 {
 		parsedSecrets = make(map[string]api.Secret)
@@ -341,9 +362,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Hostname:        hostname,
 			MTU:             networkMTU,
 		},
-		VFS:      vfsConfig,
-		Env:      parsedEnv,
-		ImageCfg: imageCfg,
+		VFS:        vfsConfig,
+		Env:        parsedEnv,
+		ExtraDisks: extraDisks,
+		ImageCfg:   imageCfg,
 	}
 	if err := config.Network.Validate(); err != nil {
 		return err
@@ -380,12 +402,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
-	closeCtx := func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.Background(), gracefulShutdown)
-	}
-
 	cleanupSandbox := func(remove bool) error {
-		c, cancel := closeCtx()
+		c, cancel := closeContext(gracefulShutdown)
 		defer cancel()
 
 		var errs []error
@@ -525,4 +543,60 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir s
 	}
 
 	return exitCode
+}
+
+func parseDiskMountSpec(spec string) (api.DiskMount, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return api.DiskMount{}, fmt.Errorf("expected format host_path:guest_mount[:ro] or @volume_name:guest_mount[:ro]")
+	}
+
+	hostPath := strings.TrimSpace(parts[0])
+	guestMount := strings.TrimSpace(parts[1])
+	if hostPath == "" || guestMount == "" {
+		return api.DiskMount{}, fmt.Errorf("host_path and guest_mount are required")
+	}
+
+	if strings.HasPrefix(hostPath, "@") {
+		volumeName := strings.TrimSpace(strings.TrimPrefix(hostPath, "@"))
+		if volumeName == "" {
+			return api.DiskMount{}, fmt.Errorf("volume name is required after '@'")
+		}
+		path, err := findNamedVolume(volumeName)
+		if err != nil {
+			return api.DiskMount{}, err
+		}
+		hostPath = path
+	} else {
+		if !filepath.IsAbs(hostPath) {
+			abs, err := filepath.Abs(hostPath)
+			if err != nil {
+				return api.DiskMount{}, err
+			}
+			hostPath = abs
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			return api.DiskMount{}, fmt.Errorf("host path does not exist: %s", hostPath)
+		}
+	}
+
+	if err := api.ValidateGuestMount(guestMount); err != nil {
+		return api.DiskMount{}, err
+	}
+
+	readonly := false
+	if len(parts) == 3 {
+		switch strings.ToLower(strings.TrimSpace(parts[2])) {
+		case api.MountOptionReadonlyShort, api.MountOptionReadonly:
+			readonly = true
+		default:
+			return api.DiskMount{}, fmt.Errorf("unknown disk option %q (use %q)", parts[2], api.MountOptionReadonlyShort)
+		}
+	}
+
+	return api.DiskMount{
+		HostPath:   hostPath,
+		GuestMount: guestMount,
+		ReadOnly:   readonly,
+	}, nil
 }

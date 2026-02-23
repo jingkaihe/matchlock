@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
@@ -142,4 +143,15 @@ func listFiles(vfsRoot vfs.Provider, path string) ([]api.FileInfo, error) {
 		}
 	}
 	return result, nil
+}
+
+func flushGuestDisks(machine vm.Machine) {
+	if machine == nil {
+		return
+	}
+
+	// Best-effort flush so raw disk mounts persist writes before VM stop.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = machine.Exec(ctx, "sync", &api.ExecOptions{})
 }
