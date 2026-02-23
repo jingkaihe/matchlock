@@ -5,6 +5,7 @@ package net
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"sync"
@@ -61,6 +62,7 @@ type Config struct {
 	Events     chan api.Event
 	CAPool     *CAPool
 	DNSServers []string
+	Logger     *slog.Logger
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -313,7 +315,7 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		dnsServers: cfg.DNSServers,
 	}
 
-	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
+	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger)
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)

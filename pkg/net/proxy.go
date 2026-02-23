@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"syscall"
@@ -47,6 +48,7 @@ type ProxyConfig struct {
 	Policy          *policy.Engine
 	Events          chan api.Event
 	CAPool          *CAPool
+	Logger          *slog.Logger
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -86,7 +88,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
 		passthroughListener: passthroughLn,
-		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool),
+		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger),
 		policy:              cfg.Policy,
 		events:              cfg.Events,
 		httpPort:            actualHTTPPort,

@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -20,14 +20,19 @@ type HTTPInterceptor struct {
 	events   chan api.Event
 	caPool   *CAPool
 	connPool *upstreamConnPool
+	logger   *slog.Logger
 }
 
-func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool) *HTTPInterceptor {
+func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, logger *slog.Logger) *HTTPInterceptor {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &HTTPInterceptor{
 		policy:   pol,
 		events:   events,
 		caPool:   caPool,
 		connPool: newUpstreamConnPool(),
+		logger:   logger.With("component", "net"),
 	}
 }
 
@@ -180,7 +185,6 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		effectiveHost := serverName
 		if routeDirective != nil {
 			effectiveHost = routeDirective.Host
-			log.Printf("[matchlock] route: %s %s%s -> %s:%d (local-backend)", req.Method, serverName, req.URL.Path, routeDirective.Host, routeDirective.Port)
 		}
 
 		// Secret injection using effective host
@@ -259,9 +263,15 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
-		if routeDirective != nil {
-			log.Printf("[matchlock] route complete: %s %s%s -> %d %s (%dms, %d bytes)", req.Method, serverName, req.URL.Path, modifiedResp.StatusCode, effectiveHost, duration.Milliseconds(), len(body))
-		}
+		i.logger.Info("request complete",
+			"method", req.Method,
+			"host", serverName,
+			"path", req.URL.Path,
+			"status", modifiedResp.StatusCode,
+			"duration_ms", duration.Milliseconds(),
+			"bytes", len(body),
+			"routed", routeDirective != nil,
+		)
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {

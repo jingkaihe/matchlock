@@ -166,7 +166,7 @@ func benchTCPThroughput(b *testing.B, chunkSize int) {
 	echoAddr := ln.Addr().(*net.TCPAddr)
 
 	// Empty AllowedHosts = allow all traffic.
-	pol := policy.NewEngine(&api.NetworkConfig{})
+	pol := policy.NewEngine(&api.NetworkConfig{}, nil)
 	events := make(chan api.Event, 100)
 
 	a, bFile := socketpairFiles(b)

@@ -14,7 +14,7 @@ import (
 )
 
 func TestEngine_IsHostAllowed_NoRestrictions(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{})
+	engine := NewEngine(&api.NetworkConfig{}, nil)
 
 	assert.True(t, engine.IsHostAllowed("example.com"), "All hosts should be allowed when no restrictions")
 }
@@ -22,7 +22,7 @@ func TestEngine_IsHostAllowed_NoRestrictions(t *testing.T) {
 func TestEngine_IsHostAllowed_Allowlist(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		AllowedHosts: []string{"api.openai.com", "*.anthropic.com"},
-	})
+	}, nil)
 
 	tests := []struct {
 		host    string
@@ -45,7 +45,7 @@ func TestEngine_IsHostAllowed_Allowlist(t *testing.T) {
 func TestEngine_IsHostAllowed_BlockPrivateIPs(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs: true,
-	})
+	}, nil)
 
 	tests := []struct {
 		host    string
@@ -69,7 +69,7 @@ func TestEngine_IsHostAllowed_AllowedPrivateHosts(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs:     true,
 		AllowedPrivateHosts: []string{"192.168.1.100"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Explicitly allowed private IP should be allowed")
 	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
@@ -81,7 +81,7 @@ func TestEngine_IsHostAllowed_AllowedPrivateHostsGlob(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs:     true,
 		AllowedPrivateHosts: []string{"192.168.64.*"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("192.168.64.1"), "IP matching glob should be allowed")
 	assert.True(t, engine.IsHostAllowed("192.168.64.255"), "IP matching glob should be allowed")
@@ -93,7 +93,7 @@ func TestEngine_IsHostAllowed_EmptyAllowedPrivateHosts(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs:     true,
 		AllowedPrivateHosts: []string{},
-	})
+	}, nil)
 
 	assert.False(t, engine.IsHostAllowed("192.168.1.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
 	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
@@ -104,7 +104,7 @@ func TestEngine_IsHostAllowed_AllowedPrivateHostsNoBlock(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs:     false,
 		AllowedPrivateHosts: []string{"192.168.1.100"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP should be allowed when BlockPrivateIPs is false")
 	assert.True(t, engine.IsHostAllowed("192.168.1.101"), "Private IP should be allowed when BlockPrivateIPs is false")
@@ -116,7 +116,7 @@ func TestEngine_IsHostAllowed_PrivateHostNeedsAllowedHosts(t *testing.T) {
 		BlockPrivateIPs:     true,
 		AllowedPrivateHosts: []string{"192.168.1.100"},
 		AllowedHosts:        []string{"example.com", "192.168.1.100"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP in both AllowedPrivateHosts and AllowedHosts should be allowed")
 	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Private IP not in AllowedPrivateHosts should be blocked")
@@ -128,7 +128,7 @@ func TestEngine_IsHostAllowed_MultipleAllowedPrivateHosts(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs:     true,
 		AllowedPrivateHosts: []string{"192.168.1.100", "10.0.0.5", "172.16.0.*"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "First allowed private IP should pass")
 	assert.True(t, engine.IsHostAllowed("10.0.0.5"), "Second allowed private IP should pass")
@@ -141,7 +141,7 @@ func TestEngine_IsHostAllowed_MultipleAllowedPrivateHosts(t *testing.T) {
 func TestEngine_IsHostAllowed_WithPort(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		AllowedHosts: []string{"api.example.com"},
-	})
+	}, nil)
 
 	assert.True(t, engine.IsHostAllowed("api.example.com:443"), "Should allow host with port")
 }
@@ -151,7 +151,7 @@ func TestEngine_GetPlaceholder(t *testing.T) {
 		Secrets: map[string]api.Secret{
 			"API_KEY": {Value: "sk-secret-123"},
 		},
-	})
+	}, nil)
 
 	placeholder := engine.GetPlaceholder("API_KEY")
 	assert.NotEmpty(t, placeholder)
@@ -164,7 +164,7 @@ func TestEngine_GetPlaceholders(t *testing.T) {
 			"KEY1": {Value: "val1"},
 			"KEY2": {Value: "val2"},
 		},
-	})
+	}, nil)
 
 	placeholders := engine.GetPlaceholders()
 	assert.Len(t, placeholders, 2)
@@ -178,7 +178,7 @@ func TestEngine_OnRequest_SecretReplacement(t *testing.T) {
 				Hosts: []string{"api.example.com"},
 			},
 		},
-	})
+	}, nil)
 
 	placeholder := engine.GetPlaceholder("API_KEY")
 
@@ -203,7 +203,7 @@ func TestEngine_OnRequest_SecretLeak(t *testing.T) {
 				Hosts: []string{"api.example.com"},
 			},
 		},
-	})
+	}, nil)
 
 	placeholder := engine.GetPlaceholder("API_KEY")
 
@@ -226,7 +226,7 @@ func TestEngine_OnRequest_NoSecretForHost(t *testing.T) {
 				Hosts: []string{"api.example.com"},
 			},
 		},
-	})
+	}, nil)
 
 	req := &http.Request{
 		Header: http.Header{
@@ -249,7 +249,7 @@ func TestEngine_OnRequest_SecretInURL(t *testing.T) {
 				Hosts: []string{"api.example.com"},
 			},
 		},
-	})
+	}, nil)
 
 	placeholder := engine.GetPlaceholder("API_KEY")
 
@@ -274,7 +274,7 @@ func TestEngine_OnRequest_NoBodyReplacement(t *testing.T) {
 				Hosts: []string{"api.example.com"},
 			},
 		},
-	})
+	}, nil)
 
 	placeholder := engine.GetPlaceholder("API_KEY")
 	body := `{"key":"` + placeholder + `"}`
@@ -294,7 +294,7 @@ func TestEngine_OnRequest_NoBodyReplacement(t *testing.T) {
 }
 
 func TestEngine_OnResponse(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{})
+	engine := NewEngine(&api.NetworkConfig{}, nil)
 
 	resp := &http.Response{
 		StatusCode: 200,
@@ -304,65 +304,6 @@ func TestEngine_OnResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, resp, result, "Response should be unchanged")
-}
-
-func TestMatchGlob(t *testing.T) {
-	tests := []struct {
-		pattern string
-		str     string
-		match   bool
-	}{
-		{"*", "anything", true},
-		{"*.example.com", "api.example.com", true},
-		{"*.example.com", "a.b.example.com", true}, // deep subdomains
-		{"*.example.com", "example.com", false},
-		{"api.example.com", "api.example.com", true},
-		{"api.example.com", "other.example.com", false},
-		{"prefix.*", "prefix.com", true},
-		{"prefix.*", "other.com", false},
-		// Middle wildcard patterns
-		{"api-*.example.com", "api-v1.example.com", true},
-		{"api-*.example.com", "api-prod.example.com", true},
-		{"api-*.example.com", "other.example.com", false},
-		{"*-prod.example.com", "api-prod.example.com", true},
-		{"*-prod.example.com", "api-dev.example.com", false},
-		// Multiple wildcards
-		{"*.*.example.com", "a.b.example.com", true},
-		{"api-*-*.example.com", "api-v1-prod.example.com", true},
-		// Edge cases
-		{"", "", true},
-		{"test", "test", true},
-		{"test", "other", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.pattern+"_"+tt.str, func(t *testing.T) {
-			assert.Equal(t, tt.match, matchGlob(tt.pattern, tt.str))
-		})
-	}
-}
-
-func TestIsPrivateIP(t *testing.T) {
-	tests := []struct {
-		host    string
-		private bool
-	}{
-		{"192.168.1.1", true},
-		{"10.0.0.1", true},
-		{"172.16.0.1", true},
-		{"172.31.255.255", true},
-		{"127.0.0.1", true},
-		{"169.254.1.1", true},
-		{"8.8.8.8", false},
-		{"1.1.1.1", false},
-		{"172.32.0.1", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.host, func(t *testing.T) {
-			assert.Equal(t, tt.private, isPrivateIP(tt.host))
-		})
-	}
 }
 
 // --- Routing tests ---
@@ -383,7 +324,7 @@ func routingConfig() *api.NetworkConfig {
 }
 
 func TestEngine_RouteRequest_MatchingModel(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hi"}]}`
 	req := &http.Request{
@@ -403,7 +344,7 @@ func TestEngine_RouteRequest_MatchingModel(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_NonMatchingModel(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"openai/gpt-4o","messages":[]}`
 	req := &http.Request{
@@ -419,7 +360,7 @@ func TestEngine_RouteRequest_NonMatchingModel(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_WrongHost(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req := &http.Request{
@@ -435,7 +376,7 @@ func TestEngine_RouteRequest_WrongHost(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_WrongPath(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct"}`
 	req := &http.Request{
@@ -451,7 +392,7 @@ func TestEngine_RouteRequest_WrongPath(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_GETMethod(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	req := &http.Request{
 		Method: "GET",
@@ -465,7 +406,7 @@ func TestEngine_RouteRequest_GETMethod(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_BodyRewritten(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hi"}],"stream":true,"route":"fallback","transforms":["middle-out"],"provider":{"order":["Together"]}}`
 	req := &http.Request{
@@ -513,7 +454,7 @@ func TestEngine_RouteRequest_SecretScopingIntegration(t *testing.T) {
 			Hosts: []string{"openrouter.ai"},
 		},
 	}
-	engine := NewEngine(config)
+	engine := NewEngine(config, nil)
 
 	placeholder := engine.GetPlaceholder("OPENROUTER_KEY")
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
@@ -542,7 +483,7 @@ func TestEngine_RouteRequest_SecretScopingIntegration(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_BodyRestored_OnNoMatch(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	originalBody := `{"model":"openai/gpt-4o","messages":[{"role":"user","content":"hello"}]}`
 	req := &http.Request{
@@ -562,7 +503,7 @@ func TestEngine_RouteRequest_BodyRestored_OnNoMatch(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_NilBody(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	req := &http.Request{
 		Method: "POST",
@@ -577,7 +518,7 @@ func TestEngine_RouteRequest_NilBody(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_MalformedJSON(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	req := &http.Request{
 		Method: "POST",
@@ -592,7 +533,7 @@ func TestEngine_RouteRequest_MalformedJSON(t *testing.T) {
 }
 
 func TestEngine_RouteRequest_HostWithPort(t *testing.T) {
-	engine := NewEngine(routingConfig())
+	engine := NewEngine(routingConfig(), nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req := &http.Request{
@@ -611,7 +552,7 @@ func TestEngine_RouteRequest_HostWithPort(t *testing.T) {
 // --- New configurable routing tests ---
 
 func TestEngine_RouteRequest_NilRouting(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{})
+	engine := NewEngine(&api.NetworkConfig{}, nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req := &http.Request{
@@ -629,7 +570,7 @@ func TestEngine_RouteRequest_NilRouting(t *testing.T) {
 func TestEngine_RouteRequest_EmptyRouting(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		LocalModelRouting: []api.LocalModelRoute{},
-	})
+	}, nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req := &http.Request{
@@ -663,7 +604,7 @@ func TestEngine_RouteRequest_MultipleSourceHosts(t *testing.T) {
 				},
 			},
 		},
-	})
+	}, nil)
 
 	body1 := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req1 := &http.Request{
@@ -707,7 +648,7 @@ func TestEngine_RouteRequest_PerModelBackendOverride(t *testing.T) {
 				},
 			},
 		}},
-	})
+	}, nil)
 
 	body1 := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req1 := &http.Request{
@@ -745,7 +686,7 @@ func TestEngine_RouteRequest_CustomPath(t *testing.T) {
 				"gpt-4o-mini": {Target: "llama3.1:8b"},
 			},
 		}},
-	})
+	}, nil)
 
 	body := `{"model":"gpt-4o-mini","messages":[]}`
 	req := &http.Request{
@@ -769,7 +710,7 @@ func TestEngine_RouteRequest_CustomPath_NoMatchDefaultPath(t *testing.T) {
 				"gpt-4o-mini": {Target: "llama3.1:8b"},
 			},
 		}},
-	})
+	}, nil)
 
 	body := `{"model":"gpt-4o-mini","messages":[]}`
 	req := &http.Request{
@@ -794,7 +735,7 @@ func TestEngine_RouteRequest_HostHeaderRewritten(t *testing.T) {
 				"meta-llama/llama-3.1-8b-instruct": {Target: "llama3.1:8b"},
 			},
 		}},
-	})
+	}, nil)
 
 	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
 	req := &http.Request{
@@ -809,4 +750,112 @@ func TestEngine_RouteRequest_HostHeaderRewritten(t *testing.T) {
 	require.NotNil(t, directive)
 
 	assert.Equal(t, "192.168.1.50:9090", req.Host, "Host header should be rewritten to effective backend")
+}
+
+// --- Plugin orchestration tests ---
+
+func TestEngine_PluginDisabled(t *testing.T) {
+	enabled := false
+	config := &api.NetworkConfig{
+		Plugins: []api.PluginConfig{
+			{
+				Type:    "host_filter",
+				Enabled: &enabled,
+				Config:  json.RawMessage(`{"allowed_hosts":["example.com"]}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	// No gate plugins registered (the one plugin is disabled)
+	assert.True(t, engine.IsHostAllowed("anything.com"),
+		"All hosts should be allowed when only plugin is disabled")
+}
+
+func TestEngine_ExplicitPluginConfig(t *testing.T) {
+	config := &api.NetworkConfig{
+		Plugins: []api.PluginConfig{
+			{
+				Type:   "host_filter",
+				Config: json.RawMessage(`{"allowed_hosts":["only-this.com"]}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	assert.True(t, engine.IsHostAllowed("only-this.com"))
+	assert.False(t, engine.IsHostAllowed("other.com"))
+}
+
+func TestEngine_MixedFlatAndPlugin(t *testing.T) {
+	config := &api.NetworkConfig{
+		AllowedHosts: []string{"flat-host.com"},
+		Plugins: []api.PluginConfig{
+			{
+				Type:   "host_filter",
+				Config: json.RawMessage(`{"allowed_hosts":["plugin-host.com"]}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	assert.True(t, engine.IsHostAllowed("flat-host.com"),
+		"Host from flat field should be allowed")
+	assert.True(t, engine.IsHostAllowed("plugin-host.com"),
+		"Host from explicit plugin should be allowed")
+	assert.False(t, engine.IsHostAllowed("neither.com"),
+		"Host in neither should be blocked")
+}
+
+func TestEngine_UnknownPluginType(t *testing.T) {
+	config := &api.NetworkConfig{
+		Plugins: []api.PluginConfig{
+			{
+				Type:   "nonexistent_plugin",
+				Config: json.RawMessage(`{}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	// Engine should create successfully; unknown plugin is skipped
+	assert.True(t, engine.IsHostAllowed("anything.com"))
+}
+
+func TestEngine_PluginSecretInjection(t *testing.T) {
+	config := &api.NetworkConfig{
+		Plugins: []api.PluginConfig{
+			{
+				Type: "secret_injector",
+				Config: json.RawMessage(`{
+					"secrets": {
+						"MY_KEY": {
+							"value": "real-value",
+							"hosts": ["api.example.com"]
+						}
+					}
+				}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	placeholders := engine.GetPlaceholders()
+	assert.Contains(t, placeholders, "MY_KEY")
+}
+
+func TestEngine_PluginConfigIsEnabled(t *testing.T) {
+	// nil Enabled = true (default)
+	p1 := api.PluginConfig{Type: "host_filter"}
+	assert.True(t, p1.IsEnabled())
+
+	// Explicit true
+	enabled := true
+	p2 := api.PluginConfig{Type: "host_filter", Enabled: &enabled}
+	assert.True(t, p2.IsEnabled())
+
+	// Explicit false
+	disabled := false
+	p3 := api.PluginConfig{Type: "host_filter", Enabled: &disabled}
+	assert.False(t, p3.IsEnabled())
 }

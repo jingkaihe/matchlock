@@ -1,6 +1,10 @@
 package sdk
 
-import "github.com/jingkaihe/matchlock/pkg/api"
+import (
+	"encoding/json"
+
+	"github.com/jingkaihe/matchlock/pkg/api"
+)
 
 // SandboxBuilder provides a fluent API for configuring and creating sandboxes.
 //
@@ -287,6 +291,19 @@ func (b *SandboxBuilder) WithImageConfig(cfg *ImageConfig) *SandboxBuilder {
 	if cfg.Env != nil {
 		b.opts.ImageConfig.Env = cfg.Env
 	}
+	return b
+}
+
+// PluginConfig configures a network policy plugin for the SDK wire format.
+type PluginConfig struct {
+	Type    string          `json:"type"`
+	Enabled *bool           `json:"enabled,omitempty"`
+	Config  json.RawMessage `json:"config,omitempty"`
+}
+
+// WithPlugin adds an explicit plugin configuration to the network config.
+func (b *SandboxBuilder) WithPlugin(cfg PluginConfig) *SandboxBuilder {
+	b.opts.Plugins = append(b.opts.Plugins, cfg)
 	return b
 }
 

@@ -224,6 +224,7 @@ graph LR
 ## Docs
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
+- [Network Plugins](docs/network-plugins.md)
 - [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 

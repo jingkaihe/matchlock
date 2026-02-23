@@ -3,7 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,7 +20,7 @@ func DefaultKernelPath() string {
 
 	path, err := kernel.ResolveKernelPath(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to resolve kernel path: %v\n", err)
+		slog.Warn("failed to resolve kernel path", "error", err)
 		home, _ := os.UserHomeDir()
 		arch := kernel.CurrentArch()
 		return filepath.Join(home, ".cache/matchlock", arch.KernelFilename())
@@ -104,7 +104,7 @@ func findGuestBinary(name, envVar string) string {
 				if isCorrectELFArch(p) {
 					return p
 				}
-				fmt.Fprintf(os.Stderr, "Warning: %s has wrong architecture, skipping\n", p)
+				slog.Warn("kernel has wrong architecture, skipping", "path", p)
 			}
 		}
 	}

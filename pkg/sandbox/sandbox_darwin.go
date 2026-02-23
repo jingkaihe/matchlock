@@ -230,7 +230,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	policyEngine := policy.NewEngine(config.Network)
+	policyEngine := policy.NewEngine(config.Network, nil)
 	events := make(chan api.Event, 100)
 
 	var netStack *sandboxnet.NetworkStack
@@ -253,6 +253,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Events:     events,
 			CAPool:     caPool,
 			DNSServers: config.Network.GetDNSServers(),
+			Logger:     nil,
 		})
 		if err != nil {
 			machine.Close(ctx)

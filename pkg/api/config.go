@@ -86,6 +86,30 @@ type NetworkConfig struct {
 	Hostname            string              `json:"hostname,omitempty"`
 	MTU                 int                 `json:"mtu,omitempty"`
 	LocalModelRouting   []LocalModelRoute   `json:"local_model_routing,omitempty"`
+	// Plugins contains explicit plugin configurations.
+	// Flat fields (AllowedHosts, Secrets, LocalModelRouting) are compiled
+	// into built-in plugins internally. This array is for advanced
+	// configuration: overrides, additional instances, or disabling defaults.
+	Plugins             []PluginConfig      `json:"plugins,omitempty"`
+}
+
+// PluginConfig is the generic config wrapper for a network policy plugin.
+// Each entry in NetworkConfig.Plugins is a PluginConfig.
+type PluginConfig struct {
+	// Type is the plugin type name (e.g., "host_filter", "secret_injector").
+	Type    string          `json:"type"`
+	// Enabled controls whether this plugin is active. Defaults to true if nil.
+	Enabled *bool           `json:"enabled,omitempty"`
+	// Config is the plugin-specific configuration as raw JSON.
+	Config  json.RawMessage `json:"config,omitempty"`
+}
+
+// IsEnabled returns whether the plugin is enabled. Defaults to true.
+func (p *PluginConfig) IsEnabled() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
 }
 
 // LocalModelRoute configures interception of LLM API requests from a

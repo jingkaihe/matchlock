@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -263,4 +264,62 @@ func TestBuilderVFSInterceptionCallback(t *testing.T) {
 	require.NotNil(t, opts.VFSInterception)
 	require.Len(t, opts.VFSInterception.Rules, 1)
 	assert.NotNil(t, opts.VFSInterception.Rules[0].Hook)
+}
+
+func TestBuilderWithPlugin(t *testing.T) {
+	opts := New("alpine:latest").
+		WithPlugin(PluginConfig{
+			Type:   "host_filter",
+			Config: json.RawMessage(`{"allowed_hosts":["example.com"]}`),
+		}).
+		Options()
+
+	require.Len(t, opts.Plugins, 1)
+	assert.Equal(t, "host_filter", opts.Plugins[0].Type)
+	assert.Nil(t, opts.Plugins[0].Enabled)
+	assert.JSONEq(t, `{"allowed_hosts":["example.com"]}`, string(opts.Plugins[0].Config))
+}
+
+func TestBuilderWithPluginMultiple(t *testing.T) {
+	enabled := false
+	opts := New("alpine:latest").
+		WithPlugin(PluginConfig{
+			Type:   "host_filter",
+			Config: json.RawMessage(`{"allowed_hosts":["a.com"]}`),
+		}).
+		WithPlugin(PluginConfig{
+			Type:    "local_model_router",
+			Enabled: &enabled,
+			Config:  json.RawMessage(`{"routes":[]}`),
+		}).
+		Options()
+
+	require.Len(t, opts.Plugins, 2)
+	assert.Equal(t, "host_filter", opts.Plugins[0].Type)
+	assert.Equal(t, "local_model_router", opts.Plugins[1].Type)
+	assert.NotNil(t, opts.Plugins[1].Enabled)
+	assert.False(t, *opts.Plugins[1].Enabled)
+}
+
+func TestBuilderWithPluginSerialization(t *testing.T) {
+	opts := CreateOptions{
+		Image: "alpine:latest",
+		Plugins: []PluginConfig{
+			{
+				Type:   "host_filter",
+				Config: json.RawMessage(`{"allowed_hosts":["example.com"]}`),
+			},
+		},
+	}
+
+	network := buildCreateNetworkParams(opts)
+	require.NotNil(t, network, "Network params should be included when plugins are present")
+
+	plugins, ok := network["plugins"]
+	require.True(t, ok, "Network params should contain plugins key")
+
+	pluginSlice, ok := plugins.([]PluginConfig)
+	require.True(t, ok)
+	require.Len(t, pluginSlice, 1)
+	assert.Equal(t, "host_filter", pluginSlice[0].Type)
 }

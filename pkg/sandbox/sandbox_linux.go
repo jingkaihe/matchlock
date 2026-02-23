@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -230,7 +231,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	// Create policy engine
-	policyEngine := policy.NewEngine(config.Network)
+	policyEngine := policy.NewEngine(config.Network, nil)
 
 	// Create event channel
 	events := make(chan api.Event, 100)
@@ -251,6 +252,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Policy:          policyEngine,
 			Events:          events,
 			CAPool:          caPool,
+			Logger:          nil,
 		})
 		if err != nil {
 			machine.Close(ctx)
@@ -274,7 +276,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Set up basic NAT for guest network access using nftables
 	natRules := sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
 	if err := natRules.Setup(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
+		slog.Warn("failed to setup NAT", "error", err)
 		natRules = nil
 	}
 
@@ -600,7 +602,7 @@ func copyRootfs(src, dst string) error {
 	}
 
 	// Fall back to regular copy
-	fmt.Fprintf(os.Stderr, "Note: copy-on-write not supported (%v), using regular copy\n", err)
+	slog.Info("copy-on-write not supported, using regular copy", "error", err)
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
 		os.Remove(dst)
 		return errx.Wrap(ErrCopy, err)

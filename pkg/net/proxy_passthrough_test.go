@@ -21,7 +21,7 @@ func TestHandlePassthrough_Allowed(t *testing.T) {
 	tp := &TransparentProxy{
 		policy: policy.NewEngine(&api.NetworkConfig{
 			AllowedHosts: []string{"127.0.0.1"},
-		}),
+		}, nil),
 		events: make(chan api.Event, 10),
 	}
 
@@ -49,7 +49,7 @@ func TestHandlePassthrough_Blocked(t *testing.T) {
 	tp := &TransparentProxy{
 		policy: policy.NewEngine(&api.NetworkConfig{
 			AllowedHosts: []string{"allowed.example.com"},
-		}),
+		}, nil),
 		events: make(chan api.Event, 10),
 	}
 
@@ -82,7 +82,7 @@ func TestHandlePassthrough_EmptyAllowlist(t *testing.T) {
 	defer upstream.Close()
 
 	tp := &TransparentProxy{
-		policy: policy.NewEngine(&api.NetworkConfig{}),
+		policy: policy.NewEngine(&api.NetworkConfig{}, nil),
 		events: make(chan api.Event, 10),
 	}
 
@@ -109,7 +109,7 @@ func TestHandlePassthrough_UpstreamRefused(t *testing.T) {
 	tp := &TransparentProxy{
 		policy: policy.NewEngine(&api.NetworkConfig{
 			AllowedHosts: []string{"127.0.0.1"},
-		}),
+		}, nil),
 		events: make(chan api.Event, 10),
 	}
 
@@ -151,7 +151,7 @@ func TestHandlePassthrough_HalfClose(t *testing.T) {
 	tp := &TransparentProxy{
 		policy: policy.NewEngine(&api.NetworkConfig{
 			AllowedHosts: []string{"127.0.0.1"},
-		}),
+		}, nil),
 		events: make(chan api.Event, 10),
 	}
 

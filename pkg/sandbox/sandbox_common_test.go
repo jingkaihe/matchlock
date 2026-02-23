@@ -123,7 +123,7 @@ func TestPrepareExecEnv_SecretPlaceholderOverridesConfigEnv(t *testing.T) {
 		Secrets: map[string]api.Secret{
 			"API_KEY": {Value: "real-secret"},
 		},
-	})
+	}, nil)
 
 	opts := prepareExecEnv(config, nil, pol)
 

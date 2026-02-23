@@ -244,6 +244,8 @@ type CreateOptions struct {
 	ImageConfig *ImageConfig
 	// LocalModelRoutes configures local model routing rules.
 	LocalModelRoutes []LocalModelRouteOption
+	// Plugins configures explicit network policy plugins.
+	Plugins []PluginConfig
 }
 
 // ImageConfig holds OCI image metadata for user/entrypoint/cmd/workdir/env.
@@ -521,9 +523,10 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasMTU := opts.NetworkMTU > 0
 	hasAllowedPrivateHosts := len(opts.AllowedPrivateHosts) > 0
 	hasLocalModelRoutes := len(opts.LocalModelRoutes) > 0
+	hasPlugins := len(opts.Plugins) > 0
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts || hasLocalModelRoutes
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts || hasLocalModelRoutes || hasPlugins
 	if !includeNetwork {
 		return nil
 	}
@@ -588,6 +591,9 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 			routes = append(routes, route)
 		}
 		network["local_model_routing"] = routes
+	}
+	if hasPlugins {
+		network["plugins"] = opts.Plugins
 	}
 	return network
 }

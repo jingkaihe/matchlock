@@ -1,358 +1,254 @@
 package policy
 
 import (
-	"bytes"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net"
+	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
+// Engine orchestrates network policy plugins.
+// Its public API is unchanged from the pre-plugin version.
 type Engine struct {
-	config       *api.NetworkConfig
+	gates     []GatePlugin
+	routers   []RoutePlugin
+	requests  []RequestPlugin
+	responses []ResponsePlugin
+
 	placeholders map[string]string
+	logger       *slog.Logger
 }
 
-// RouteDirective tells the HTTP interceptor to send a request to an
-// alternative backend instead of the original destination.
-// A nil *RouteDirective means "use the original destination."
-type RouteDirective struct {
-	Host   string // Target host, e.g., "127.0.0.1"
-	Port   int    // Target port, e.g., 11434
-	UseTLS bool   // Whether to use TLS for the upstream connection
-}
-
-func NewEngine(config *api.NetworkConfig) *Engine {
+// NewEngine creates a policy engine from a NetworkConfig.
+// It compiles flat config fields into built-in plugins and processes
+// any explicit plugin entries from config.Plugins.
+func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	e := &Engine{
-		config:       config,
 		placeholders: make(map[string]string),
+		logger:       logger.With("component", "policy"),
 	}
 
-	for name, secret := range config.Secrets {
-		if secret.Placeholder == "" {
-			placeholder := generatePlaceholder()
-			config.Secrets[name] = api.Secret{
-				Value:       secret.Value,
-				Placeholder: placeholder,
-				Hosts:       secret.Hosts,
+	// --- Step 1: Compile flat config fields into built-in plugins ---
+
+	// Track which built-in types were created from flat fields.
+	// Used for conflict detection in step 2.
+	flatTypes := make(map[string]bool)
+
+	if len(config.AllowedHosts) > 0 || config.BlockPrivateIPs {
+		pluginLogger := e.logger.With("plugin", "host_filter")
+		e.addPlugin(NewHostFilterPlugin(
+			config.AllowedHosts,
+			config.BlockPrivateIPs,
+			config.AllowedPrivateHosts,
+			pluginLogger,
+		))
+		flatTypes["host_filter"] = true
+		e.logger.Debug("plugin registered from flat config", "plugin", "host_filter")
+	}
+
+	if len(config.Secrets) > 0 {
+		pluginLogger := e.logger.With("plugin", "secret_injector")
+		p := NewSecretInjectorPlugin(config.Secrets, pluginLogger)
+		e.addPlugin(p)
+		flatTypes["secret_injector"] = true
+		e.logger.Debug("plugin registered from flat config", "plugin", "secret_injector")
+
+		// Back-populate placeholders into the original config.Secrets
+		// so that callers who read config.Secrets[name].Placeholder
+		// (e.g., sandbox_common.go) see the generated values.
+		for name, placeholder := range p.GetPlaceholders() {
+			if secret, ok := config.Secrets[name]; ok {
+				secret.Placeholder = placeholder
+				config.Secrets[name] = secret
 			}
 		}
-		e.placeholders[name] = config.Secrets[name].Placeholder
 	}
+
+	if len(config.LocalModelRouting) > 0 {
+		pluginLogger := e.logger.With("plugin", "local_model_router")
+		e.addPlugin(NewLocalModelRouterPlugin(config.LocalModelRouting, pluginLogger))
+		flatTypes["local_model_router"] = true
+		e.logger.Debug("plugin registered from flat config", "plugin", "local_model_router")
+	}
+
+	// --- Step 2: Add explicitly configured plugins from network.plugins ---
+
+	for _, pluginCfg := range config.Plugins {
+		if !pluginCfg.IsEnabled() {
+			continue
+		}
+
+		// Conflict detection: merge, but warn
+		if flatTypes[pluginCfg.Type] {
+			e.logger.Warn("duplicate plugin type in flat fields and plugins array",
+				"type", pluginCfg.Type)
+		}
+
+		factory, ok := LookupFactory(pluginCfg.Type)
+		if !ok {
+			e.logger.Warn("unknown plugin type, skipping", "type", pluginCfg.Type)
+			continue
+		}
+
+		pluginLogger := e.logger.With("plugin", pluginCfg.Type)
+		p, err := factory(pluginCfg.Config, pluginLogger)
+		if err != nil {
+			e.logger.Warn("plugin creation failed, skipping",
+				"type", pluginCfg.Type, "error", err)
+			continue
+		}
+
+		e.addPlugin(p)
+		e.logger.Debug("plugin registered from config array", "plugin", pluginCfg.Type)
+	}
+
+	// --- Step 3: Collect placeholders from all PlaceholderProvider plugins ---
+
+	e.collectPlaceholders()
+
+	e.logger.Info("engine ready",
+		"gates", len(e.gates),
+		"routers", len(e.routers),
+		"requests", len(e.requests),
+		"responses", len(e.responses),
+	)
 
 	return e
 }
 
-func generatePlaceholder() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return "SANDBOX_SECRET_" + hex.EncodeToString(b)
+// addPlugin sorts a plugin into the correct phase slices based on
+// which interfaces it implements. A single plugin can appear in
+// multiple slices (e.g., local_model_router appears in both routers
+// and requests).
+func (e *Engine) addPlugin(p Plugin) {
+	if gp, ok := p.(GatePlugin); ok {
+		e.gates = append(e.gates, gp)
+	}
+	if rp, ok := p.(RoutePlugin); ok {
+		e.routers = append(e.routers, rp)
+	}
+	if rqp, ok := p.(RequestPlugin); ok {
+		e.requests = append(e.requests, rqp)
+	}
+	if rsp, ok := p.(ResponsePlugin); ok {
+		e.responses = append(e.responses, rsp)
+	}
 }
 
+// collectPlaceholders gathers placeholders from all registered plugins
+// that implement PlaceholderProvider.
+func (e *Engine) collectPlaceholders() {
+	collect := func(p Plugin) {
+		if pp, ok := p.(PlaceholderProvider); ok {
+			for k, v := range pp.GetPlaceholders() {
+				e.placeholders[k] = v
+			}
+		}
+	}
+	for _, p := range e.gates {
+		collect(p)
+	}
+	for _, p := range e.routers {
+		collect(p)
+	}
+	for _, p := range e.requests {
+		collect(p)
+	}
+	for _, p := range e.responses {
+		collect(p)
+	}
+}
+
+// --- Public API (signatures unchanged) ---
+
+// IsHostAllowed checks whether the given host is permitted by gate plugins.
+// If no gate plugins are registered, all hosts are allowed.
+// With multiple gates, OR semantics: any gate allowing = allowed.
+func (e *Engine) IsHostAllowed(host string) bool {
+	if len(e.gates) == 0 {
+		return true
+	}
+	for _, g := range e.gates {
+		allowed, reason := g.Gate(host)
+		if allowed {
+			e.logger.Debug("gate allowed", "plugin", g.Name(), "host", host)
+			return true
+		}
+		e.logger.Warn("gate blocked", "plugin", g.Name(), "host", host, "reason", reason)
+	}
+	return false
+}
+
+// RouteRequest inspects a request and returns a RouteDirective if a router
+// plugin wants to redirect it. First non-nil directive wins.
+func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, error) {
+	for _, r := range e.routers {
+		directive, err := r.Route(req, host)
+		if err != nil {
+			e.logger.Warn("route error", "plugin", r.Name(), "host", host, "error", err)
+			return nil, err
+		}
+		if directive != nil {
+			e.logger.Info("route matched",
+				"plugin", r.Name(),
+				"method", req.Method,
+				"host", host,
+				"path", req.URL.Path,
+				"target_host", directive.Host,
+				"target_port", directive.Port,
+			)
+			return directive, nil
+		}
+	}
+	e.logger.Debug("route passthrough",
+		"host", host,
+		"method", req.Method,
+		"path", req.URL.Path,
+	)
+	return nil, nil
+}
+
+// OnRequest runs request transform plugins in chain order.
+func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error) {
+	var err error
+	for _, p := range e.requests {
+		req, err = p.TransformRequest(req, host)
+		if err != nil {
+			e.logger.Warn("request transform failed",
+				"plugin", p.Name(), "host", host, "error", err)
+			return nil, err
+		}
+	}
+	return req, nil
+}
+
+// OnResponse runs response transform plugins in chain order.
+func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
+	var err error
+	for _, p := range e.responses {
+		resp, err = p.TransformResponse(resp, req, host)
+		if err != nil {
+			e.logger.Warn("response transform failed",
+				"plugin", p.Name(), "host", host, "error", err)
+			return nil, err
+		}
+	}
+	return resp, nil
+}
+
+// GetPlaceholder returns the placeholder for a named secret.
 func (e *Engine) GetPlaceholder(name string) string {
 	return e.placeholders[name]
 }
 
+// GetPlaceholders returns a copy of all secret placeholders.
 func (e *Engine) GetPlaceholders() map[string]string {
-	result := make(map[string]string)
+	result := make(map[string]string, len(e.placeholders))
 	for k, v := range e.placeholders {
 		result[k] = v
 	}
 	return result
-}
-
-func (e *Engine) IsHostAllowed(host string) bool {
-	host = strings.Split(host, ":")[0]
-
-	if e.config.BlockPrivateIPs {
-		if isPrivateIP(host) {
-			if !e.isPrivateHostAllowed(host) {
-				return false
-			}
-		}
-	}
-
-	if len(e.config.AllowedHosts) == 0 {
-		return true
-	}
-
-	for _, pattern := range e.config.AllowedHosts {
-		if matchGlob(pattern, host) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (e *Engine) isPrivateHostAllowed(host string) bool {
-	for _, pattern := range e.config.AllowedPrivateHosts {
-		if matchGlob(pattern, host) {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error) {
-	host = strings.Split(host, ":")[0]
-
-	for name, secret := range e.config.Secrets {
-		if !e.isSecretAllowedForHost(name, host) {
-			if e.requestContainsPlaceholder(req, secret.Placeholder) {
-				return nil, api.ErrSecretLeak
-			}
-			continue
-		}
-		e.replaceInRequest(req, secret.Placeholder, secret.Value)
-	}
-
-	return req, nil
-}
-
-func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
-	return resp, nil
-}
-
-// RouteRequest inspects a request and returns a RouteDirective if the
-// request should be sent to an alternative backend.
-func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, error) {
-	if len(e.config.LocalModelRouting) == 0 {
-		return nil, nil
-	}
-
-	host = strings.Split(host, ":")[0]
-
-	for _, route := range e.config.LocalModelRouting {
-		if route.SourceHost != host {
-			continue
-		}
-
-		if req.Method != "POST" || req.URL.Path != route.GetPath() {
-			return nil, nil
-		}
-
-		if req.Body == nil {
-			return nil, nil
-		}
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return nil, nil
-		}
-		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-
-		var payload struct {
-			Model string `json:"model"`
-		}
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			return nil, nil
-		}
-
-		modelRoute, ok := route.Models[payload.Model]
-		if !ok {
-			return nil, nil
-		}
-
-		backendHost := modelRoute.EffectiveBackendHost(route.GetBackendHost())
-		backendPort := modelRoute.EffectiveBackendPort(route.GetBackendPort())
-
-		e.rewriteRequestForLocal(req, bodyBytes, payload.Model, modelRoute.Target, backendHost, backendPort)
-
-		return &RouteDirective{
-			Host:   backendHost,
-			Port:   backendPort,
-			UseTLS: false,
-		}, nil
-	}
-
-	return nil, nil
-}
-
-func (e *Engine) rewriteRequestForLocal(req *http.Request, bodyBytes []byte, originalModel, targetModel, backendHost string, backendPort int) {
-	req.URL.Path = "/v1/chat/completions"
-
-	req.Header.Del("Authorization")
-	req.Header.Del("Http-Referer")
-	req.Header.Del("X-Title")
-
-	var bodyMap map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &bodyMap); err != nil {
-		newBody := bytes.Replace(bodyBytes, []byte(`"`+originalModel+`"`), []byte(`"`+targetModel+`"`), 1)
-		req.Body = io.NopCloser(bytes.NewReader(newBody))
-		req.ContentLength = int64(len(newBody))
-		return
-	}
-
-	bodyMap["model"] = targetModel
-	delete(bodyMap, "route")
-	delete(bodyMap, "transforms")
-	delete(bodyMap, "provider")
-
-	newBody, err := json.Marshal(bodyMap)
-	if err != nil {
-		newBody = bytes.Replace(bodyBytes, []byte(`"`+originalModel+`"`), []byte(`"`+targetModel+`"`), 1)
-	}
-
-	req.Body = io.NopCloser(bytes.NewReader(newBody))
-	req.ContentLength = int64(len(newBody))
-	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(newBody)))
-
-	req.Host = fmt.Sprintf("%s:%d", backendHost, backendPort)
-}
-
-func (e *Engine) isSecretAllowedForHost(secretName, host string) bool {
-	secret, ok := e.config.Secrets[secretName]
-	if !ok {
-		return false
-	}
-
-	if len(secret.Hosts) == 0 {
-		return true
-	}
-
-	for _, pattern := range secret.Hosts {
-		if matchGlob(pattern, host) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (e *Engine) requestContainsPlaceholder(req *http.Request, placeholder string) bool {
-	for _, values := range req.Header {
-		for _, v := range values {
-			if strings.Contains(v, placeholder) {
-				return true
-			}
-		}
-	}
-
-	if req.URL != nil {
-		if strings.Contains(req.URL.String(), placeholder) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// replaceInRequest substitutes the placeholder with the real secret in headers
-// and URL query params only. We intentionally skip the request body because the
-// body is processed by the remote server's application layer, which may log or
-// echo it back in responses — leaking the real secret into the VM.
-func (e *Engine) replaceInRequest(req *http.Request, placeholder, value string) {
-	for key, values := range req.Header {
-		for i, v := range values {
-			if strings.Contains(v, placeholder) {
-				req.Header[key][i] = strings.ReplaceAll(v, placeholder, value)
-			}
-		}
-	}
-
-	if req.URL != nil {
-		if strings.Contains(req.URL.RawQuery, placeholder) {
-			req.URL.RawQuery = strings.ReplaceAll(req.URL.RawQuery, placeholder, value)
-		}
-	}
-
-}
-
-func matchGlob(pattern, str string) bool {
-	if pattern == "*" {
-		return true
-	}
-
-	// Simple prefix wildcard: *.example.com
-	if strings.HasPrefix(pattern, "*.") && !strings.Contains(pattern[2:], "*") {
-		suffix := pattern[1:]
-		return strings.HasSuffix(str, suffix)
-	}
-
-	// Simple suffix wildcard: example.*
-	if strings.HasSuffix(pattern, ".*") && !strings.Contains(pattern[:len(pattern)-2], "*") {
-		prefix := pattern[:len(pattern)-2]
-		return strings.HasPrefix(str, prefix+".")
-	}
-
-	// General glob matching with * as wildcard
-	if strings.Contains(pattern, "*") {
-		return matchWildcard(pattern, str)
-	}
-
-	return pattern == str
-}
-
-// matchWildcard handles patterns with * wildcards anywhere
-func matchWildcard(pattern, str string) bool {
-	parts := strings.Split(pattern, "*")
-	if len(parts) == 1 {
-		return pattern == str
-	}
-
-	// Check prefix (before first *)
-	if parts[0] != "" && !strings.HasPrefix(str, parts[0]) {
-		return false
-	}
-	str = str[len(parts[0]):]
-
-	// Check suffix (after last *)
-	lastPart := parts[len(parts)-1]
-	if lastPart != "" && !strings.HasSuffix(str, lastPart) {
-		return false
-	}
-	if lastPart != "" {
-		str = str[:len(str)-len(lastPart)]
-	}
-
-	// Check middle parts in order
-	for i := 1; i < len(parts)-1; i++ {
-		if parts[i] == "" {
-			continue
-		}
-		idx := strings.Index(str, parts[i])
-		if idx < 0 {
-			return false
-		}
-		str = str[idx+len(parts[i]):]
-	}
-
-	return true
-}
-
-func isPrivateIP(host string) bool {
-	ip := net.ParseIP(host)
-	if ip == nil {
-		ips, err := net.LookupIP(host)
-		if err != nil || len(ips) == 0 {
-			return false
-		}
-		ip = ips[0]
-	}
-
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-	}
-
-	for _, cidr := range privateRanges {
-		_, network, _ := net.ParseCIDR(cidr)
-		if network.Contains(ip) {
-			return true
-		}
-	}
-
-	return false
 }
