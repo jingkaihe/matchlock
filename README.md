@@ -40,6 +40,21 @@ export ANTHROPIC_API_KEY=sk-xxx
 matchlock run --image python:3.12-alpine \
   --secret ANTHROPIC_API_KEY@api.anthropic.com python call_api.py
 
+# Allow specific private IPs (e.g., local Ollama)
+matchlock run --image python:3.12-alpine \
+  --allow-host "ollama-host" \
+  --allow-private-host "192.168.1.100" \
+  --add-host "ollama-host:192.168.1.100" python agent.py
+
+# Local model routing (redirect cloud API calls to a local backend)
+matchlock run --image python:3.12-alpine \
+  --allow-host "openrouter.ai" \
+  --local-model-backend "192.168.1.100:11434" \
+  --local-model-route "openrouter.ai/google/gemini-2.0-flash-001=llama3.1:8b" \
+  python agent.py
+# The agent calls openrouter.ai as normal, but matchlock intercepts the request
+# and redirects it to the local Ollama backend, rewriting the model name.
+
 # Long-lived sandboxes
 matchlock run --image alpine:latest --rm=false   # prints VM ID
 matchlock exec vm-abc12345 -it sh                # attach to it
@@ -220,6 +235,18 @@ graph LR
 | Linux | Transparent proxy | nftables DNAT on ports 80/443 |
 | macOS | NAT (default) | Virtualization.framework built-in NAT |
 | macOS | Interception (with `--allow-host`/`--secret`) | gVisor userspace TCP/IP at L4 |
+
+### Network Plugins
+
+When the interception proxy is active, requests flow through a plugin pipeline with four phases: **Gate** (should this connection proceed?), **Route** (redirect to a different backend?), **Request** (transform outbound headers/body), and **Response** (transform inbound). Three built-in plugins handle the common cases:
+
+| Plugin | What it does | CLI flags |
+|--------|-------------|-----------|
+| `host_filter` | Allowlist-based connection gating + private IP blocking | `--allow-host`, `--allow-private-host` |
+| `secret_injector` | Replaces placeholder tokens with real secrets in-flight | `--secret` |
+| `local_model_router` | Redirects LLM API calls to a local inference backend | `--local-model-backend`, `--local-model-route` |
+
+Plugins are composable and extensible. See [Network Plugins](docs/network-plugins.md) for the full configuration reference and how to write your own.
 
 ## Docs
 

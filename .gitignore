@@ -52,4 +52,7 @@ firecracker-*.log
 /matchlock
 
 # Docs
-docs/
+docs/draft/
+docs/drafts/
+docs/spec/
+docs/specs/
