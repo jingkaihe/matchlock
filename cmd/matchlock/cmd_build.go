@@ -281,7 +281,10 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		},
 	}
 
-	sandboxOpts := &sandbox.Options{RootfsPath: buildResult.RootfsPath}
+	sandboxOpts := &sandbox.Options{
+		RootfsPaths:   buildResult.LowerPaths,
+		RootfsFSTypes: buildResult.LowerFSTypes,
+	}
 	sb, err := sandbox.New(ctx, config, sandboxOpts)
 	if err != nil {
 		return errx.Wrap(ErrCreateBuildSandbox, err)
@@ -370,7 +373,7 @@ exit $RC
 	}
 
 	fmt.Printf("Successfully built and tagged %s\n", tag)
-	fmt.Printf("Rootfs: %s\n", importResult.RootfsPath)
+	fmt.Printf("Layers: %d\n", len(importResult.LowerPaths))
 	fmt.Printf("Size: %.1f MB\n", float64(importResult.Size)/(1024*1024))
 	return nil
 }

@@ -404,10 +404,16 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 }
 
 func (m *DarwinMachine) NetworkFD() (int, error) {
+	if m.socketPair == nil {
+		return -1, ErrNetworkConfig
+	}
 	return m.socketPair.HostFD(), nil
 }
 
 func (m *DarwinMachine) NetworkFile() *os.File {
+	if m.socketPair == nil {
+		return nil
+	}
 	return m.socketPair.HostFile()
 }
 

@@ -214,6 +214,8 @@ type CreateOptions struct {
 	// BlockPrivateIPsSet marks whether BlockPrivateIPs was explicitly set.
 	// When false, the SDK preserves API defaults for private IP blocking.
 	BlockPrivateIPsSet bool
+	// NoNetwork disables guest network egress entirely (no guest NIC).
+	NoNetwork bool
 	// AllowedPrivateHosts lists specific private IP addresses or patterns
 	// that bypass block-private-ips when it is enabled.
 	AllowedPrivateHosts []string
@@ -440,6 +442,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.NetworkMTU < 0 {
 		return "", ErrInvalidNetworkMTU
 	}
+	if opts.NoNetwork && (len(opts.AllowedHosts) > 0 || len(opts.Secrets) > 0) {
+		return "", ErrNoNetworkConflict
+	}
 	for _, mapping := range opts.AddHosts {
 		if err := api.ValidateAddHost(mapping); err != nil {
 			return "", errx.Wrap(ErrInvalidAddHost, err)
@@ -524,11 +529,28 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasAllowedPrivateHosts := len(opts.AllowedPrivateHosts) > 0
 	hasLocalModelRoutes := len(opts.LocalModelRoutes) > 0
 	hasPlugins := len(opts.Plugins) > 0
+	hasNoNetwork := opts.NoNetwork
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts || hasLocalModelRoutes || hasPlugins
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasNoNetwork || hasBlockPrivateIPsOverride || hasAllowedPrivateHosts || hasLocalModelRoutes || hasPlugins
 	if !includeNetwork {
 		return nil
+	}
+
+	if hasNoNetwork {
+		network := map[string]interface{}{
+			"no_network": true,
+		}
+		if hasAddHosts {
+			network["add_hosts"] = opts.AddHosts
+		}
+		if hasDNSServers {
+			network["dns_servers"] = opts.DNSServers
+		}
+		if hasHostname {
+			network["hostname"] = opts.Hostname
+		}
+		return network
 	}
 
 	// Create config merges replace network defaults wholesale. Preserve default

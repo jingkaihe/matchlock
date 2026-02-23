@@ -94,6 +94,7 @@ func init() {
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
+	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
@@ -124,6 +125,7 @@ func init() {
 	viper.BindPFlag("run.local-model-route", runCmd.Flags().Lookup("local-model-route"))
 	viper.BindPFlag("run.hostname", runCmd.Flags().Lookup("hostname"))
 	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
+	viper.BindPFlag("run.no-network", runCmd.Flags().Lookup("no-network"))
 	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
 	viper.BindPFlag("run.address", runCmd.Flags().Lookup("address"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
@@ -171,11 +173,26 @@ func runRun(cmd *cobra.Command, args []string) error {
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
 	hostname, _ := cmd.Flags().GetString("hostname")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
+	noNetwork, _ := cmd.Flags().GetBool("no-network")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
 	if networkMTU <= 0 {
 		return fmt.Errorf("--mtu must be > 0")
+	}
+	if noNetwork {
+		if len(allowHosts) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --allow-host")
+		}
+		if len(secrets) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --secret")
+		}
+		if len(localModelRouteFlags) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --local-model-route")
+		}
+		if len(allowPrivateHosts) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --allow-private-host")
+		}
 	}
 
 	// Shutdown
@@ -184,7 +201,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	user, _ := cmd.Flags().GetString("user")
 	entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
-	command := api.ShellQuoteArgs(args)
+	resolvedCommand := append([]string(nil), args...)
 
 	var ctx context.Context
 	var cancel context.CancelFunc
@@ -247,15 +264,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if imageCfg != nil {
 		composed := imageCfg.ComposeCommand(args)
 		if len(composed) > 0 {
-			command = api.ShellQuoteArgs(composed)
+			resolvedCommand = composed
 		}
 	}
+	command := api.ShellQuoteArgs(resolvedCommand)
 
 	if rm && command == "" && !interactiveMode {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
 	}
 
-	sandboxOpts := &sandbox.Options{RootfsPath: buildResult.RootfsPath}
+	sandboxOpts := &sandbox.Options{
+		RootfsPaths:   buildResult.LowerPaths,
+		RootfsFSTypes: buildResult.LowerFSTypes,
+	}
 
 	vfsConfig := &api.VFSConfig{Workspace: workspace}
 	if len(volumes) > 0 {
@@ -327,6 +348,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			AllowedHosts:        allowHosts,
 			AddHosts:            addHosts,
 			BlockPrivateIPs:     true,
+			NoNetwork:           noNetwork,
 			AllowedPrivateHosts: allowPrivateHosts,
 			Secrets:             parsedSecrets,
 			DNSServers:          dnsServers,
@@ -337,6 +359,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		VFS:      vfsConfig,
 		Env:      parsedEnv,
 		ImageCfg: imageCfg,
+	}
+	if err := config.Network.Validate(); err != nil {
+		return err
 	}
 
 	sb, err := sandbox.New(ctx, config, sandboxOpts)

@@ -21,6 +21,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install filesystem tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs erofs-utils
+
       - name: Build
         run: mise run cross-build:linux
 
@@ -59,9 +64,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install e2fsprogs
+      - name: Install filesystem tools
         run: |
-          brew install e2fsprogs
+          brew install e2fsprogs erofs-utils
           echo "/opt/homebrew/opt/e2fsprogs/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/e2fsprogs/sbin" >> $GITHUB_PATH
 

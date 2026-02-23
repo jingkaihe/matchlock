@@ -299,6 +299,14 @@ export class Client {
     if ((options.networkMtu ?? 0) < 0) {
       throw new MatchlockError("network mtu must be > 0");
     }
+    if (
+      options.noNetwork &&
+      ((options.allowedHosts?.length ?? 0) > 0 || (options.secrets?.length ?? 0) > 0)
+    ) {
+      throw new MatchlockError(
+        "no network cannot be combined with allowed hosts or secrets",
+      );
+    }
     for (const mapping of options.addHosts ?? []) {
       this.validateAddHost(mapping);
     }
@@ -421,6 +429,7 @@ export class Client {
     const hasDNSServers = (opts.dnsServers?.length ?? 0) > 0;
     const hasHostname = (opts.hostname?.length ?? 0) > 0;
     const hasMTU = (opts.networkMtu ?? 0) > 0;
+    const hasNoNetwork = opts.noNetwork === true;
 
     const blockPrivate = this.resolveCreateBlockPrivateIPs(opts);
 
@@ -431,10 +440,30 @@ export class Client {
       hasDNSServers ||
       hasHostname ||
       hasMTU ||
+      hasNoNetwork ||
       blockPrivate.hasOverride;
 
     if (!includeNetwork) {
       return undefined;
+    }
+
+    if (hasNoNetwork) {
+      const network: JSONObject = {
+        no_network: true,
+      };
+      if (hasAddHosts) {
+        network.add_hosts = (opts.addHosts ?? []).map((mapping) => ({
+          host: mapping.host,
+          ip: mapping.ip,
+        }));
+      }
+      if (hasDNSServers) {
+        network.dns_servers = opts.dnsServers ?? [];
+      }
+      if (hasHostname) {
+        network.hostname = opts.hostname ?? "";
+      }
+      return network;
     }
 
     const network: JSONObject = {

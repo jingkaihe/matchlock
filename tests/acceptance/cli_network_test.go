@@ -22,6 +22,12 @@ func TestCLIRunHelpShowsNetworkMTUFlag(t *testing.T) {
 	assert.Contains(t, stdout, "--mtu")
 }
 
+func TestCLIRunHelpShowsNoNetworkFlag(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "run", "--help")
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "--no-network")
+}
+
 func TestCLIDNSServersResolvConf(t *testing.T) {
 	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", "alpine:latest",
@@ -157,4 +163,18 @@ func TestCLIPassthroughBlocked(t *testing.T) {
 	)
 	combined := stdout + stderr
 	assert.NotContains(t, combined, `"url"`, "expected request to httpbin.org to be blocked")
+}
+
+func TestCLINoNetworkDisablesEgressAndNIC(t *testing.T) {
+	stdout, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"--no-network",
+		"--", "sh", "-c", "ls /sys/class/net; wget -q -T 5 -O - http://example.com/ >/dev/null 2>&1 || echo BLOCKED",
+	)
+	require.Equal(t, 0, exitCode, "stderr: %s", stderr)
+	combined := stdout + stderr
+	assert.Contains(t, combined, "lo")
+	assert.NotContains(t, combined, "eth0")
+	assert.Contains(t, combined, "BLOCKED")
+	assert.NotContains(t, combined, "Example Domain")
 }

@@ -38,6 +38,8 @@ type Sandbox struct {
 	subnetInfo       *state.SubnetInfo
 	subnetAlloc      *state.SubnetAllocator
 	workspace        string
+	rootfsPath       string // Writable overlay upper disk
+	bootstrapPath    string // Bootstrap root disk (vda)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -45,20 +47,28 @@ type Sandbox struct {
 type Options struct {
 	KernelPath    string
 	InitramfsPath string
-	RootfsPath    string // Required: path to the rootfs image
+	RootfsPaths   []string // Required: immutable lower image paths (base->top)
+	RootfsFSTypes []string // Optional fs type per lower image (defaults to erofs).
 }
 
 func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
 	if opts == nil {
 		opts = &Options{}
 	}
-	if opts.RootfsPath == "" {
-		return nil, fmt.Errorf("RootfsPath is required")
+	if len(opts.RootfsPaths) == 0 {
+		return nil, fmt.Errorf("RootfsPaths is required")
 	}
 
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
+
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			return nil, err
+		}
+	}
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -80,17 +90,29 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}()
 
-	subnetAlloc := state.NewSubnetAllocator()
-	subnetInfo, err := subnetAlloc.Allocate(id)
-	if err != nil {
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrAllocateSubnet, err)
+	var (
+		subnetAlloc *state.SubnetAllocator
+		subnetInfo  *state.SubnetInfo
+		err         error
+	)
+	releaseSubnet := func() {
+		if subnetAlloc != nil {
+			_ = subnetAlloc.Release(id)
+		}
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.GatewayIP = subnetInfo.GatewayIP
-		r.GuestIP = subnetInfo.GuestIP
-		r.SubnetCIDR = subnetInfo.Subnet
-	})
+	if !noNetwork {
+		subnetAlloc = state.NewSubnetAllocator()
+		subnetInfo, err = subnetAlloc.Allocate(id)
+		if err != nil {
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrAllocateSubnet, err)
+		}
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.GatewayIP = subnetInfo.GatewayIP
+			r.GuestIP = subnetInfo.GuestIP
+			r.SubnetCIDR = subnetInfo.Subnet
+		})
+	}
 
 	backend := darwin.NewDarwinBackend()
 
@@ -102,49 +124,62 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if initramfsPath == "" {
 		initramfsPath = DefaultInitramfsPath()
 	}
-	rootfsPath := opts.RootfsPath
+	rootfsPaths := opts.RootfsPaths
+	rootfsFSTypes := normalizeOverlayLowerFSTypes(rootfsPaths, opts.RootfsFSTypes)
+	bootstrapRootfsPath := filepath.Join(stateMgr.Dir(id), "bootstrap.ext4")
+	upperRootfsPath := filepath.Join(stateMgr.Dir(id), "upper.ext4")
+	cleanupRootDisks := func() {
+		_ = os.Remove(bootstrapRootfsPath)
+		_ = os.Remove(upperRootfsPath)
+	}
+	defer func() {
+		if retErr != nil {
+			cleanupRootDisks()
+		}
+	}()
 
 	// Determine if we need network interception (calculated before VM creation)
-	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsInterception := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
 	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
 	var caPool *sandboxnet.CAPool
 	if needsInterception {
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateCAPool, err)
 		}
 	}
 
-	// Copy rootfs into the VM state directory, then inject components and resize
-	// before backend.Create() so VZ sees the final image.
-	prebuiltRootfs := filepath.Join(stateMgr.Dir(id), "rootfs.ext4")
-	if err := copyRootfsDarwin(rootfsPath, prebuiltRootfs); err != nil {
-		subnetAlloc.Release(id)
+	// Prepare bootstrap root disk (vda) and writable upper disk for overlay root.
+	if err := createBootstrapRootfs(bootstrapRootfsPath); err != nil {
+		releaseSubnet()
 		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrCopyRootfs, err)
+		return nil, errx.Wrap(ErrPrepareBootstrapRoot, err)
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.RootfsPath = prebuiltRootfs
-	})
-	var diskSizeMB int64
-	if config.Resources != nil {
+	var diskSizeMB int64 = api.DefaultDiskSizeMB
+	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
 	}
-	if err := prepareRootfs(prebuiltRootfs, diskSizeMB); err != nil {
-		os.Remove(prebuiltRootfs)
-		subnetAlloc.Release(id)
+	if err := createExt4Image(upperRootfsPath, diskSizeMB); err != nil {
+		releaseSubnet()
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrCreateRootfs, err)
+	}
+	if err := prepareOverlayUpperRootfs(upperRootfsPath); err != nil {
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.RootfsPath = upperRootfsPath
+	})
 
-	// Inject CA cert into rootfs before backend.Create() attaches the disk
+	// Inject CA cert into writable upper before backend.Create() attaches disks.
 	if caPool != nil {
-		if err := injectConfigFileIntoRootfs(prebuiltRootfs, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
-			os.Remove(prebuiltRootfs)
-			subnetAlloc.Release(id)
+		if err := injectConfigFileIntoRootfs(upperRootfsPath, "/upper/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInjectCACert, err)
 		}
@@ -153,7 +188,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var extraDisks []vm.DiskConfig
 	for _, d := range config.ExtraDisks {
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInvalidDiskCfg, err)
 		}
@@ -163,28 +198,47 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks)); err != nil {
+		releaseSubnet()
+		stateMgr.Unregister(id)
+		return nil, err
+	}
+
+	gatewayIP := ""
+	guestIP := ""
+	subnetCIDR := ""
+	if subnetInfo != nil {
+		gatewayIP = subnetInfo.GatewayIP
+		guestIP = subnetInfo.GuestIP
+		subnetCIDR = subnetInfo.GatewayIP + "/24"
+	}
 
 	vmConfig := &vm.VMConfig{
-		ID:              id,
-		KernelPath:      kernelPath,
-		InitramfsPath:   initramfsPath,
-		RootfsPath:      prebuiltRootfs,
-		CPUs:            config.Resources.CPUs,
-		MemoryMB:        config.Resources.MemoryMB,
-		SocketPath:      stateMgr.SocketPath(id) + ".sock",
-		LogPath:         stateMgr.LogPath(id),
-		GatewayIP:       subnetInfo.GatewayIP,
-		GuestIP:         subnetInfo.GuestIP,
-		SubnetCIDR:      subnetInfo.GatewayIP + "/24",
-		Workspace:       workspace,
-		UseInterception: needsInterception,
-		Privileged:      config.Privileged,
-		PrebuiltRootfs:  prebuiltRootfs,
-		ExtraDisks:      extraDisks,
-		DNSServers:      config.Network.GetDNSServers(),
-		Hostname:        hostname,
-		AddHosts:        config.Network.AddHosts,
-		MTU:             config.Network.GetMTU(),
+		ID:                  id,
+		KernelPath:          kernelPath,
+		InitramfsPath:       initramfsPath,
+		RootfsPath:          bootstrapRootfsPath,
+		OverlayEnabled:      true,
+		OverlayLowerPaths:   rootfsPaths,
+		OverlayLowerFSTypes: rootfsFSTypes,
+		OverlayUpperPath:    upperRootfsPath,
+		CPUs:                config.Resources.CPUs,
+		MemoryMB:            config.Resources.MemoryMB,
+		SocketPath:          stateMgr.SocketPath(id) + ".sock",
+		LogPath:             stateMgr.LogPath(id),
+		GatewayIP:           gatewayIP,
+		GuestIP:             guestIP,
+		SubnetCIDR:          subnetCIDR,
+		Workspace:           workspace,
+		UseInterception:     needsInterception,
+		Privileged:          config.Privileged,
+		PrebuiltRootfs:      bootstrapRootfsPath,
+		ExtraDisks:          extraDisks,
+		DNSServers:          config.Network.GetDNSServers(),
+		Hostname:            hostname,
+		AddHosts:            config.Network.AddHosts,
+		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
@@ -195,20 +249,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// startup instability in Virtualization.framework.
 	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
 	if err != nil {
-		if prebuiltRootfs != "" {
-			os.Remove(prebuiltRootfs)
-		}
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
-		if prebuiltRootfs != "" {
-			os.Remove(prebuiltRootfs)
-		}
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
@@ -239,15 +287,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		networkFile := darwinMachine.NetworkFile()
 		if networkFile == nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, ErrNetworkFile
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
 			File:       networkFile,
-			GatewayIP:  subnetInfo.GatewayIP,
-			GuestIP:    subnetInfo.GuestIP,
+			GatewayIP:  gatewayIP,
+			GuestIP:    guestIP,
 			MTU:        uint32(config.Network.GetMTU()),
 			Policy:     policyEngine,
 			Events:     events,
@@ -257,7 +305,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 		if err != nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrNetworkStack, err)
 		}
@@ -280,7 +328,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			netStack.Close()
 		}
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrVFSListener, err)
 	}
@@ -325,6 +373,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		subnetInfo:       subnetInfo,
 		subnetAlloc:      subnetAlloc,
 		workspace:        workspace,
+		rootfsPath:       upperRootfsPath,
+		bootstrapPath:    bootstrapRootfsPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -499,6 +549,19 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	}
 	markCleanup("overlay_snapshot_remove", overlayCleanupErr)
 
+	if err := os.Remove(s.rootfsPath); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+		markCleanup("rootfs_remove", err)
+	} else {
+		markCleanup("rootfs_remove", nil)
+	}
+	if err := os.Remove(s.bootstrapPath); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+		markCleanup("bootstrap_remove", err)
+	} else {
+		markCleanup("bootstrap_remove", nil)
+	}
+
 	if len(errs) > 0 {
 		joined := errors.Join(errs...)
 		if s.lifecycle != nil {
@@ -531,24 +594,4 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 	default:
 		return vfs.NewMemoryProvider()
 	}
-}
-
-func copyRootfsDarwin(srcPath, dstPath string) error {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
-
-	dst, err := os.Create(dstPath)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		_ = os.Remove(dstPath)
-		return err
-	}
-	return nil
 }

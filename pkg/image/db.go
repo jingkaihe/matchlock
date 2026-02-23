@@ -64,5 +64,50 @@ CREATE INDEX IF NOT EXISTS idx_images_scope_created ON images(scope, created_at 
 CREATE INDEX IF NOT EXISTS idx_images_digest ON images(digest);
 `,
 		},
+		{
+			Version: 2,
+			Name:    "create_image_layers_erofs_schema",
+			SQL: `
+CREATE TABLE IF NOT EXISTS image_layers (
+  scope TEXT NOT NULL,
+  tag TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  digest TEXT NOT NULL,
+  fs_type TEXT NOT NULL DEFAULT 'erofs',
+  size INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (scope, tag, ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_image_layers_ref ON image_layers(scope, tag);
+CREATE INDEX IF NOT EXISTS idx_image_layers_digest ON image_layers(digest);
+CREATE INDEX IF NOT EXISTS idx_image_layers_digest_fs ON image_layers(digest, fs_type);
+
+CREATE TABLE IF NOT EXISTS layer_refs (
+  digest TEXT NOT NULL,
+  fs_type TEXT NOT NULL DEFAULT 'erofs',
+  ref_count INTEGER NOT NULL DEFAULT 0,
+  size INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (digest, fs_type)
+);
+CREATE INDEX IF NOT EXISTS idx_layer_refs_count ON layer_refs(ref_count);
+
+DELETE FROM image_layers
+ WHERE LOWER(COALESCE(fs_type, '')) <> 'erofs';
+
+DELETE FROM images
+ WHERE NOT EXISTS (
+   SELECT 1
+     FROM image_layers
+    WHERE image_layers.scope = images.scope
+      AND image_layers.tag = images.tag
+ );
+
+DELETE FROM layer_refs;
+INSERT OR REPLACE INTO layer_refs(digest, fs_type, ref_count, size, updated_at)
+SELECT digest, 'erofs', COUNT(*), MAX(size), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  FROM image_layers
+ GROUP BY digest;
+`,
+		},
 	}
 }

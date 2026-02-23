@@ -81,6 +81,10 @@ class Sandbox:
         self._opts.network_mtu = mtu
         return self
 
+    def with_no_network(self) -> Sandbox:
+        self._opts.no_network = True
+        return self
+
     def add_secret(self, name: str, value: str, *hosts: str) -> Sandbox:
         self._opts.secrets.append(Secret(name=name, value=value, hosts=list(hosts)))
         return self

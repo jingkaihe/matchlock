@@ -76,6 +76,56 @@ func TestParseBootConfigRejectsInvalidAddHost(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidAddHost)
 }
 
+func TestParseBootConfigNoNetwork(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.no_network=1"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.NoNetwork)
+}
+
+func TestParseBootConfigOverlayRoot(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb,vdc matchlock.overlay.lowerfs=erofs,erofs matchlock.overlay.upper=vdd"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.Overlay.Enabled)
+	assert.Equal(t, []string{"vdb", "vdc"}, cfg.Overlay.LowerDevices)
+	assert.Equal(t, []string{"erofs", "erofs"}, cfg.Overlay.LowerFSTypes)
+	assert.Equal(t, "vdd", cfg.Overlay.UpperDevice)
+}
+
+func TestParseBootConfigOverlayRequiresBothDevices(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidOverlayCfg)
+}
+
+func TestParseBootConfigOverlayLowerFSMismatch(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.overlay=1 matchlock.overlay.lower=vdb,vdc matchlock.overlay.lowerfs=erofs matchlock.overlay.upper=vdd"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidOverlayCfg)
+}
+
 func TestParseAddHostField(t *testing.T) {
 	mapping, err := parseAddHostField("api.internal,10.0.0.10")
 	require.NoError(t, err)

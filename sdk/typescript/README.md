@@ -38,6 +38,7 @@ try {
 ## Highlights
 
 - Fluent sandbox builder (`Sandbox`) with network, secrets, mounts, env, VFS hooks, image config
+- Supports fully offline mode via `.withNoNetwork()` (no guest NIC / no egress)
 - JSON-RPC `create`, `exec`, `exec_stream`, `write_file`, `read_file`, `list_files`, `port_forward`, `cancel`, `close`
 - Streaming stdout/stderr via `execStream`
 - Local VFS callbacks (`hook`, `dangerousHook`, `mutateHook`, `actionHook`)

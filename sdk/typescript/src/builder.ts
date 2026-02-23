@@ -157,6 +157,11 @@ export class Sandbox {
     return this;
   }
 
+  withNoNetwork(): Sandbox {
+    this.opts.noNetwork = true;
+    return this;
+  }
+
   withPortForward(localPort: number, remotePort: number): Sandbox {
     this.opts.portForwards = this.opts.portForwards ?? [];
     this.opts.portForwards.push({ localPort, remotePort });
