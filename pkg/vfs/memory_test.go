@@ -3,6 +3,7 @@ package vfs
 import (
 	"io"
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -157,4 +158,79 @@ func TestMemoryProvider_Truncate(t *testing.T) {
 
 	content, _ := mp.ReadFile("/trunc.txt")
 	assert.Equal(t, "01234", string(content))
+}
+
+func TestMemoryProvider_SizeLimitAppend(t *testing.T) {
+	mp := NewMemoryProvider(WithSizeLimit(63))
+
+	h, _ := mp.Create("/file.txt", 0o644)
+
+	// NOTE: memory used at this point with overhead is 33 (len(path)+overhead)
+	var err error
+	_, err = h.Write([]byte("0123456789")) // 43
+	require.NoError(t, err)
+	_, err = h.Write([]byte("0123456789")) // 53
+	require.NoError(t, err)
+	_, err = h.Write([]byte("0123456789")) // 63 (exactly limit)
+	require.NoError(t, err)
+	_, err = h.Write([]byte("0")) // 64 (limit exceeded)
+	require.ErrorIs(t, err, syscall.ENOSPC)
+
+	require.NoError(t, h.Truncate(29))
+
+	pos, err := h.Seek(0, io.SeekEnd)
+	require.NoError(t, err)
+	require.Equal(t, int64(29), pos)
+
+	_, err = h.Write([]byte("9")) // 63 (again)
+	require.NoError(t, err)
+
+	_, err = h.Write([]byte("0")) // 64 (limit exceeded)
+	require.ErrorIs(t, err, syscall.ENOSPC)
+}
+
+func TestMemoryProvider_SizeLimitWriteFile(t *testing.T) {
+	mp := NewMemoryProvider(WithSizeLimit(100))
+
+	buf := make([]byte, 200)
+
+	var err error
+	err = mp.WriteFile("/file.txt", buf[:90], 0o644)
+	require.ErrorIs(t, err, syscall.ENOSPC)
+
+	err = mp.WriteFile("/file.txt", buf[:60], 0o644)
+	require.NoError(t, err)
+
+	// delete the file then write again
+	err = mp.Remove("/file.txt")
+	require.NoError(t, err)
+
+	err = mp.WriteFile("/file.txt", buf[:60], 0o644)
+	require.NoError(t, err)
+
+	// delete the file then split in two files
+	err = mp.Remove("/file.txt")
+	require.NoError(t, err)
+
+	err = mp.WriteFile("/file1.txt", buf[:15], 0o644)
+	require.NoError(t, err)
+
+	err = mp.WriteFile("/file2.txt", buf[:15], 0o644)
+	require.NoError(t, err)
+
+	// write another file (exceeds limit)
+	err = mp.WriteFile("/file3.txt", buf[:15], 0o644)
+	require.ErrorIs(t, err, syscall.ENOSPC)
+}
+
+func TestMemoryProvider_SizeLimitDirs(t *testing.T) {
+	mp := NewMemoryProvider(WithSizeLimit(30))
+
+	require.NoError(t, mp.Mkdir("/0123456789", 0))
+	require.ErrorIs(t, mp.Mkdir("/9876543210", 0), syscall.ENOSPC)
+
+	require.NoError(t, mp.Remove("/0123456789"))
+
+	require.NoError(t, mp.MkdirAll("/012/345", 0))
+	require.ErrorIs(t, mp.MkdirAll("/012/345/overlimit", 0), syscall.ENOSPC)
 }

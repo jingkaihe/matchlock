@@ -7,30 +7,51 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 type MemoryProvider struct {
-	mu       sync.RWMutex
-	files    map[string]*memFile
-	dirs     map[string]bool
-	dirModes map[string]os.FileMode
+	mu        sync.RWMutex
+	totalSize atomic.Int64
+	sizeLimit int64
+	files     map[string]*memFile
+	dirs      map[string]bool
+	dirModes  map[string]os.FileMode
 }
 
 type memFile struct {
 	mu      sync.RWMutex
+	p       *MemoryProvider
 	data    []byte
 	mode    os.FileMode
 	modTime time.Time
 }
 
-func NewMemoryProvider() *MemoryProvider {
-	return &MemoryProvider{
-		files:    make(map[string]*memFile),
-		dirs:     map[string]bool{"/": true},
-		dirModes: map[string]os.FileMode{"/": 0755},
+const DefaultMemoryProviderSizeLimit = 32_000_000
+
+type MemoryProviderOption func(*MemoryProvider)
+
+// WithSizeLimit sets a memory size limit in byte for this memory provider.
+// Operations exceeding the size limit will abort and return ENOSPC.
+func WithSizeLimit(sizeLimit int64) MemoryProviderOption {
+	return func(p *MemoryProvider) {
+		p.sizeLimit = sizeLimit
 	}
+}
+
+func NewMemoryProvider(opts ...MemoryProviderOption) *MemoryProvider {
+	provider := &MemoryProvider{
+		sizeLimit: DefaultMemoryProviderSizeLimit,
+		files:     make(map[string]*memFile),
+		dirs:      map[string]bool{"/": true},
+		dirModes:  map[string]os.FileMode{"/": 0o755},
+	}
+	for _, opt := range opts {
+		opt(provider)
+	}
+	return provider
 }
 
 func (p *MemoryProvider) Readonly() bool { return false }
@@ -133,7 +154,15 @@ func (p *MemoryProvider) Open(path string, flags int, mode os.FileMode) (Handle,
 				p.mu.Unlock()
 				return nil, syscall.ENOENT
 			}
+
+			bytesGrowth := p.fileEntryMemorySize(path)
+			err := p.ensureGrowthBelowSizeLimit(bytesGrowth)
+			if err != nil {
+				p.mu.Unlock()
+				return nil, err
+			}
 			p.files[path] = &memFile{
+				p:       p,
 				data:    []byte{},
 				mode:    mode,
 				modTime: time.Now(),
@@ -174,6 +203,11 @@ func (p *MemoryProvider) Mkdir(path string, mode os.FileMode) error {
 		return syscall.EEXIST
 	}
 
+	err := p.ensureGrowthBelowSizeLimit(p.dirEntryMemorySize(path))
+	if err != nil {
+		return err
+	}
+
 	p.dirs[path] = true
 	p.dirModes[path] = mode
 	return nil
@@ -211,6 +245,7 @@ func (p *MemoryProvider) Remove(path string) error {
 				return syscall.ENOTEMPTY
 			}
 		}
+		p.totalSize.Add(-p.dirEntryMemorySize(path))
 		delete(p.dirs, path)
 		delete(p.dirModes, path)
 		return nil
@@ -219,6 +254,7 @@ func (p *MemoryProvider) Remove(path string) error {
 	if _, ok := p.files[path]; !ok {
 		return syscall.ENOENT
 	}
+	p.totalSize.Add(-p.fileTotalMemorySize(path))
 	delete(p.files, path)
 	return nil
 }
@@ -235,12 +271,14 @@ func (p *MemoryProvider) RemoveAll(path string) error {
 
 	for k := range p.files {
 		if k == path || strings.HasPrefix(k, prefix) {
+			p.totalSize.Add(-p.fileTotalMemorySize(path))
 			delete(p.files, k)
 		}
 	}
 
 	for k := range p.dirs {
 		if k == path || strings.HasPrefix(k, prefix) {
+			p.totalSize.Add(-p.dirEntryMemorySize(path))
 			delete(p.dirs, k)
 			delete(p.dirModes, k)
 		}
@@ -322,6 +360,12 @@ func (h *memHandle) WriteAt(p []byte, off int64) (int, error) {
 
 	end := off + int64(len(p))
 	if end > int64(len(h.file.data)) {
+		bytesGrowth := end - int64(len(h.file.data))
+		err := h.file.p.ensureGrowthBelowSizeLimit(bytesGrowth)
+		if err != nil {
+			return 0, err
+		}
+
 		newData := make([]byte, end)
 		copy(newData, h.file.data)
 		h.file.data = newData
@@ -366,9 +410,17 @@ func (h *memHandle) Truncate(size int64) error {
 	h.file.mu.Lock()
 	defer h.file.mu.Unlock()
 
-	if size < int64(len(h.file.data)) {
+	bytesGrowth := size - int64(len(h.file.data))
+	if bytesGrowth < 0 {
+		h.file.p.totalSize.Add(bytesGrowth)
+
 		h.file.data = h.file.data[:size]
-	} else if size > int64(len(h.file.data)) {
+	} else if bytesGrowth > 0 {
+		err := h.file.p.ensureGrowthBelowSizeLimit(bytesGrowth)
+		if err != nil {
+			return err
+		}
+
 		newData := make([]byte, size)
 		copy(newData, h.file.data)
 		h.file.data = newData
@@ -391,7 +443,13 @@ func (p *MemoryProvider) WriteFile(path string, data []byte, mode os.FileMode) e
 		return syscall.ENOENT
 	}
 
+	bytesGrowth := p.fileEntryMemorySize(path) + int64(len(data))
+	err := p.ensureGrowthBelowSizeLimit(bytesGrowth)
+	if err != nil {
+		return err
+	}
 	p.files[path] = &memFile{
+		p:       p,
 		data:    bytes.Clone(data),
 		mode:    mode,
 		modTime: time.Now(),
@@ -427,8 +485,41 @@ func (p *MemoryProvider) MkdirAll(path string, mode os.FileMode) error {
 		}
 		current += "/" + part
 		if !p.dirs[current] {
+			err := p.ensureGrowthBelowSizeLimit(p.dirEntryMemorySize(current))
+			if err != nil {
+				return err
+			}
+
 			p.dirs[current] = true
 		}
 	}
+	return nil
+}
+
+func (p *MemoryProvider) fileEntryMemorySize(path string) int64 {
+	// add overhead to account for the memFile struct (sizeof) and map overhead
+	return int64(len(path)) + 24
+}
+
+func (p *MemoryProvider) dirEntryMemorySize(path string) int64 {
+	// len(path)*2 as we currently use two maps (dirs and dirModes)
+	return int64(len(path))*2 + 2
+}
+
+func (p *MemoryProvider) fileTotalMemorySize(path string) int64 {
+	file, ok := p.files[path]
+	if !ok {
+		return p.fileEntryMemorySize(path)
+	}
+	return p.fileEntryMemorySize(path) + int64(len(file.data))
+}
+
+func (p *MemoryProvider) ensureGrowthBelowSizeLimit(bytesGrowth int64) error {
+	currentSize := p.totalSize.Load()
+	if currentSize+bytesGrowth > p.sizeLimit {
+		return syscall.ENOSPC
+	}
+
+	p.totalSize.Add(bytesGrowth)
 	return nil
 }
