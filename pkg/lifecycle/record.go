@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,10 +15,6 @@ import (
 )
 
 const (
-	// RecordFile is kept for compatibility with previous on-disk path
-	// conventions, though lifecycle state is now persisted in SQLite.
-	RecordFile = "lifecycle.json"
-
 	sqlitePrimaryErrMask     = 0xFF
 	sqlitePrimaryBusy        = 5
 	sqlitePrimaryLocked      = 6
@@ -76,22 +71,20 @@ type Record struct {
 }
 
 type Store struct {
-	vmDir      string
-	legacyPath string
-	vmID       string
-	db         *sql.DB
-	initErr    error
-	mu         sync.Mutex
+	vmDir   string
+	vmID    string
+	db      *sql.DB
+	initErr error
+	mu      sync.Mutex
 }
 
 func NewStore(vmDir string) *Store {
 	db, err := openLifecycleDB(vmDir)
 	return &Store{
-		vmDir:      vmDir,
-		legacyPath: filepath.Join(vmDir, RecordFile),
-		vmID:       filepath.Base(filepath.Clean(vmDir)),
-		db:         db,
-		initErr:    err,
+		vmDir:   vmDir,
+		vmID:    filepath.Base(filepath.Clean(vmDir)),
+		db:      db,
+		initErr: err,
 	}
 }
 
@@ -400,8 +393,6 @@ func (s *Store) saveNoLock(rec *Record) error {
 		version, writeErr := s.saveAttemptNoLock(rec, resourcesJSON, cleanupJSON)
 		if writeErr == nil {
 			rec.Version = version
-			// Best-effort removal of the legacy lifecycle JSON file from previous versions.
-			_ = os.Remove(s.legacyPath)
 			return nil
 		}
 		if !isSQLiteBusy(writeErr) {

@@ -562,6 +562,27 @@ func TestExtractImage_HardlinkMetadataSkipped(t *testing.T) {
 	assert.Equal(t, os.FileMode(0755), fm.mode)
 }
 
+func TestExtractLayer_WhiteoutAndOpaqueSpecials(t *testing.T) {
+	layer := buildTarLayer(t, []tar.Header{
+		{Name: "etc/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "etc/.wh.shadow", Typeflag: tar.TypeReg, Mode: 0000, Uid: 0, Gid: 0},
+		{Name: "var/lib/.wh..wh..opq", Typeflag: tar.TypeReg, Mode: 0000, Uid: 0, Gid: 0},
+	}, nil)
+
+	b := &Builder{}
+	dest := t.TempDir()
+	_, specials, err := b.extractLayer(layer, dest)
+	require.NoError(t, err)
+
+	whiteout, ok := specials["/etc/shadow"]
+	require.True(t, ok, "expected whiteout special for /etc/shadow")
+	assert.Equal(t, layerSpecialWhiteout, whiteout.kind)
+
+	opaque, ok := specials["/var/lib"]
+	require.True(t, ok, "expected opaque special for /var/lib")
+	assert.Equal(t, layerSpecialOpaque, opaque.kind)
+}
+
 func TestHasDebugfsUnsafeChars(t *testing.T) {
 	tests := []struct {
 		path string

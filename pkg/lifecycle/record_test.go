@@ -15,7 +15,7 @@ func TestStoreRoundTrip(t *testing.T) {
 
 	require.NoError(t, store.Init("vm-abc12345", "firecracker", dir))
 	require.NoError(t, store.SetResource(func(r *Resources) {
-		r.RootfsPath = filepath.Join(dir, "rootfs.ext4")
+		r.RootfsPath = filepath.Join(dir, "upper.ext4")
 		r.TAPName = "fc-abc12345"
 	}))
 	require.NoError(t, store.SetPhase(PhaseCreated))

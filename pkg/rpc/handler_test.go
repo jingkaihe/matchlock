@@ -296,6 +296,29 @@ func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }
 
+func TestHandlerCreateRejectsNoNetworkWithAllowHosts(t *testing.T) {
+	factoryCalls := 0
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"network": map[string]interface{}{
+			"no_network":    true,
+			"allowed_hosts": []string{"api.openai.com"},
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail for invalid no_network config")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "network.no_network")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
 func TestHandlerPortForwardUnsupported(t *testing.T) {
 	vm := &mockVM{id: "vm-test"}
 	rpc := newTestRPC(vm)

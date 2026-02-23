@@ -30,6 +30,7 @@ brew install matchlock
 # Basic
 matchlock run --image alpine:latest cat /etc/os-release
 matchlock run --image alpine:latest -it sh
+matchlock run --image alpine:latest --no-network -- sh -lc 'echo offline'
 
 # Network allowlist
 matchlock run --image python:3.12-alpine \
@@ -137,6 +138,12 @@ sandbox := sdk.New("alpine:latest").
 If you use `client.Create(...)` directly (without the builder), set:
 - `BlockPrivateIPsSet: true`
 - `BlockPrivateIPs: false` (or `true`)
+
+For fully offline sandboxes (no guest NIC / no egress), use:
+- CLI: `--no-network`
+- Go SDK builder: `.WithNoNetwork()`
+- Python SDK builder: `.with_no_network()`
+- TypeScript SDK builder: `.withNoNetwork()`
 
 **Python** ([PyPI](https://pypi.org/project/matchlock/))
 

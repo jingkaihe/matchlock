@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -20,7 +19,6 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vm/linux"
-	"golang.org/x/sys/unix"
 )
 
 // FirewallRules is an interface for managing firewall rules.
@@ -49,7 +47,8 @@ type Sandbox struct {
 	subnetInfo       *state.SubnetInfo
 	subnetAlloc      *state.SubnetAllocator
 	workspace        string
-	rootfsPath       string
+	rootfsPath       string // Writable overlay upper disk
+	bootstrapPath    string // Bootstrap root disk (vda)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -58,8 +57,10 @@ type Sandbox struct {
 type Options struct {
 	// KernelPath overrides the default kernel path
 	KernelPath string
-	// RootfsPath is the path to the rootfs image (required)
-	RootfsPath string
+	// RootfsPaths are immutable lower image paths in base->top order (required).
+	RootfsPaths []string
+	// RootfsFSTypes optionally declares filesystem type per lower image.
+	RootfsFSTypes []string
 }
 
 // New creates a new sandbox VM with the given configuration.
@@ -67,13 +68,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if opts == nil {
 		opts = &Options{}
 	}
-	if opts.RootfsPath == "" {
-		return nil, fmt.Errorf("RootfsPath is required")
+	if len(opts.RootfsPaths) == 0 {
+		return nil, fmt.Errorf("RootfsPaths is required")
 	}
+	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
 
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
+	noNetwork := config.Network != nil && config.Network.NoNetwork
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -95,59 +98,94 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}()
 
-	// Create a copy of the rootfs for this VM (copy-on-write if supported)
-	vmRootfsPath := stateMgr.Dir(id) + "/rootfs.ext4"
-	if err := copyRootfs(opts.RootfsPath, vmRootfsPath); err != nil {
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrCopyRootfs, err)
+	bootstrapRootfsPath := stateMgr.Dir(id) + "/bootstrap.ext4"
+	upperRootfsPath := stateMgr.Dir(id) + "/upper.ext4"
+	cleanupRootDisks := func() {
+		_ = os.Remove(bootstrapRootfsPath)
+		_ = os.Remove(upperRootfsPath)
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.RootfsPath = vmRootfsPath
-		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
-	})
+	defer func() {
+		if retErr != nil {
+			cleanupRootDisks()
+		}
+	}()
 
-	// Inject guest runtime components and resize rootfs
-	var diskSizeMB int64
-	if config.Resources != nil {
+	if err := createBootstrapRootfs(bootstrapRootfsPath); err != nil {
+		cleanupRootDisks()
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrPrepareBootstrapRoot, err)
+	}
+
+	var diskSizeMB int64 = api.DefaultDiskSizeMB
+	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
 	}
-	if err := prepareRootfs(vmRootfsPath, diskSizeMB); err != nil {
-		os.Remove(vmRootfsPath)
+	if err := createExt4Image(upperRootfsPath, diskSizeMB); err != nil {
+		cleanupRootDisks()
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrCreateRootfs, err)
+	}
+	if err := prepareOverlayUpperRootfs(upperRootfsPath); err != nil {
+		cleanupRootDisks()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.RootfsPath = upperRootfsPath
+		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
+	})
 
-	// Create CAPool early and inject cert into rootfs before VM creation
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	if config.Network != nil {
+		if err := config.Network.Validate(); err != nil {
+			stateMgr.Unregister(id)
+			return nil, err
+		}
+	}
+
+	// Create CAPool early and inject cert into writable upper before VM creation
+	needsProxy := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
-			os.Remove(vmRootfsPath)
+			cleanupRootDisks()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateCAPool, err)
 		}
-		if err := injectConfigFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
-			os.Remove(vmRootfsPath)
+		if err := injectConfigFileIntoRootfs(upperRootfsPath, "/upper/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
+			cleanupRootDisks()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInjectCACert, err)
 		}
 	}
 
-	// Allocate unique subnet for this VM
-	subnetAlloc := state.NewSubnetAllocator()
-	subnetInfo, err := subnetAlloc.Allocate(id)
-	if err != nil {
-		os.Remove(vmRootfsPath)
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrAllocateSubnet, err)
+	var (
+		subnetAlloc *state.SubnetAllocator
+		subnetInfo  *state.SubnetInfo
+		err         error
+	)
+	releaseSubnet := func() {
+		if subnetAlloc != nil {
+			_ = subnetAlloc.Release(id)
+		}
 	}
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.GatewayIP = subnetInfo.GatewayIP
-		r.GuestIP = subnetInfo.GuestIP
-		r.SubnetCIDR = subnetInfo.Subnet
-	})
+
+	// Allocate unique subnet for this VM when networking is enabled.
+	if !noNetwork {
+		subnetAlloc = state.NewSubnetAllocator()
+		subnetInfo, err = subnetAlloc.Allocate(id)
+		if err != nil {
+			cleanupRootDisks()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrAllocateSubnet, err)
+		}
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.GatewayIP = subnetInfo.GatewayIP
+			r.GuestIP = subnetInfo.GuestIP
+			r.SubnetCIDR = subnetInfo.Subnet
+		})
+	}
 
 	backend := linux.NewLinuxBackend()
 
@@ -159,7 +197,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var extraDisks []vm.DiskConfig
 	for _, d := range config.ExtraDisks {
 		if err := api.ValidateGuestMount(d.GuestMount); err != nil {
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInvalidDiskCfg, err)
 		}
@@ -169,42 +207,64 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			ReadOnly:   d.ReadOnly,
 		})
 	}
+	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
+		releaseSubnet()
+		stateMgr.Unregister(id)
+		return nil, err
+	}
+
+	gatewayIP := ""
+	guestIP := ""
+	subnetCIDR := ""
+	if subnetInfo != nil {
+		gatewayIP = subnetInfo.GatewayIP
+		guestIP = subnetInfo.GuestIP
+		subnetCIDR = subnetInfo.GatewayIP + "/24"
+	}
 
 	vmConfig := &vm.VMConfig{
-		ID:         id,
-		KernelPath: kernelPath,
-		RootfsPath: vmRootfsPath,
-		CPUs:       config.Resources.CPUs,
-		MemoryMB:   config.Resources.MemoryMB,
-		SocketPath: stateMgr.SocketPath(id) + ".sock",
-		LogPath:    stateMgr.LogPath(id),
-		VsockCID:   3,
-		VsockPath:  stateMgr.Dir(id) + "/vsock.sock",
-		GatewayIP:  subnetInfo.GatewayIP,
-		GuestIP:    subnetInfo.GuestIP,
-		SubnetCIDR: subnetInfo.GatewayIP + "/24",
-		Workspace:  workspace,
-		Privileged: config.Privileged,
-		ExtraDisks: extraDisks,
-		DNSServers: config.Network.GetDNSServers(),
-		Hostname:   hostname,
-		AddHosts:   config.Network.AddHosts,
-		MTU:        config.Network.GetMTU(),
+		ID:                  id,
+		KernelPath:          kernelPath,
+		RootfsPath:          bootstrapRootfsPath,
+		OverlayEnabled:      true,
+		OverlayLowerPaths:   opts.RootfsPaths,
+		OverlayLowerFSTypes: rootfsFSTypes,
+		OverlayUpperPath:    upperRootfsPath,
+		CPUs:                config.Resources.CPUs,
+		MemoryMB:            config.Resources.MemoryMB,
+		SocketPath:          stateMgr.SocketPath(id) + ".sock",
+		LogPath:             stateMgr.LogPath(id),
+		VsockCID:            3,
+		VsockPath:           stateMgr.Dir(id) + "/vsock.sock",
+		GatewayIP:           gatewayIP,
+		GuestIP:             guestIP,
+		SubnetCIDR:          subnetCIDR,
+		Workspace:           workspace,
+		Privileged:          config.Privileged,
+		ExtraDisks:          extraDisks,
+		DNSServers:          config.Network.GetDNSServers(),
+		Hostname:            hostname,
+		AddHosts:            config.Network.AddHosts,
+		MTU:                 config.Network.GetMTU(),
+		NoNetwork:           noNetwork,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
-		subnetAlloc.Release(id)
+		cleanupRootDisks()
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 
 	linuxMachine := machine.(*linux.LinuxMachine)
-	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
-		r.TAPName = linuxMachine.TapName()
-		r.FirewallTable = "matchlock_" + linuxMachine.TapName()
-		r.NATTable = "matchlock_nat_" + linuxMachine.TapName()
-	})
+	if tapName := linuxMachine.TapName(); tapName != "" {
+		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+			r.TAPName = tapName
+			r.FirewallTable = "matchlock_" + tapName
+			r.NATTable = "matchlock_nat_" + tapName
+		})
+	}
 
 	// Auto-add secret hosts to allowed hosts if secrets are defined
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -225,7 +285,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
 	if err != nil {
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		cleanupRootDisks()
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
 	}
@@ -237,7 +298,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	events := make(chan api.Event, 100)
 
 	// Set up transparent proxy for HTTP/HTTPS interception
-	gatewayIP := subnetInfo.GatewayIP
 	const proxyBindAddr = "0.0.0.0"
 
 	var proxy *sandboxnet.TransparentProxy
@@ -256,7 +316,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 		if err != nil {
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateProxy, err)
 		}
@@ -267,17 +327,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close(ctx)
-			subnetAlloc.Release(id)
+			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrFirewallSetup, err)
 		}
 	}
 
 	// Set up basic NAT for guest network access using nftables
-	natRules := sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
-	if err := natRules.Setup(); err != nil {
-		slog.Warn("failed to setup NAT", "error", err)
-		natRules = nil
+	var natRules *sandboxnet.NFTablesNAT
+	if !noNetwork {
+		natRules = sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+		if err := natRules.Setup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
+			natRules = nil
+		}
 	}
 
 	// Create VFS providers
@@ -304,7 +367,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			fwRules.Cleanup()
 		}
 		machine.Close(ctx)
-		subnetAlloc.Release(id)
+		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
@@ -328,7 +391,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		subnetInfo:       subnetInfo,
 		subnetAlloc:      subnetAlloc,
 		workspace:        workspace,
-		rootfsPath:       vmRootfsPath,
+		rootfsPath:       upperRootfsPath,
+		bootstrapPath:    bootstrapRootfsPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -538,13 +602,19 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	}
 	markCleanup("overlay_snapshot_remove", overlayCleanupErr)
 
-	// Remove rootfs copy to save disk space
-	rootfsCopy := s.stateMgr.Dir(s.id) + "/rootfs.ext4"
-	if err := os.Remove(rootfsCopy); err != nil && !os.IsNotExist(err) {
+	// Remove writable upper disk
+	if err := os.Remove(s.rootfsPath); err != nil && !os.IsNotExist(err) {
 		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
 		markCleanup("rootfs_remove", err)
 	} else {
 		markCleanup("rootfs_remove", nil)
+	}
+	// Remove bootstrap disk
+	if err := os.Remove(s.bootstrapPath); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+		markCleanup("bootstrap_remove", err)
+	} else {
+		markCleanup("bootstrap_remove", nil)
 	}
 
 	if len(errs) > 0 {
@@ -579,34 +649,4 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 	default:
 		return vfs.NewMemoryProvider()
 	}
-}
-
-func copyRootfs(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return errx.Wrap(ErrOpenSource, err)
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return errx.Wrap(ErrCreateDest, err)
-	}
-	defer dstFile.Close()
-
-	// Try copy-on-write clone first (FICLONE ioctl)
-	// Works on btrfs, xfs (with reflink), bcachefs, etc.
-	err = unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
-	if err == nil {
-		return nil
-	}
-
-	// Fall back to regular copy
-	slog.Info("copy-on-write not supported, using regular copy", "error", err)
-	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		os.Remove(dst)
-		return errx.Wrap(ErrCopy, err)
-	}
-
-	return nil
 }

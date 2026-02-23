@@ -155,6 +155,7 @@ export interface CreateOptions {
   addHosts?: HostIPMapping[];
   blockPrivateIPs?: boolean;
   blockPrivateIPsSet?: boolean;
+  noNetwork?: boolean;
   mounts?: Record<string, MountConfig>;
   env?: Record<string, string>;
   secrets?: Secret[];

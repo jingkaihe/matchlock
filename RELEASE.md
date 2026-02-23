@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+* Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+* Reduced `MemoryProvider` directory bookkeeping overhead by using a single `dirs` mode map, preventing `dirs`/`dirModes` desyncs in VFS ([#67](https://github.com/jingkaihe/matchlock/pull/67) by [@comunidadio](https://github.com/comunidadio)).
+
+## 0.1.23
+
+* Reworked image/runtime storage to an OCI layer-aware model: shared EROFS layer blobs in metadata DB plus overlay-root boot with a per-VM writable upper disk (replacing monolithic rootfs images).
+* Manual tidy-up (full local reset):
+  * `matchlock kill --all`
+  * `matchlock prune`
+  * `rm -rf ~/.matchlock`
+  * `rm -rf ~/.cache/matchlock`
+
 ## 0.1.22
 
 * Fixed TypeScript SDK npm provenance metadata by setting `repository.url`/`repository.directory` in `sdk/typescript/package.json`.

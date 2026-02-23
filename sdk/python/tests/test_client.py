@@ -396,6 +396,54 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_sends_no_network(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-no-network"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(CreateOptions(image="img", no_network=True))
+            assert vm_id == "vm-no-network"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"] == {
+                "no_network": True,
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_no_network_with_allowed_hosts(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="no network cannot be combined with allowed hosts or secrets",
+            ):
+                client.create(
+                    CreateOptions(
+                        image="img",
+                        no_network=True,
+                        allowed_hosts=["api.openai.com"],
+                    )
+                )
+        finally:
+            fake.close_stdout()
+
     def test_create_rejects_negative_network_mtu(self):
         client, fake = make_client_with_fake()
         try:

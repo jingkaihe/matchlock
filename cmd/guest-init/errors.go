@@ -9,6 +9,8 @@ var (
 	ErrMissingDNS         = errors.New("missing matchlock.dns")
 	ErrInvalidMTU         = errors.New("invalid matchlock.mtu")
 	ErrInvalidAddHost     = errors.New("invalid matchlock.add_host")
+	ErrInvalidOverlayCfg  = errors.New("invalid overlay root config")
+	ErrOverlaySetup       = errors.New("setup overlay root")
 	ErrWriteHostname      = errors.New("write hostname")
 	ErrWriteHosts         = errors.New("write hosts")
 	ErrWriteResolvConf    = errors.New("write resolv.conf")

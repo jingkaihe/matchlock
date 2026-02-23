@@ -115,6 +115,41 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("sends create payload with no_network", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest").withNoNetwork().options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.network).toEqual({
+      no_network: true,
+    });
+
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-no-network" },
+    });
+    await expect(createPromise).resolves.toBe("vm-no-network");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("rejects no_network combined with allowed hosts", async () => {
+    const client = new Client();
+    await expect(
+      client.create({
+        image: "alpine:latest",
+        noNetwork: true,
+        allowedHosts: ["api.openai.com"],
+      }),
+    ).rejects.toThrow("no network cannot be combined with allowed hosts or secrets");
+  });
+
   it("keeps vmId when post-create port_forward fails", async () => {
     const fake = installFakeProcess();
     const client = new Client();

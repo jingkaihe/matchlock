@@ -23,7 +23,7 @@ func TestReconcileVMStopped(t *testing.T) {
 	_, err := subnetAlloc.Allocate(vmID)
 	require.NoError(t, err)
 
-	rootfsPath := filepath.Join(stateMgr.Dir(vmID), "rootfs.ext4")
+	rootfsPath := filepath.Join(stateMgr.Dir(vmID), "upper.ext4")
 	require.NoError(t, os.WriteFile(rootfsPath, []byte("dummy"), 0600))
 
 	store := NewStore(stateMgr.Dir(vmID))

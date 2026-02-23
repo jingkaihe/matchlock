@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -52,10 +53,19 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		}
 	}
 
-	socketPair, err := createSocketPair()
-	if err != nil {
-		os.Remove(tempRootfs)
-		return nil, errx.Wrap(ErrSocketPair, err)
+	var socketPair *SocketPair
+	if config.UseInterception && !config.NoNetwork {
+		sp, err := createSocketPair()
+		if err != nil {
+			os.Remove(tempRootfs)
+			return nil, errx.Wrap(ErrSocketPair, err)
+		}
+		socketPair = sp
+	}
+	closeSocketPair := func() {
+		if socketPair != nil {
+			socketPair.Close()
+		}
 	}
 
 	kernelArgs := b.buildKernelArgs(config)
@@ -66,7 +76,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	if config.InitramfsPath != "" {
 		if _, err := os.Stat(config.InitramfsPath); err != nil {
 			os.Remove(tempRootfs)
-			socketPair.Close()
+			closeSocketPair()
 			return nil, errx.With(ErrInitramfsNotFound, ": %s: %w", config.InitramfsPath, err)
 		}
 		bootLoaderOpts = append(bootLoaderOpts, vz.WithInitrd(config.InitramfsPath))
@@ -78,7 +88,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	)
 	if err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrBootLoader, err)
 	}
 
@@ -89,7 +99,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	)
 	if err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrVMConfig, err)
 	}
 
@@ -97,20 +107,20 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	configWithRootfs.RootfsPath = tempRootfs
 	if err := b.configureStorage(vzConfig, &configWithRootfs); err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrStorageConfig, err)
 	}
 
-	if err := b.configureNetwork(vzConfig, socketPair, config.UseInterception); err != nil {
+	if err := b.configureNetwork(vzConfig, socketPair, config.UseInterception, config.NoNetwork); err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrNetworkConfig, err)
 	}
 
 	vsockConfig, err := vz.NewVirtioSocketDeviceConfiguration()
 	if err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrVsockConfig, err)
 	}
 	vzConfig.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{vsockConfig})
@@ -119,28 +129,28 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	entropyConfig, err := vz.NewVirtioEntropyDeviceConfiguration()
 	if err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrEntropyConfig, err)
 	}
 	vzConfig.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropyConfig})
 
 	if err := b.configureConsole(vzConfig, config); err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrConsoleConfig, err)
 	}
 
 	validated, err := vzConfig.Validate()
 	if err != nil || !validated {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.With(ErrVMConfigInvalid, ": validated=%v: %w", validated, err)
 	}
 
 	vzVM, err := vz.NewVirtualMachine(vzConfig)
 	if err != nil {
 		os.Remove(tempRootfs)
-		socketPair.Close()
+		closeSocketPair()
 		return nil, errx.Wrap(ErrVMCreate, err)
 	}
 
@@ -177,14 +187,44 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	}
 
 	diskArgs := ""
-	for i, disk := range config.ExtraDisks {
-		dev := string(rune('b' + i))
-		diskArgs += fmt.Sprintf(" matchlock.disk.vd%s=%s", dev, disk.GuestMount)
+	devLetter := 'b' // vda is rootfs
+	if config.OverlayEnabled {
+		lowerDevs := make([]string, 0, len(config.OverlayLowerPaths))
+		lowerFS := make([]string, 0, len(config.OverlayLowerPaths))
+		for i := range config.OverlayLowerPaths {
+			lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
+			fsType := "erofs"
+			if i < len(config.OverlayLowerFSTypes) && config.OverlayLowerFSTypes[i] != "" {
+				fsType = config.OverlayLowerFSTypes[i]
+			}
+			lowerFS = append(lowerFS, fsType)
+			devLetter++
+		}
+		upperDev := fmt.Sprintf("vd%c", devLetter)
+		devLetter++
+		diskArgs += fmt.Sprintf(
+			" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.lowerfs=%s matchlock.overlay.upper=%s",
+			strings.Join(lowerDevs, ","),
+			strings.Join(lowerFS, ","),
+			upperDev,
+		)
+	}
+	for _, disk := range config.ExtraDisks {
+		dev := fmt.Sprintf("vd%c", devLetter)
+		devLetter++
+		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
 	}
 
 	addHostArgs := ""
 	for i, mapping := range config.AddHosts {
 		addHostArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)
+	}
+
+	if config.NoNetwork {
+		return fmt.Sprintf(
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.no_network=1%s%s",
+			hostname, workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs,
+		)
 	}
 
 	if config.UseInterception {
@@ -232,6 +272,40 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 	}
 
 	devices := []vz.StorageDeviceConfiguration{storageConfig}
+
+	if config.OverlayEnabled {
+		for _, lowerPath := range config.OverlayLowerPaths {
+			lowerAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+				lowerPath,
+				true,
+				vz.DiskImageCachingModeAutomatic,
+				vz.DiskImageSynchronizationModeFsync,
+			)
+			if err != nil {
+				return errx.Wrap(ErrDiskAttachment, err)
+			}
+			lowerConfig, err := vz.NewVirtioBlockDeviceConfiguration(lowerAttachment)
+			if err != nil {
+				return errx.Wrap(ErrStorageConfig, err)
+			}
+			devices = append(devices, lowerConfig)
+		}
+
+		upperAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
+			config.OverlayUpperPath,
+			false,
+			vz.DiskImageCachingModeAutomatic,
+			vz.DiskImageSynchronizationModeFsync,
+		)
+		if err != nil {
+			return errx.Wrap(ErrDiskAttachment, err)
+		}
+		upperConfig, err := vz.NewVirtioBlockDeviceConfiguration(upperAttachment)
+		if err != nil {
+			return errx.Wrap(ErrStorageConfig, err)
+		}
+		devices = append(devices, upperConfig)
+	}
 
 	for i, disk := range config.ExtraDisks {
 		extraAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
@@ -291,11 +365,19 @@ func CopyRootfsToTemp(srcPath string) (string, error) {
 	return dstPath, nil
 }
 
-func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguration, socketPair *SocketPair, useInterception bool) error {
+func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguration, socketPair *SocketPair, useInterception bool, noNetwork bool) error {
+	if noNetwork {
+		vzConfig.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{})
+		return nil
+	}
+
 	var netAttachment vz.NetworkDeviceAttachment
 	var err error
 
 	if useInterception {
+		if socketPair == nil {
+			return ErrNetworkConfig
+		}
 		// Use socket pair for traffic interception via gVisor stack
 		netAttachment, err = vz.NewFileHandleNetworkDeviceAttachment(socketPair.GuestFile())
 		if err != nil {

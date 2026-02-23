@@ -115,12 +115,13 @@ func TestMemoryProvider_WriteFile_ReadFile(t *testing.T) {
 func TestMemoryProvider_MkdirAll(t *testing.T) {
 	mp := NewMemoryProvider()
 
-	require.NoError(t, mp.MkdirAll("/a/b/c/d", 0755))
+	require.NoError(t, mp.MkdirAll("/a/b/c/d", 0700))
 
 	for _, path := range []string{"/a", "/a/b", "/a/b/c", "/a/b/c/d"} {
 		info, err := mp.Stat(path)
 		require.NoError(t, err, "Path %s should exist", path)
 		assert.True(t, info.IsDir(), "Path %s should be directory", path)
+		require.Equal(t, os.FileMode(os.ModeDir|0700), info.mode, "Path %s should have expected mode", path)
 	}
 }
 
