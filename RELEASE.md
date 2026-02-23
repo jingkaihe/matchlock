@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-* Added `--no-network` to disable sandbox network, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+* Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+* Reduced `MemoryProvider` directory bookkeeping overhead by using a single `dirs` mode map, preventing `dirs`/`dirModes` desyncs in VFS ([#67](https://github.com/jingkaihe/matchlock/pull/67) by [@comunidadio](https://github.com/comunidadio)).
 
 ## 0.1.23
 

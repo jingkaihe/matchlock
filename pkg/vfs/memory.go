@@ -12,10 +12,9 @@ import (
 )
 
 type MemoryProvider struct {
-	mu       sync.RWMutex
-	files    map[string]*memFile
-	dirs     map[string]bool
-	dirModes map[string]os.FileMode
+	mu    sync.RWMutex
+	files map[string]*memFile
+	dirs  map[string]os.FileMode
 }
 
 type memFile struct {
@@ -27,9 +26,8 @@ type memFile struct {
 
 func NewMemoryProvider() *MemoryProvider {
 	return &MemoryProvider{
-		files:    make(map[string]*memFile),
-		dirs:     map[string]bool{"/": true},
-		dirModes: map[string]os.FileMode{"/": 0755},
+		files: make(map[string]*memFile),
+		dirs:  map[string]os.FileMode{"/": 0755},
 	}
 }
 
@@ -48,8 +46,7 @@ func (p *MemoryProvider) Stat(path string) (FileInfo, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if p.dirs[path] {
-		mode := p.dirModes[path]
+	if mode, ok := p.dirs[path]; ok {
 		if mode == 0 {
 			mode = 0755
 		}
@@ -71,7 +68,7 @@ func (p *MemoryProvider) ReadDir(path string) ([]DirEntry, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	if !p.dirs[path] {
+	if _, ok := p.dirs[path]; !ok {
 		return nil, syscall.ENOTDIR
 	}
 
@@ -129,7 +126,7 @@ func (p *MemoryProvider) Open(path string, flags int, mode os.FileMode) (Handle,
 		p.mu.Lock()
 		if _, exists := p.files[path]; !exists {
 			dir := filepath.Dir(path)
-			if !p.dirs[dir] {
+			if _, ok := p.dirs[dir]; !ok {
 				p.mu.Unlock()
 				return nil, syscall.ENOENT
 			}
@@ -166,16 +163,15 @@ func (p *MemoryProvider) Mkdir(path string, mode os.FileMode) error {
 	defer p.mu.Unlock()
 
 	parent := filepath.Dir(path)
-	if !p.dirs[parent] {
+	if _, ok := p.dirs[parent]; !ok {
 		return syscall.ENOENT
 	}
 
-	if p.dirs[path] {
+	if _, ok := p.dirs[path]; ok {
 		return syscall.EEXIST
 	}
 
-	p.dirs[path] = true
-	p.dirModes[path] = mode
+	p.dirs[path] = mode
 	return nil
 }
 
@@ -184,8 +180,8 @@ func (p *MemoryProvider) Chmod(path string, mode os.FileMode) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.dirs[path] {
-		p.dirModes[path] = mode
+	if _, ok := p.dirs[path]; ok {
+		p.dirs[path] = mode
 		return nil
 	}
 
@@ -205,14 +201,13 @@ func (p *MemoryProvider) Remove(path string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.dirs[path] {
+	if _, ok := p.dirs[path]; ok {
 		for k := range p.files {
 			if strings.HasPrefix(k, path+"/") {
 				return syscall.ENOTEMPTY
 			}
 		}
 		delete(p.dirs, path)
-		delete(p.dirModes, path)
 		return nil
 	}
 
@@ -242,7 +237,6 @@ func (p *MemoryProvider) RemoveAll(path string) error {
 	for k := range p.dirs {
 		if k == path || strings.HasPrefix(k, prefix) {
 			delete(p.dirs, k)
-			delete(p.dirModes, k)
 		}
 	}
 
@@ -257,16 +251,12 @@ func (p *MemoryProvider) Rename(oldPath, newPath string) error {
 
 	f, ok := p.files[oldPath]
 	if !ok {
-		if !p.dirs[oldPath] {
+		var mode os.FileMode
+		if mode, ok = p.dirs[oldPath]; !ok {
 			return syscall.ENOENT
 		}
-		mode := p.dirModes[oldPath]
 		delete(p.dirs, oldPath)
-		delete(p.dirModes, oldPath)
-		p.dirs[newPath] = true
-		if mode != 0 {
-			p.dirModes[newPath] = mode
-		}
+		p.dirs[newPath] = mode
 		return nil
 	}
 
@@ -387,7 +377,7 @@ func (p *MemoryProvider) WriteFile(path string, data []byte, mode os.FileMode) e
 	defer p.mu.Unlock()
 
 	dir := filepath.Dir(path)
-	if !p.dirs[dir] {
+	if _, ok := p.dirs[dir]; !ok {
 		return syscall.ENOENT
 	}
 
@@ -426,8 +416,8 @@ func (p *MemoryProvider) MkdirAll(path string, mode os.FileMode) error {
 			continue
 		}
 		current += "/" + part
-		if !p.dirs[current] {
-			p.dirs[current] = true
+		if _, ok := p.dirs[current]; !ok {
+			p.dirs[current] = mode
 		}
 	}
 	return nil
