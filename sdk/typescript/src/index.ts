@@ -34,6 +34,7 @@ export type {
   ExecStreamOptions,
   ExecStreamResult,
   FileInfo,
+  VolumeInfo,
   HostIPMapping,
   ImageConfig,
   MountConfig,

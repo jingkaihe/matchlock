@@ -29,6 +29,7 @@ from .types import (
     ExecResult,
     ExecStreamResult,
     FileInfo,
+    VolumeInfo,
     MatchlockError,
     RPCError,
     VFSActionRequest,
@@ -223,6 +224,94 @@ class Client:
             return
         subprocess.run(
             [self._config.binary_path, "rm", vm_id],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def volume_create(self, name: str, size_mb: int = 10240) -> VolumeInfo:
+        """Create a named raw ext4 volume."""
+        name = name.strip()
+        if not name:
+            raise MatchlockError("volume name is required")
+        if size_mb <= 0:
+            raise MatchlockError("volume size must be > 0")
+
+        result = subprocess.run(
+            [
+                self._config.binary_path,
+                "volume",
+                "create",
+                name,
+                "--size",
+                str(size_mb),
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise MatchlockError(f"failed to parse volume create output: {e}") from e
+
+        path = str(payload.get("path", "")).strip()
+        if not path:
+            raise MatchlockError("failed to parse volume create output: missing Path")
+
+        volume_name = str(payload.get("name", "")).strip() or name
+        volume_size = str(payload.get("size", "")).strip() or f"{float(size_mb):.1f} MB"
+        return VolumeInfo(name=volume_name, size=volume_size, path=path)
+
+    def volume_list(self) -> list[VolumeInfo]:
+        """List named raw ext4 volumes."""
+        result = subprocess.run(
+            [self._config.binary_path, "volume", "ls", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise MatchlockError(f"failed to parse volume list output: {e}") from e
+        if not isinstance(payload, list):
+            raise MatchlockError("failed to parse volume list output: expected array")
+
+        volumes: list[VolumeInfo] = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                raise MatchlockError(
+                    f"failed to parse volume list output line: {entry!r}"
+                )
+            name = str(entry.get("name", "")).strip()
+            size = str(entry.get("size", "")).strip()
+            path = str(entry.get("path", "")).strip()
+            if not name or not path:
+                raise MatchlockError(
+                    f"failed to parse volume list output line: {entry!r}"
+                )
+            volumes.append(
+                VolumeInfo(
+                    name=name,
+                    size=size,
+                    path=path,
+                )
+            )
+
+        return volumes
+
+    def volume_remove(self, name: str) -> None:
+        """Remove a named raw ext4 volume."""
+        name = name.strip()
+        if not name:
+            raise MatchlockError("volume name is required")
+
+        subprocess.run(
+            [self._config.binary_path, "volume", "rm", name],
             capture_output=True,
             text=True,
             check=True,

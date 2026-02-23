@@ -26,10 +26,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,14 +44,15 @@ import (
 // Client is a Matchlock JSON-RPC client.
 // All methods are safe for concurrent use.
 type Client struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Reader
-	stderr    io.ReadCloser
-	requestID atomic.Uint64
-	vmID      string
-	mu        sync.Mutex // legacy — kept for Close()
-	closed    bool
+	cmd        *exec.Cmd
+	binaryPath string
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stderr     io.ReadCloser
+	requestID  atomic.Uint64
+	vmID       string
+	mu         sync.Mutex // legacy — kept for Close()
+	closed     bool
 
 	// Concurrent request handling
 	writeMu    sync.Mutex                 // serializes writes to stdin
@@ -115,11 +118,12 @@ func NewClient(cfg Config) (*Client, error) {
 	go io.Copy(io.Discard, stderr)
 
 	return &Client{
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  bufio.NewReader(stdout),
-		stderr:  stderr,
-		pending: make(map[uint64]*pendingRequest),
+		cmd:        cmd,
+		binaryPath: cfg.BinaryPath,
+		stdin:      stdin,
+		stdout:     bufio.NewReader(stdout),
+		stderr:     stderr,
+		pending:    make(map[uint64]*pendingRequest),
 	}, nil
 }
 
@@ -182,12 +186,102 @@ func (c *Client) Remove() error {
 	if c.vmID == "" {
 		return nil
 	}
-	bin := c.cmd.Path
-	out, err := exec.Command(bin, "rm", c.vmID).CombinedOutput()
+	out, err := c.runCLICommand("rm", c.vmID)
 	if err != nil {
 		return errx.With(ErrRemoveVM, " %s: %s: %w", c.vmID, out, err)
 	}
 	return nil
+}
+
+// VolumeInfo describes a named volume returned by volume CRUD operations.
+type VolumeInfo struct {
+	Name string
+	Size string
+	Path string
+}
+
+// VolumeCreate creates a named raw ext4 volume and returns its metadata.
+func (c *Client) VolumeCreate(name string, sizeMB int) (*VolumeInfo, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrVolumeNameRequired
+	}
+	if sizeMB <= 0 {
+		return nil, ErrInvalidVolumeSize
+	}
+
+	out, err := c.runCLICommand("volume", "create", name, "--size", strconv.Itoa(sizeMB), "--json")
+	if err != nil {
+		return nil, errx.With(ErrVolumeCommand, " create %s: %s: %w", name, strings.TrimSpace(string(out)), err)
+	}
+
+	info, err := parseVolumeCreateOutput(string(out))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(info.Name) == "" {
+		info.Name = name
+	}
+	if strings.TrimSpace(info.Size) == "" {
+		info.Size = fmt.Sprintf("%.1f MB", float64(sizeMB))
+	}
+	return &info, nil
+}
+
+// VolumeList returns all named raw ext4 volumes.
+func (c *Client) VolumeList() ([]VolumeInfo, error) {
+	out, err := c.runCLICommand("volume", "ls", "--json")
+	if err != nil {
+		return nil, errx.With(ErrVolumeCommand, " ls: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	return parseVolumeListOutput(string(out))
+}
+
+// VolumeRemove removes a named raw ext4 volume.
+func (c *Client) VolumeRemove(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ErrVolumeNameRequired
+	}
+
+	out, err := c.runCLICommand("volume", "rm", name)
+	if err != nil {
+		return errx.With(ErrVolumeCommand, " rm %s: %s: %w", name, strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+func (c *Client) runCLICommand(args ...string) ([]byte, error) {
+	bin := strings.TrimSpace(c.binaryPath)
+	if bin == "" {
+		return nil, ErrBinaryPathRequired
+	}
+	return exec.Command(bin, args...).CombinedOutput()
+}
+
+func parseVolumeCreateOutput(stdout string) (VolumeInfo, error) {
+	var info VolumeInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &info); err != nil {
+		return VolumeInfo{}, errx.Wrap(ErrParseVolumeCreateResult, err)
+	}
+	if strings.TrimSpace(info.Path) == "" {
+		return VolumeInfo{}, ErrParseVolumeCreateResult
+	}
+	return info, nil
+}
+
+func parseVolumeListOutput(stdout string) ([]VolumeInfo, error) {
+	var volumes []VolumeInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &volumes); err != nil {
+		return nil, errx.Wrap(ErrParseVolumeListResult, err)
+	}
+	for _, v := range volumes {
+		if strings.TrimSpace(v.Name) == "" || strings.TrimSpace(v.Path) == "" {
+			return nil, ErrParseVolumeListResult
+		}
+	}
+	return volumes, nil
 }
 
 // CreateOptions holds options for creating a sandbox
@@ -223,7 +317,8 @@ type CreateOptions struct {
 	Env map[string]string
 	// Secrets defines secrets to inject (replaced in HTTP requests to allowed hosts)
 	Secrets []Secret
-	// Workspace is the mount point for VFS in the guest (default: /workspace)
+	// Workspace is the mount point for VFS in the guest.
+	// This must be set when Mounts is non-empty.
 	Workspace string
 	// VFSInterception configures host-side VFS interception hooks/rules.
 	VFSInterception *VFSInterceptionConfig

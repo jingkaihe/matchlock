@@ -22,6 +22,7 @@ import {
   type ExecStreamOptions,
   type ExecStreamResult,
   type FileInfo,
+  type VolumeInfo,
   type HostIPMapping,
   type PortForward,
   type PortForwardBinding,
@@ -284,6 +285,99 @@ export class Client {
     } catch (error) {
       const err = toError(error);
       throw new MatchlockError(`matchlock rm ${vmID}: ${err.message}`);
+    }
+  }
+
+  async volumeCreate(name: string, sizeMb = 10240): Promise<VolumeInfo> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new MatchlockError("volume name is required");
+    }
+    if (!Number.isFinite(sizeMb) || sizeMb <= 0) {
+      throw new MatchlockError("volume size must be > 0");
+    }
+
+    let stdout = "";
+    try {
+      ({ stdout } = await this.execCLI([
+        "volume",
+        "create",
+        trimmed,
+        "--size",
+        String(sizeMb),
+        "--json",
+      ]));
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`matchlock volume create ${trimmed}: ${err.message}`);
+    }
+
+    let decoded: JSONValue;
+    try {
+      decoded = JSON.parse(stdout) as JSONValue;
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`failed to parse volume create output: ${err.message}`);
+    }
+
+    const data = asObject(decoded);
+    const path = asString(data.path).trim();
+    if (!path) {
+      throw new MatchlockError("failed to parse volume create output: missing Path");
+    }
+
+    return {
+      name: asString(data.name) || trimmed,
+      size: asString(data.size) || `${sizeMb.toFixed(1)} MB`,
+      path,
+    };
+  }
+
+  async volumeList(): Promise<VolumeInfo[]> {
+    let stdout = "";
+    try {
+      ({ stdout } = await this.execCLI(["volume", "ls", "--json"]));
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`matchlock volume ls: ${err.message}`);
+    }
+
+    let decoded: JSONValue;
+    try {
+      decoded = JSON.parse(stdout) as JSONValue;
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`failed to parse volume list output: ${err.message}`);
+    }
+    if (!Array.isArray(decoded)) {
+      throw new MatchlockError("failed to parse volume list output: expected array");
+    }
+
+    const volumes: VolumeInfo[] = [];
+    for (const entry of decoded) {
+      const data = asObject(entry);
+      const name = asString(data.name).trim();
+      const size = asString(data.size).trim();
+      const path = asString(data.path).trim();
+      if (!name || !path) {
+        throw new MatchlockError("failed to parse volume list output: missing required fields");
+      }
+      volumes.push({ name, size, path });
+    }
+    return volumes;
+  }
+
+  async volumeRemove(name: string): Promise<void> {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new MatchlockError("volume name is required");
+    }
+
+    try {
+      await this.execCLI(["volume", "rm", trimmed]);
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`matchlock volume rm ${trimmed}: ${err.message}`);
     }
   }
 
@@ -725,6 +819,28 @@ export class Client {
     }
 
     return port;
+  }
+
+  private async execCLI(
+    args: string[],
+  ): Promise<{ stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      execFile(
+        this.config.binaryPath,
+        args,
+        { encoding: "utf8" },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve({
+            stdout,
+            stderr,
+          });
+        },
+      );
+    });
   }
 
   private async sendRequest(

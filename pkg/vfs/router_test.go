@@ -270,3 +270,25 @@ func TestMountRouter_StatIntermediateMountDir(t *testing.T) {
 	require.NoError(t, err, "Stat /workspace/.host failed")
 	assert.True(t, info.IsDir(), "intermediate mount dir should be a directory")
 }
+
+func TestMountRouter_StatAncestorWithoutBaseMount(t *testing.T) {
+	router := NewMountRouter(map[string]Provider{
+		"/workspace/data": NewMemoryProvider(),
+	})
+
+	info, err := router.Stat("/workspace")
+	require.NoError(t, err, "Stat /workspace failed")
+	assert.True(t, info.IsDir(), "ancestor path should be synthetic directory")
+}
+
+func TestMountRouter_ReadDirAncestorWithoutBaseMount(t *testing.T) {
+	router := NewMountRouter(map[string]Provider{
+		"/workspace/data": NewMemoryProvider(),
+	})
+
+	entries, err := router.ReadDir("/workspace")
+	require.NoError(t, err, "ReadDir /workspace failed")
+	require.Len(t, entries, 1)
+	assert.Equal(t, "data", entries[0].Name())
+	assert.True(t, entries[0].IsDir())
+}

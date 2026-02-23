@@ -31,14 +31,14 @@ func TestParseBootConfig(t *testing.T) {
 	assert.Equal(t, hostIPMapping{Host: "api.internal", IP: "10.0.0.10"}, cfg.AddHosts[0])
 }
 
-func TestParseBootConfigDefaultsWorkspace(t *testing.T) {
+func TestParseBootConfigDefaultsWithoutWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
 	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=9.9.9.9"), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
 	require.NoError(t, err)
-	assert.Equal(t, defaultWorkspace, cfg.Workspace)
+	assert.Empty(t, cfg.Workspace)
 	assert.Equal(t, []string{"9.9.9.9"}, cfg.DNSServers)
 	assert.Equal(t, defaultNetworkMTU, cfg.MTU)
 }
@@ -85,6 +85,30 @@ func TestParseBootConfigNoNetwork(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.True(t, cfg.NoNetwork)
+}
+
+func TestParseBootConfigDiskReadonly(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.disk.vdb=/var/lib/buildkit,ro"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.Len(t, cfg.Disks, 1)
+	assert.Equal(t, "vdb", cfg.Disks[0].Device)
+	assert.Equal(t, "/var/lib/buildkit", cfg.Disks[0].Path)
+	assert.True(t, cfg.Disks[0].ReadOnly)
+}
+
+func TestParseBootConfigDiskInvalidOption(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.disk.vdb=/var/lib/buildkit,wat"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidDiskMount)
 }
 
 func TestParseBootConfigOverlayRoot(t *testing.T) {

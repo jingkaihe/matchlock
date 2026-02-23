@@ -34,8 +34,7 @@ const (
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
 
-	defaultWorkspace = "/workspace"
-	defaultPATH      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	networkInterface  = "eth0"
 	defaultNetworkMTU = 1500
@@ -50,8 +49,9 @@ const (
 )
 
 type diskMount struct {
-	Device string
-	Path   string
+	Device   string
+	Path     string
+	ReadOnly bool
 }
 
 type hostIPMapping struct {
@@ -127,14 +127,18 @@ func runInit() {
 	if !cfg.NoNetwork {
 		bringUpNetwork(networkInterface, cfg.MTU)
 	}
-	mountExtraDisks(cfg.Disks)
-
-	if err := startGuestFused(guestFusedPath); err != nil {
+	if err := mountExtraDisks(cfg.Disks); err != nil {
 		fatal(err)
 	}
 
-	if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
-		fatal(err)
+	if cfg.Workspace != "" {
+		if err := startGuestFused(guestFusedPath); err != nil {
+			fatal(err)
+		}
+
+		if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
+			fatal(err)
+		}
 	}
 
 	if err := unix.Exec(guestAgentPath, []string{guestAgentPath}, os.Environ()); err != nil {
@@ -158,8 +162,7 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	}
 
 	cfg := &bootConfig{
-		Workspace: defaultWorkspace,
-		MTU:       defaultNetworkMTU,
+		MTU: defaultNetworkMTU,
 	}
 	for _, field := range strings.Fields(string(data)) {
 		switch {
@@ -202,7 +205,11 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			if i <= 0 || i == len(spec)-1 {
 				continue
 			}
-			cfg.Disks = append(cfg.Disks, diskMount{Device: spec[:i], Path: spec[i+1:]})
+			mountPath, readonly, parseErr := parseDiskMountSpec(spec[i+1:])
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			cfg.Disks = append(cfg.Disks, diskMount{Device: spec[:i], Path: mountPath, ReadOnly: readonly})
 
 		case strings.HasPrefix(field, "matchlock.overlay="):
 			v := strings.TrimPrefix(field, "matchlock.overlay=")
@@ -417,6 +424,38 @@ func parseAddHostField(value string) (hostIPMapping, error) {
 	return hostIPMapping{Host: host, IP: ip}, nil
 }
 
+func parseDiskMountSpec(value string) (string, bool, error) {
+	parts := strings.Split(value, ",")
+	if len(parts) == 0 {
+		return "", false, errx.With(ErrInvalidDiskMount, ": %q", value)
+	}
+
+	path := strings.TrimSpace(parts[0])
+	if path == "" {
+		return "", false, errx.With(ErrInvalidDiskMount, ": %q has empty mount path", value)
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "", false, errx.With(ErrInvalidDiskMount, ": %q must be an absolute path", path)
+	}
+
+	readonly := false
+	for _, opt := range parts[1:] {
+		opt = strings.TrimSpace(strings.ToLower(opt))
+		switch opt {
+		case "":
+			continue
+		case "ro", "readonly":
+			readonly = true
+		case "rw":
+			readonly = false
+		default:
+			return "", false, errx.With(ErrInvalidDiskMount, ": unknown option %q", opt)
+		}
+	}
+
+	return path, readonly, nil
+}
+
 // configureHostname calls sethostname and writes /etc/hostname.
 //
 // Hostname is set before user-space via the `hostname=` kernel arg, but we set
@@ -597,19 +636,23 @@ func interfaceHasIPv4(name string) (bool, error) {
 	return false, nil
 }
 
-func mountExtraDisks(disks []diskMount) {
+func mountExtraDisks(disks []diskMount) error {
 	for _, d := range disks {
 		if d.Device == "" || d.Path == "" {
 			continue
 		}
 		if err := os.MkdirAll(d.Path, 0755); err != nil {
-			warnf("create disk mount path %s failed: %v", d.Path, err)
-			continue
+			return errx.With(ErrMountExtraDisk, " create mount path %s: %w", d.Path, err)
 		}
-		if err := unix.Mount(filepath.Join("/dev", d.Device), d.Path, "ext4", 0, ""); err != nil {
-			warnf("mount /dev/%s at %s failed: %v", d.Device, d.Path, err)
+		flags := uintptr(0)
+		if d.ReadOnly {
+			flags = unix.MS_RDONLY
+		}
+		if err := unix.Mount(filepath.Join("/dev", d.Device), d.Path, "ext4", flags, ""); err != nil {
+			return errx.With(ErrMountExtraDisk, " /dev/%s -> %s: %w", d.Device, d.Path, err)
 		}
 	}
+	return nil
 }
 
 func startGuestFused(path string) error {

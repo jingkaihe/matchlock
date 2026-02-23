@@ -37,7 +37,7 @@ type VMConfig struct {
 	GatewayIP           string              // Host TAP IP (e.g., 192.168.100.1)
 	GuestIP             string              // Guest IP (e.g., 192.168.100.2)
 	SubnetCIDR          string              // CIDR notation (e.g., 192.168.100.1/24)
-	Workspace           string              // Guest VFS mount point (default: /workspace)
+	Workspace           string              // Guest VFS mount point (empty when VFS is disabled)
 	UseInterception     bool                // Use network interception (MITM proxy)
 	Privileged          bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	DNSServers          []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)

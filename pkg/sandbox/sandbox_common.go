@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
-	"path/filepath"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
@@ -13,7 +13,7 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
-func buildVFSProviders(config *api.Config, workspace string) map[string]vfs.Provider {
+func buildVFSProviders(config *api.Config) map[string]vfs.Provider {
 	vfsProviders := make(map[string]vfs.Provider)
 	if config.VFS != nil && config.VFS.Mounts != nil {
 		for path, mount := range config.VFS.Mounts {
@@ -21,28 +21,13 @@ func buildVFSProviders(config *api.Config, workspace string) map[string]vfs.Prov
 			vfsProviders[path] = provider
 		}
 	}
-
-	cleanWorkspace := filepath.Clean(workspace)
-	hasWorkspaceMount := false
-	for path := range vfsProviders {
-		if filepath.Clean(path) == cleanWorkspace {
-			hasWorkspaceMount = true
-			break
-		}
-	}
-
-	// Keep a workspace root mount even when only nested mounts are configured.
-	// Without this, guest-fused root lookups on /workspace fail with ENOENT.
-	if !hasWorkspaceMount {
-		vfsProviders[cleanWorkspace] = vfs.NewMemoryProvider()
-	}
-
 	return vfsProviders
 }
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {
 	opts := &api.ExecOptions{
-		// Matchlock defaults execution to image WORKDIR, falling back to workspace.
+		// Matchlock defaults execution to image WORKDIR, falling back to the
+		// configured workspace path when VFS is enabled.
 		WorkingDir: config.GetWorkspace(),
 		Env:        make(map[string]string),
 	}
@@ -158,4 +143,15 @@ func listFiles(vfsRoot vfs.Provider, path string) ([]api.FileInfo, error) {
 		}
 	}
 	return result, nil
+}
+
+func flushGuestDisks(machine vm.Machine) {
+	if machine == nil {
+		return
+	}
+
+	// Best-effort flush so raw disk mounts persist writes before VM stop.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = machine.Exec(ctx, "sync", &api.ExecOptions{})
 }

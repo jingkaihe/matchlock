@@ -58,6 +58,7 @@ func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
 		2*time.Minute,
 		"run",
 		"--image", "alpine:latest",
+		"--workspace", "/workspace",
 		"-v", hostDir+":/workspace/not_exist_folder",
 		"cat", "/workspace/not_exist_folder/probe.txt",
 	)
@@ -74,6 +75,7 @@ func TestCLIRunVolumeMountNestedGuestPathMultiLevelRelative(t *testing.T) {
 		2*time.Minute,
 		"run",
 		"--image", "alpine:latest",
+		"--workspace", "/workspace",
 		"-v", hostDir+":.host/example:ro",
 		"--", "sh", "-c", "cd /workspace/.host && cat example/TEST.md",
 	)
@@ -91,6 +93,7 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 		2*time.Minute,
 		"run",
 		"--image", "alpine:latest",
+		"--workspace", "/workspace",
 		"-v", hostFile+":/workspace/1file.txt",
 		"--", "sh", "-c", "ls /workspace && cat /workspace/1file.txt",
 	)
@@ -100,7 +103,17 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 }
 
 func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
-	cmd := exec.Command(matchlockBin(t), "run", "--image", "alpine:latest", "--rm", "-it", "sh")
+	hostWorkspace := t.TempDir()
+	cmd := exec.Command(
+		matchlockBin(t),
+		"run",
+		"--image", "alpine:latest",
+		"--workspace", "/workspace",
+		"-v", hostWorkspace+":/workspace",
+		"--rm",
+		"-it",
+		"sh",
+	)
 	ptmx, err := pty.Start(cmd)
 	require.NoError(t, err, "failed to start interactive matchlock run")
 	defer ptmx.Close()

@@ -45,6 +45,12 @@ var (
 
 // Close / Remove errors
 var (
-	ErrCloseTimeout = errors.New("close timed out, process killed")
-	ErrRemoveVM     = errors.New("matchlock rm")
+	ErrCloseTimeout            = errors.New("close timed out, process killed")
+	ErrRemoveVM                = errors.New("matchlock rm")
+	ErrBinaryPathRequired      = errors.New("matchlock binary path is required")
+	ErrVolumeNameRequired      = errors.New("volume name is required")
+	ErrInvalidVolumeSize       = errors.New("volume size must be > 0")
+	ErrVolumeCommand           = errors.New("matchlock volume command")
+	ErrParseVolumeCreateResult = errors.New("parse volume create result")
+	ErrParseVolumeListResult   = errors.New("parse volume list result")
 )

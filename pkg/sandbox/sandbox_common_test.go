@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"path/filepath"
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -10,8 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildVFSProvidersAddsWorkspaceRootForNestedMounts(t *testing.T) {
-	workspace := "/workspace"
+func TestBuildVFSProvidersDoesNotAddWorkspaceRootForNestedMounts(t *testing.T) {
 	config := &api.Config{
 		VFS: &api.VFSConfig{
 			Mounts: map[string]api.MountConfig{
@@ -20,14 +18,25 @@ func TestBuildVFSProvidersAddsWorkspaceRootForNestedMounts(t *testing.T) {
 		},
 	}
 
-	providers := buildVFSProviders(config, workspace)
-	_, ok := providers[workspace]
-	require.True(t, ok, "expected workspace mount %q to exist", workspace)
+	providers := buildVFSProviders(config)
+	_, ok := providers["/workspace"]
+	require.False(t, ok, "did not expect implicit workspace root mount")
 	_, ok = providers["/workspace/not_exist_folder"]
 	require.True(t, ok, "expected nested mount to exist")
+}
 
+func TestBuildVFSProvidersNestedMountStillExposesWorkspaceViaRouter(t *testing.T) {
+	config := &api.Config{
+		VFS: &api.VFSConfig{
+			Mounts: map[string]api.MountConfig{
+				"/workspace/not_exist_folder": {Type: api.MountTypeMemory},
+			},
+		},
+	}
+
+	providers := buildVFSProviders(config)
 	router := vfs.NewMountRouter(providers)
-	_, err := router.Stat(workspace)
+	_, err := router.Stat("/workspace")
 	require.NoError(t, err, "expected workspace root to resolve")
 }
 
@@ -41,30 +50,8 @@ func TestBuildVFSProvidersKeepsExplicitWorkspaceMount(t *testing.T) {
 		},
 	}
 
-	providers := buildVFSProviders(config, workspace)
+	providers := buildVFSProviders(config)
 	require.Len(t, providers, 1)
-}
-
-func TestBuildVFSProvidersDoesNotDuplicateCanonicalWorkspaceMount(t *testing.T) {
-	workspace := "/workspace"
-	config := &api.Config{
-		VFS: &api.VFSConfig{
-			Mounts: map[string]api.MountConfig{
-				"/workspace/": {Type: api.MountTypeMemory},
-			},
-		},
-	}
-
-	providers := buildVFSProviders(config, workspace)
-
-	var workspaceMounts int
-	for path := range providers {
-		if filepath.Clean(path) == workspace {
-			workspaceMounts++
-		}
-	}
-
-	require.Equal(t, 1, workspaceMounts, "expected exactly one canonical workspace mount (providers=%d)", len(providers))
 }
 
 func TestPrepareExecEnv_ConfigEnvOverridesImageEnv(t *testing.T) {
@@ -110,6 +97,12 @@ func TestPrepareExecEnv_DefaultWorkingDirFallsBackToWorkspace(t *testing.T) {
 	opts := prepareExecEnv(config, nil, nil)
 
 	require.Equal(t, "/workspace/project", opts.WorkingDir)
+}
+
+func TestPrepareExecEnv_DefaultWorkingDirEmptyWithoutImageOrWorkspace(t *testing.T) {
+	config := &api.Config{}
+	opts := prepareExecEnv(config, nil, nil)
+	require.Equal(t, "", opts.WorkingDir)
 }
 
 func TestPrepareExecEnv_SecretPlaceholderOverridesConfigEnv(t *testing.T) {

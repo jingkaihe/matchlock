@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-// DefaultWorkspace is the default mount point for the VFS in the guest
+// DefaultWorkspace is the conventional mount point for the VFS in the guest.
+// VFS is now opt-in and this path is used only when explicitly configured.
 const DefaultWorkspace = "/workspace"
 
 const (
@@ -131,12 +133,12 @@ type VFSConfig struct {
 	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
 }
 
-// GetWorkspace returns the configured workspace path or the default
+// GetWorkspace returns the configured workspace path, or empty when unset.
 func (v *VFSConfig) GetWorkspace() string {
 	if v != nil && v.Workspace != "" {
 		return v.Workspace
 	}
-	return DefaultWorkspace
+	return ""
 }
 
 type DirectMount struct {
@@ -177,12 +179,57 @@ func (c *Config) GetHostname() string {
 	return c.GetID()
 }
 
-// GetWorkspace returns the workspace path from config, or default if not set
+// GetWorkspace returns the workspace path from config, or empty when unset.
 func (c *Config) GetWorkspace() string {
 	if c.VFS != nil {
 		return c.VFS.GetWorkspace()
 	}
-	return DefaultWorkspace
+	return ""
+}
+
+// HasVFSMounts reports whether VFS is enabled with at least one mount.
+func (c *Config) HasVFSMounts() bool {
+	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
+}
+
+// ValidateVFS checks VFS config invariants.
+//
+// Rules:
+// - vfs.workspace requires at least one vfs.mounts entry
+// - vfs.mounts requires a non-empty vfs.workspace
+// - vfs.interception requires at least one vfs.mounts entry
+// - vfs.workspace must be a safe absolute guest path
+// - every vfs.mounts key must be under vfs.workspace
+func (c *Config) ValidateVFS() error {
+	if c == nil || c.VFS == nil {
+		return nil
+	}
+
+	workspace := c.VFS.Workspace
+	hasWorkspace := strings.TrimSpace(workspace) != ""
+	hasMounts := len(c.VFS.Mounts) > 0
+	hasInterception := c.VFS.Interception != nil
+
+	if hasWorkspace && !hasMounts {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
+	}
+	if hasMounts && !hasWorkspace {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
+	}
+	if hasInterception && !hasMounts {
+		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
+	}
+	if !hasMounts {
+		return nil
+	}
+
+	if err := ValidateGuestMount(workspace); err != nil {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+	}
+	if err := ValidateVFSMountsWithinWorkspace(c.VFS.Mounts, workspace); err != nil {
+		return errx.With(ErrInvalidConfig, ": %v", err)
+	}
+	return nil
 }
 
 func DefaultConfig() *Config {
@@ -196,11 +243,6 @@ func DefaultConfig() *Config {
 		Network: &NetworkConfig{
 			BlockPrivateIPs: true,
 			MTU:             DefaultNetworkMTU,
-		},
-		VFS: &VFSConfig{
-			Mounts: map[string]MountConfig{
-				DefaultWorkspace: {Type: MountTypeMemory},
-			},
 		},
 	}
 }

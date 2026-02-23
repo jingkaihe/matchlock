@@ -58,6 +58,10 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
+	if err := config.ValidateVFS(); err != nil {
+		return nil, err
+	}
+	vfsEnabled := config.HasVFSMounts()
 
 	id := config.GetID()
 	hostname := config.GetHostname()
@@ -310,51 +314,57 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	vfsProviders := buildVFSProviders(config, workspace)
-	vfsRouter := vfs.NewMountRouter(vfsProviders)
-	var vfsRoot vfs.Provider = vfsRouter
-	vfsHooks := buildVFSHookEngine(config)
-	if vfsHooks != nil {
-		attachVFSFileEvents(vfsHooks, events)
-		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
-	}
-
-	vfsServer := vfs.NewVFSServer(vfsRoot)
-
-	vfsListener, err := darwinMachine.SetupVFSListener()
-	if err != nil {
-		if netStack != nil {
-			netStack.Close()
+	var vfsRoot vfs.Provider
+	var vfsHooks *vfs.HookEngine
+	var vfsServer *vfs.VFSServer
+	var vfsStopFunc func()
+	if vfsEnabled {
+		vfsProviders := buildVFSProviders(config)
+		vfsRouter := vfs.NewMountRouter(vfsProviders)
+		vfsRoot = vfsRouter
+		vfsHooks = buildVFSHookEngine(config)
+		if vfsHooks != nil {
+			attachVFSFileEvents(vfsHooks, events)
+			vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
 		}
-		machine.Close(ctx)
-		releaseSubnet()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrVFSListener, err)
-	}
 
-	vfsStopCh := make(chan struct{})
-	vfsStopFunc := func() {
-		close(vfsStopCh)
-		vfsListener.Close()
-	}
+		vfsServer = vfs.NewVFSServer(vfsRoot)
 
-	go func() {
-		for {
-			select {
-			case <-vfsStopCh:
-				return
-			default:
-				conn, err := vfsListener.Accept()
-				if err != nil {
-					if err == net.ErrClosed {
-						return
-					}
-					continue
-				}
-				go vfsServer.HandleConnection(conn)
+		vfsListener, err := darwinMachine.SetupVFSListener()
+		if err != nil {
+			if netStack != nil {
+				netStack.Close()
 			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrVFSListener, err)
 		}
-	}()
+
+		vfsStopCh := make(chan struct{})
+		vfsStopFunc = func() {
+			close(vfsStopCh)
+			vfsListener.Close()
+		}
+
+		go func() {
+			for {
+				select {
+				case <-vfsStopCh:
+					return
+				default:
+					conn, err := vfsListener.Accept()
+					if err != nil {
+						if err == net.ErrClosed {
+							return
+						}
+						continue
+					}
+					go vfsServer.HandleConnection(conn)
+				}
+			}
+		}()
+	}
 
 	sb = &Sandbox{
 		id:               id,
@@ -452,18 +462,30 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 }
 
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	if s.vfsRoot == nil {
+		return errx.With(ErrVFSDisabled, ": write_file %q", path)
+	}
 	return writeFile(s.vfsRoot, path, content, mode)
 }
 
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	if s.vfsRoot == nil {
+		return nil, errx.With(ErrVFSDisabled, ": read_file %q", path)
+	}
 	return readFile(s.vfsRoot, path)
 }
 
 func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
+	if s.vfsRoot == nil {
+		return 0, errx.With(ErrVFSDisabled, ": read_file %q", path)
+	}
 	return readFileTo(s.vfsRoot, path, w)
 }
 
 func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	if s.vfsRoot == nil {
+		return nil, errx.With(ErrVFSDisabled, ": list_files %q", path)
+	}
 	return listFiles(s.vfsRoot, path)
 }
 
@@ -526,6 +548,10 @@ func (s *Sandbox) Close(ctx context.Context) error {
 
 	close(s.events)
 	markCleanup("events_close", nil)
+
+	flushGuestDisks(s.machine)
+	markCleanup("guest_sync", nil)
+
 	if err := s.stateMgr.Unregister(s.id); err != nil {
 		errs = append(errs, errx.Wrap(ErrUnregisterState, err))
 		markCleanup("state_unregister", err)
