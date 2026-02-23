@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -192,13 +193,10 @@ func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, 
 			return nil, err
 		}
 		if directive != nil {
-			e.logger.Info("route matched",
+			e.logger.Info(
+				fmt.Sprintf("local model redirect: %s request to %s%s redirected to -> %s:%d (local-backend)",
+					req.Method, host, req.URL.Path, directive.Host, directive.Port),
 				"plugin", r.Name(),
-				"method", req.Method,
-				"host", host,
-				"path", req.URL.Path,
-				"target_host", directive.Host,
-				"target_port", directive.Port,
 			)
 			return directive, nil
 		}

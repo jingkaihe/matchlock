@@ -263,15 +263,23 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
-		i.logger.Info("request complete",
-			"method", req.Method,
-			"host", serverName,
-			"path", req.URL.Path,
-			"status", modifiedResp.StatusCode,
-			"duration_ms", duration.Milliseconds(),
-			"bytes", len(body),
-			"routed", routeDirective != nil,
-		)
+		if routeDirective != nil {
+			i.logger.Info(
+				fmt.Sprintf("local model redirect complete: %s %s%s -> %d %s:%d (%dms, %d bytes)",
+					req.Method, serverName, req.URL.Path,
+					modifiedResp.StatusCode, routeDirective.Host, routeDirective.Port,
+					duration.Milliseconds(), len(body)),
+			)
+		} else {
+			i.logger.Info("request complete",
+				"method", req.Method,
+				"host", serverName,
+				"path", req.URL.Path,
+				"status", modifiedResp.StatusCode,
+				"duration_ms", duration.Milliseconds(),
+				"bytes", len(body),
+			)
+		}
 		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {
