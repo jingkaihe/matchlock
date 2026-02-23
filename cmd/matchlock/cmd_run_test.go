@@ -33,7 +33,11 @@ func TestParseDiskMountSpecRelativeHostPath(t *testing.T) {
 
 	got, err := parseDiskMountSpec("data.ext4:/mnt/data:ro")
 	require.NoError(t, err)
-	assert.Equal(t, hostDisk, got.HostPath)
+	expectedHostPath, err := filepath.EvalSymlinks(hostDisk)
+	require.NoError(t, err)
+	actualHostPath, err := filepath.EvalSymlinks(got.HostPath)
+	require.NoError(t, err)
+	assert.Equal(t, expectedHostPath, actualHostPath)
 	assert.Equal(t, "/mnt/data", got.GuestMount)
 	assert.True(t, got.ReadOnly)
 }

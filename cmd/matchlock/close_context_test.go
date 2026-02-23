@@ -7,15 +7,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCloseContextZeroTimeoutNotImmediatelyDone(t *testing.T) {
+func TestCloseContextZeroTimeoutImmediatelyDone(t *testing.T) {
 	ctx, cancel := closeContext(0)
 	defer cancel()
 
 	select {
 	case <-ctx.Done():
-		t.Fatal("expected context not to be done immediately")
+		// ok
 	default:
+		t.Fatal("expected zero-timeout context to be done")
 	}
+
+	require.Error(t, ctx.Err())
 }
 
 func TestCloseContextPositiveTimeoutExpires(t *testing.T) {
