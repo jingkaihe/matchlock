@@ -344,6 +344,20 @@ class FileInfo:
     """Whether this is a directory."""
 
 
+@dataclass
+class VolumeInfo:
+    """Named volume metadata."""
+
+    name: str
+    """Volume name."""
+
+    size: str
+    """Human-readable volume size (for example, ``16.0 MB``)."""
+
+    path: str
+    """Host filesystem path to the backing ext4 image."""
+
+
 class MatchlockError(Exception):
     """Base exception for Matchlock errors."""
 

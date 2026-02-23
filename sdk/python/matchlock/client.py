@@ -18,6 +18,7 @@ import base64
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import threading
 from typing import IO, Any, Callable
@@ -29,6 +30,7 @@ from .types import (
     ExecResult,
     ExecStreamResult,
     FileInfo,
+    VolumeInfo,
     MatchlockError,
     RPCError,
     VFSActionRequest,
@@ -39,6 +41,10 @@ from .types import (
     VFS_HOOK_PHASE_AFTER,
     VFS_HOOK_PHASE_BEFORE,
     VFSMutateRequest,
+)
+
+_VOLUME_LS_LINE_RE = re.compile(
+    r"^(?P<name>\S+)\s+(?P<size>[0-9]+(?:\.[0-9]+)?\s+MB)\s+(?P<path>\S+)$"
 )
 
 
@@ -223,6 +229,76 @@ class Client:
             return
         subprocess.run(
             [self._config.binary_path, "rm", vm_id],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def volume_create(self, name: str, size_mb: int = 10240) -> VolumeInfo:
+        """Create a named raw ext4 volume."""
+        name = name.strip()
+        if not name:
+            raise MatchlockError("volume name is required")
+        if size_mb <= 0:
+            raise MatchlockError("volume size must be > 0")
+
+        result = subprocess.run(
+            [self._config.binary_path, "volume", "create", name, "--size", str(size_mb)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        path = ""
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith("Path:"):
+                path = line.removeprefix("Path:").strip()
+                break
+
+        if not path:
+            raise MatchlockError("failed to parse volume create output: missing Path")
+
+        return VolumeInfo(name=name, size=f"{float(size_mb):.1f} MB", path=path)
+
+    def volume_list(self) -> list[VolumeInfo]:
+        """List named raw ext4 volumes."""
+        result = subprocess.run(
+            [self._config.binary_path, "volume", "ls"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        volumes: list[VolumeInfo] = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("NAME"):
+                continue
+
+            match = _VOLUME_LS_LINE_RE.match(line)
+            if not match:
+                raise MatchlockError(f"failed to parse volume list output line: {line!r}")
+
+            size = " ".join(match.group("size").split())
+            volumes.append(
+                VolumeInfo(
+                    name=match.group("name"),
+                    size=size,
+                    path=match.group("path"),
+                )
+            )
+
+        return volumes
+
+    def volume_remove(self, name: str) -> None:
+        """Remove a named raw ext4 volume."""
+        name = name.strip()
+        if not name:
+            raise MatchlockError("volume name is required")
+
+        subprocess.run(
+            [self._config.binary_path, "volume", "rm", name],
             capture_output=True,
             text=True,
             check=True,

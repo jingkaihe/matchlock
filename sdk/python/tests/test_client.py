@@ -28,6 +28,7 @@ from matchlock.types import (
     MatchlockError,
     MountConfig,
     RPCError,
+    VolumeInfo,
     VFS_HOOK_ACTION_ALLOW,
     VFS_HOOK_ACTION_BLOCK,
     VFSHookRule,
@@ -1548,6 +1549,100 @@ class TestClientRemove:
     def test_remove_noop_without_vm_id(self):
         client = Client()
         client.remove()  # should not raise
+
+
+class TestClientVolume:
+    @patch("subprocess.run")
+    def test_volume_create_calls_cli_and_parses_path(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout="Created volume cache (16 MB)\nPath: /tmp/cache.ext4\n"
+        )
+        client = Client(Config(binary_path="matchlock"))
+
+        volume = client.volume_create("cache", 16)
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "create", "cache", "--size", "16"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert volume == VolumeInfo(
+            name="cache",
+            size="16.0 MB",
+            path="/tmp/cache.ext4",
+        )
+
+    @patch("subprocess.run")
+    def test_volume_create_rejects_invalid_inputs(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="volume name is required"):
+            client.volume_create("   ", 16)
+        with pytest.raises(MatchlockError, match="volume size must be > 0"):
+            client.volume_create("cache", 0)
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_volume_create_fails_on_missing_path(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="Created volume cache (16 MB)\n")
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="failed to parse volume create output"):
+            client.volume_create("cache", 16)
+
+    @patch("subprocess.run")
+    def test_volume_list_calls_cli_and_parses_rows(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout=(
+                "NAME  SIZE  PATH\n"
+                "cache 16.0 MB /tmp/cache.ext4\n"
+                "data  32.0 MB /tmp/data.ext4\n"
+            )
+        )
+        client = Client(Config(binary_path="matchlock"))
+
+        volumes = client.volume_list()
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "ls"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert volumes == [
+            VolumeInfo(name="cache", size="16.0 MB", path="/tmp/cache.ext4"),
+            VolumeInfo(name="data", size="32.0 MB", path="/tmp/data.ext4"),
+        ]
+
+    @patch("subprocess.run")
+    def test_volume_list_fails_on_invalid_line(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="NAME SIZE PATH\nbad-line\n")
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="failed to parse volume list output line"):
+            client.volume_list()
+
+    @patch("subprocess.run")
+    def test_volume_remove_calls_cli(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        client.volume_remove("cache")
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "rm", "cache"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    @patch("subprocess.run")
+    def test_volume_remove_rejects_empty_name(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="volume name is required"):
+            client.volume_remove("  ")
+        mock_run.assert_not_called()
 
 
 class TestClientClose:

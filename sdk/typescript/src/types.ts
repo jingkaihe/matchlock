@@ -188,6 +188,12 @@ export interface FileInfo {
   isDir: boolean;
 }
 
+export interface VolumeInfo {
+  name: string;
+  size: string;
+  path: string;
+}
+
 export type StreamWriter =
   | NodeJS.WritableStream
   | ((chunk: Buffer) => void | Promise<void>);

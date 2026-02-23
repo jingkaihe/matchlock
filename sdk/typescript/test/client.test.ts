@@ -505,6 +505,78 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("creates volume via cli and parses output", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb === "function") {
+        cb(null, "Created volume cache (16 MB)\nPath: /tmp/cache.ext4\n", "");
+      }
+      return {} as never;
+    });
+
+    await expect(client.volumeCreate("cache", 16)).resolves.toEqual({
+      name: "cache",
+      size: "16.0 MB",
+      path: "/tmp/cache.ext4",
+    });
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "create", "cache", "--size", "16"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("lists volumes via cli and parses rows", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb === "function") {
+        cb(
+          null,
+          "NAME  SIZE  PATH\ncache 16.0 MB /tmp/cache.ext4\ndata 32.0 MB /tmp/data.ext4\n",
+          "",
+        );
+      }
+      return {} as never;
+    });
+
+    await expect(client.volumeList()).resolves.toEqual([
+      { name: "cache", size: "16.0 MB", path: "/tmp/cache.ext4" },
+      { name: "data", size: "32.0 MB", path: "/tmp/data.ext4" },
+    ]);
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "ls"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("removes volume via cli", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    await client.volumeRemove("cache");
+
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "rm", "cache"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("rejects volume operations with invalid inputs", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    await expect(client.volumeCreate("  ", 16)).rejects.toThrow("volume name is required");
+    await expect(client.volumeCreate("cache", 0)).rejects.toThrow("volume size must be > 0");
+    await expect(client.volumeRemove("  ")).rejects.toThrow("volume name is required");
+  });
+
   it("throws when process is not running", async () => {
     const fake = installFakeProcess();
     fake.close();
