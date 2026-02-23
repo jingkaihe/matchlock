@@ -511,7 +511,7 @@ describe("Client", () => {
     mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
       const cb = args[args.length - 1];
       if (typeof cb === "function") {
-        cb(null, "Created volume cache (16 MB)\nPath: /tmp/cache.ext4\n", "");
+        cb(null, '{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n', "");
       }
       return {} as never;
     });
@@ -523,7 +523,7 @@ describe("Client", () => {
     });
     expect(mockedExecFile).toHaveBeenCalledWith(
       "matchlock",
-      ["volume", "create", "cache", "--size", "16"],
+      ["volume", "create", "cache", "--size", "16", "--json"],
       { encoding: "utf8" },
       expect.any(Function),
     );
@@ -537,7 +537,7 @@ describe("Client", () => {
       if (typeof cb === "function") {
         cb(
           null,
-          "NAME  SIZE  PATH\ncache 16.0 MB /tmp/cache.ext4\ndata 32.0 MB /tmp/data.ext4\n",
+          '[{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"},{"name":"data","size":"32.0 MB","path":"/tmp/data.ext4"}]\n',
           "",
         );
       }
@@ -550,7 +550,7 @@ describe("Client", () => {
     ]);
     expect(mockedExecFile).toHaveBeenCalledWith(
       "matchlock",
-      ["volume", "ls"],
+      ["volume", "ls", "--json"],
       { encoding: "utf8" },
       expect.any(Function),
     );

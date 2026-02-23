@@ -31,7 +31,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -211,26 +210,27 @@ func (c *Client) VolumeCreate(name string, sizeMB int) (*VolumeInfo, error) {
 		return nil, ErrInvalidVolumeSize
 	}
 
-	out, err := c.runCLICommand("volume", "create", name, "--size", strconv.Itoa(sizeMB))
+	out, err := c.runCLICommand("volume", "create", name, "--size", strconv.Itoa(sizeMB), "--json")
 	if err != nil {
 		return nil, errx.With(ErrVolumeCommand, " create %s: %s: %w", name, strings.TrimSpace(string(out)), err)
 	}
 
-	path, err := parseVolumeCreatePath(string(out))
+	info, err := parseVolumeCreateOutput(string(out))
 	if err != nil {
 		return nil, err
 	}
-
-	return &VolumeInfo{
-		Name: name,
-		Size: fmt.Sprintf("%.1f MB", float64(sizeMB)),
-		Path: path,
-	}, nil
+	if strings.TrimSpace(info.Name) == "" {
+		info.Name = name
+	}
+	if strings.TrimSpace(info.Size) == "" {
+		info.Size = fmt.Sprintf("%.1f MB", float64(sizeMB))
+	}
+	return &info, nil
 }
 
 // VolumeList returns all named raw ext4 volumes.
 func (c *Client) VolumeList() ([]VolumeInfo, error) {
-	out, err := c.runCLICommand("volume", "ls")
+	out, err := c.runCLICommand("volume", "ls", "--json")
 	if err != nil {
 		return nil, errx.With(ErrVolumeCommand, " ls: %s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -260,48 +260,27 @@ func (c *Client) runCLICommand(args ...string) ([]byte, error) {
 	return exec.Command(bin, args...).CombinedOutput()
 }
 
-func parseVolumeCreatePath(stdout string) (string, error) {
-	for _, line := range strings.Split(stdout, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Path:") {
-			path := strings.TrimSpace(strings.TrimPrefix(line, "Path:"))
-			if path == "" {
-				return "", ErrParseVolumeCreateResult
-			}
-			return path, nil
-		}
+func parseVolumeCreateOutput(stdout string) (VolumeInfo, error) {
+	var info VolumeInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &info); err != nil {
+		return VolumeInfo{}, errx.Wrap(ErrParseVolumeCreateResult, err)
 	}
-	return "", ErrParseVolumeCreateResult
+	if strings.TrimSpace(info.Path) == "" {
+		return VolumeInfo{}, ErrParseVolumeCreateResult
+	}
+	return info, nil
 }
 
-var volumeListLinePattern = regexp.MustCompile(`^(\S+)\s+(\S+)\s+(\S+)\s+(.+)$`)
-
 func parseVolumeListOutput(stdout string) ([]VolumeInfo, error) {
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	volumes := make([]VolumeInfo, 0, len(lines))
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "NAME") {
-			continue
-		}
-
-		matches := volumeListLinePattern.FindStringSubmatch(line)
-		if len(matches) != 5 || strings.ToUpper(matches[3]) != "MB" {
-			return nil, errx.With(ErrParseVolumeListResult, " line %q", line)
-		}
-		path := strings.TrimSpace(matches[4])
-		if path == "" {
-			return nil, errx.With(ErrParseVolumeListResult, " line %q", line)
-		}
-
-		volumes = append(volumes, VolumeInfo{
-			Name: matches[1],
-			Size: matches[2] + " " + matches[3],
-			Path: path,
-		})
+	var volumes []VolumeInfo
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &volumes); err != nil {
+		return nil, errx.Wrap(ErrParseVolumeListResult, err)
 	}
-
+	for _, v := range volumes {
+		if strings.TrimSpace(v.Name) == "" || strings.TrimSpace(v.Path) == "" {
+			return nil, ErrParseVolumeListResult
+		}
+	}
 	return volumes, nil
 }
 

@@ -18,7 +18,6 @@ import base64
 import fnmatch
 import json
 import os
-import re
 import subprocess
 import threading
 from typing import IO, Any, Callable
@@ -42,11 +41,6 @@ from .types import (
     VFS_HOOK_PHASE_BEFORE,
     VFSMutateRequest,
 )
-
-_VOLUME_LS_LINE_RE = re.compile(
-    r"^(?P<name>\S+)\s+(?P<size>[0-9]+(?:\.[0-9]+)?\s+MB)\s+(?P<path>\S+)$"
-)
-
 
 class _PendingRequest:
     __slots__ = ("event", "result", "error", "on_notification")
@@ -250,51 +244,62 @@ class Client:
                 name,
                 "--size",
                 str(size_mb),
+                "--json",
             ],
             capture_output=True,
             text=True,
             check=True,
         )
 
-        path = ""
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if line.startswith("Path:"):
-                path = line.removeprefix("Path:").strip()
-                break
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise MatchlockError(
+                f"failed to parse volume create output: {e}"
+            ) from e
 
+        path = str(payload.get("path", "")).strip()
         if not path:
             raise MatchlockError("failed to parse volume create output: missing Path")
 
-        return VolumeInfo(name=name, size=f"{float(size_mb):.1f} MB", path=path)
+        volume_name = str(payload.get("name", "")).strip() or name
+        volume_size = str(payload.get("size", "")).strip() or f"{float(size_mb):.1f} MB"
+        return VolumeInfo(name=volume_name, size=volume_size, path=path)
 
     def volume_list(self) -> list[VolumeInfo]:
         """List named raw ext4 volumes."""
         result = subprocess.run(
-            [self._config.binary_path, "volume", "ls"],
+            [self._config.binary_path, "volume", "ls", "--json"],
             capture_output=True,
             text=True,
             check=True,
         )
 
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise MatchlockError(f"failed to parse volume list output: {e}") from e
+        if not isinstance(payload, list):
+            raise MatchlockError("failed to parse volume list output: expected array")
+
         volumes: list[VolumeInfo] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line or line.startswith("NAME"):
-                continue
-
-            match = _VOLUME_LS_LINE_RE.match(line)
-            if not match:
+        for entry in payload:
+            if not isinstance(entry, dict):
                 raise MatchlockError(
-                    f"failed to parse volume list output line: {line!r}"
+                    f"failed to parse volume list output line: {entry!r}"
                 )
-
-            size = " ".join(match.group("size").split())
+            name = str(entry.get("name", "")).strip()
+            size = str(entry.get("size", "")).strip()
+            path = str(entry.get("path", "")).strip()
+            if not name or not path:
+                raise MatchlockError(
+                    f"failed to parse volume list output line: {entry!r}"
+                )
             volumes.append(
                 VolumeInfo(
-                    name=match.group("name"),
+                    name=name,
                     size=size,
-                    path=match.group("path"),
+                    path=path,
                 )
             )
 

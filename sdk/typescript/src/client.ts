@@ -111,7 +111,6 @@ const DEFAULT_CPUS = 1;
 const DEFAULT_MEMORY_MB = 512;
 const DEFAULT_DISK_SIZE_MB = 5120;
 const DEFAULT_TIMEOUT_SECONDS = 300;
-const VOLUME_LS_LINE_RE = /^(\S+)\s+([0-9]+(?:\.[0-9]+)?\s+MB)\s+(\S+)$/;
 
 const execFileAsync = promisify(execFile);
 
@@ -306,29 +305,30 @@ export class Client {
         trimmed,
         "--size",
         String(sizeMb),
+        "--json",
       ]));
     } catch (error) {
       const err = toError(error);
       throw new MatchlockError(`matchlock volume create ${trimmed}: ${err.message}`);
     }
 
-    let path = "";
-    for (const line of stdout.split(/\r?\n/)) {
-      const parsed = line.trim();
-      if (!parsed.startsWith("Path:")) {
-        continue;
-      }
-      path = parsed.slice("Path:".length).trim();
-      break;
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(stdout);
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`failed to parse volume create output: ${err.message}`);
     }
 
+    const data = asObject(decoded);
+    const path = asString(data.path).trim();
     if (!path) {
       throw new MatchlockError("failed to parse volume create output: missing Path");
     }
 
     return {
-      name: trimmed,
-      size: `${sizeMb.toFixed(1)} MB`,
+      name: asString(data.name) || trimmed,
+      size: asString(data.size) || `${sizeMb.toFixed(1)} MB`,
       path,
     };
   }
@@ -336,31 +336,33 @@ export class Client {
   async volumeList(): Promise<VolumeInfo[]> {
     let stdout = "";
     try {
-      ({ stdout } = await this.execCLI(["volume", "ls"]));
+      ({ stdout } = await this.execCLI(["volume", "ls", "--json"]));
     } catch (error) {
       const err = toError(error);
       throw new MatchlockError(`matchlock volume ls: ${err.message}`);
     }
 
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(stdout);
+    } catch (error) {
+      const err = toError(error);
+      throw new MatchlockError(`failed to parse volume list output: ${err.message}`);
+    }
+    if (!Array.isArray(decoded)) {
+      throw new MatchlockError("failed to parse volume list output: expected array");
+    }
+
     const volumes: VolumeInfo[] = [];
-    for (const line of stdout.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("NAME")) {
-        continue;
+    for (const entry of decoded) {
+      const data = asObject(entry);
+      const name = asString(data.name).trim();
+      const size = asString(data.size).trim();
+      const path = asString(data.path).trim();
+      if (!name || !path) {
+        throw new MatchlockError("failed to parse volume list output: missing required fields");
       }
-
-      const match = trimmed.match(VOLUME_LS_LINE_RE);
-      if (!match) {
-        throw new MatchlockError(
-          `failed to parse volume list output line: ${JSON.stringify(trimmed)}`,
-        );
-      }
-
-      volumes.push({
-        name: match[1],
-        size: match[2].replace(/\s+/g, " ").trim(),
-        path: match[3],
-      });
+      volumes.push({ name, size, path });
     }
     return volumes;
   }

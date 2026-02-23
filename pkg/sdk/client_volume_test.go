@@ -11,8 +11,7 @@ import (
 
 func TestVolumeCreate(t *testing.T) {
 	bin := writeFakeMatchlockCLI(t, `if [ "$1" = "volume" ] && [ "$2" = "create" ]; then
-	echo "Created volume $3 ($5 MB)"
-	echo "Path: /tmp/$3.ext4"
+	echo "{\"name\":\"$3\",\"size\":\"$5.0 MB\",\"path\":\"/tmp/$3.ext4\"}"
 	exit 0
 fi
 exit 1
@@ -29,9 +28,7 @@ exit 1
 
 func TestVolumeList(t *testing.T) {
 	bin := writeFakeMatchlockCLI(t, `if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then
-	echo "NAME  SIZE  PATH"
-	echo "cache 16.0 MB /tmp/cache.ext4"
-	echo "data  32.0 MB /tmp/data.ext4"
+	echo "[{\"name\":\"cache\",\"size\":\"16.0 MB\",\"path\":\"/tmp/cache.ext4\"},{\"name\":\"data\",\"size\":\"32.0 MB\",\"path\":\"/tmp/data.ext4\"}]"
 	exit 0
 fi
 exit 1
@@ -56,19 +53,19 @@ exit 1
 	require.NoError(t, client.VolumeRemove("cache"))
 }
 
-func TestParseVolumeCreatePathMissingPath(t *testing.T) {
-	_, err := parseVolumeCreatePath("Created volume cache (32 MB)\n")
+func TestParseVolumeCreateOutputMissingPath(t *testing.T) {
+	_, err := parseVolumeCreateOutput(`{"name":"cache","size":"32.0 MB","path":""}`)
 	require.ErrorIs(t, err, ErrParseVolumeCreateResult)
 }
 
 func TestParseVolumeListOutputInvalidLine(t *testing.T) {
-	_, err := parseVolumeListOutput("NAME SIZE PATH\ninvalid-line\n")
+	_, err := parseVolumeListOutput(`[{"name":"cache","size":"16.0 MB"}]`)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrParseVolumeListResult)
 }
 
 func TestParseVolumeListOutputPathWithSpaces(t *testing.T) {
-	vols, err := parseVolumeListOutput("NAME SIZE PATH\ncache 16.0 MB /Users/Jane Doe/.cache/matchlock/volumes/cache.ext4\n")
+	vols, err := parseVolumeListOutput(`[{"name":"cache","size":"16.0 MB","path":"/Users/Jane Doe/.cache/matchlock/volumes/cache.ext4"}]`)
 	require.NoError(t, err)
 	require.Len(t, vols, 1)
 	assert.Equal(t, VolumeInfo{

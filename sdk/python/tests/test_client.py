@@ -1555,14 +1555,14 @@ class TestClientVolume:
     @patch("subprocess.run")
     def test_volume_create_calls_cli_and_parses_path(self, mock_run):
         mock_run.return_value = MagicMock(
-            stdout="Created volume cache (16 MB)\nPath: /tmp/cache.ext4\n"
+            stdout='{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n'
         )
         client = Client(Config(binary_path="matchlock"))
 
         volume = client.volume_create("cache", 16)
 
         mock_run.assert_called_once_with(
-            ["matchlock", "volume", "create", "cache", "--size", "16"],
+            ["matchlock", "volume", "create", "cache", "--size", "16", "--json"],
             capture_output=True,
             text=True,
             check=True,
@@ -1585,7 +1585,9 @@ class TestClientVolume:
 
     @patch("subprocess.run")
     def test_volume_create_fails_on_missing_path(self, mock_run):
-        mock_run.return_value = MagicMock(stdout="Created volume cache (16 MB)\n")
+        mock_run.return_value = MagicMock(
+            stdout='{"name":"cache","size":"16.0 MB","path":""}\n'
+        )
         client = Client(Config(binary_path="matchlock"))
 
         with pytest.raises(MatchlockError, match="failed to parse volume create output"):
@@ -1594,18 +1596,14 @@ class TestClientVolume:
     @patch("subprocess.run")
     def test_volume_list_calls_cli_and_parses_rows(self, mock_run):
         mock_run.return_value = MagicMock(
-            stdout=(
-                "NAME  SIZE  PATH\n"
-                "cache 16.0 MB /tmp/cache.ext4\n"
-                "data  32.0 MB /tmp/data.ext4\n"
-            )
+            stdout='[{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"},{"name":"data","size":"32.0 MB","path":"/tmp/data.ext4"}]\n'
         )
         client = Client(Config(binary_path="matchlock"))
 
         volumes = client.volume_list()
 
         mock_run.assert_called_once_with(
-            ["matchlock", "volume", "ls"],
+            ["matchlock", "volume", "ls", "--json"],
             capture_output=True,
             text=True,
             check=True,
@@ -1617,7 +1615,7 @@ class TestClientVolume:
 
     @patch("subprocess.run")
     def test_volume_list_fails_on_invalid_line(self, mock_run):
-        mock_run.return_value = MagicMock(stdout="NAME SIZE PATH\nbad-line\n")
+        mock_run.return_value = MagicMock(stdout='[{"name":"cache","size":"16.0 MB"}]\n')
         client = Client(Config(binary_path="matchlock"))
 
         with pytest.raises(MatchlockError, match="failed to parse volume list output line"):

@@ -67,6 +67,7 @@ func TestCLIVolumeCreateLsRm(t *testing.T) {
 	)
 	require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
 	assert.Contains(t, stdout, "Created volume "+volumeName)
+	assert.NotContains(t, stdout, "Path:")
 
 	stdout, stderr, exitCode = runCLIWithTimeout(
 		t,
@@ -76,6 +77,7 @@ func TestCLIVolumeCreateLsRm(t *testing.T) {
 	require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
 	assert.Contains(t, stdout, "NAME")
 	assert.Contains(t, stdout, volumeName)
+	assert.NotContains(t, stdout, "PATH")
 
 	stdout, stderr, exitCode = runCLIWithTimeout(
 		t,
