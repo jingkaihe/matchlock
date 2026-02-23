@@ -301,11 +301,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		vfsConfig.Mounts = mounts
 	}
 
+	hasVFSMounts := vfsConfig != nil && len(vfsConfig.Mounts) > 0
 	extraDisks := make([]api.DiskMount, 0, len(diskMountSpecs))
 	for _, spec := range diskMountSpecs {
 		diskMount, err := parseDiskMountSpec(spec)
 		if err != nil {
 			return errx.With(ErrInvalidDiskMount, " %q: %w", spec, err)
+		}
+		if hasVFSMounts && diskMountShadowedByWorkspace(diskMount.GuestMount, vfsConfig.Workspace) {
+			return errx.With(ErrInvalidDiskMount, " %q: guest mount %q is inside workspace %q and will be shadowed by the VFS mount", spec, diskMount.GuestMount, vfsConfig.Workspace)
 		}
 		extraDisks = append(extraDisks, diskMount)
 	}
@@ -599,4 +603,11 @@ func parseDiskMountSpec(spec string) (api.DiskMount, error) {
 		GuestMount: guestMount,
 		ReadOnly:   readonly,
 	}, nil
+}
+
+func diskMountShadowedByWorkspace(guestMount, workspace string) bool {
+	if strings.TrimSpace(workspace) == "" {
+		return false
+	}
+	return api.ValidateGuestPathWithinWorkspace(guestMount, workspace) == nil
 }

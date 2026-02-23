@@ -86,3 +86,14 @@ func TestParseDiskMountSpecNamedVolumeMissing(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "named volume not found")
 }
+
+func TestDiskMountShadowedByWorkspace(t *testing.T) {
+	assert.True(t, diskMountShadowedByWorkspace("/workspace/cache", "/workspace"))
+	assert.True(t, diskMountShadowedByWorkspace("/workspace", "/workspace"))
+}
+
+func TestDiskMountShadowedByWorkspaceOutsideWorkspace(t *testing.T) {
+	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", "/workspace"))
+	assert.False(t, diskMountShadowedByWorkspace("/workspace-cache", "/workspace"))
+	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", ""))
+}

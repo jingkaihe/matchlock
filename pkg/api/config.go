@@ -197,6 +197,7 @@ func (c *Config) HasVFSMounts() bool {
 // Rules:
 // - vfs.workspace requires at least one vfs.mounts entry
 // - vfs.mounts requires a non-empty vfs.workspace
+// - vfs.interception requires at least one vfs.mounts entry
 // - vfs.workspace must be a safe absolute guest path
 // - every vfs.mounts key must be under vfs.workspace
 func (c *Config) ValidateVFS() error {
@@ -207,12 +208,16 @@ func (c *Config) ValidateVFS() error {
 	workspace := c.VFS.Workspace
 	hasWorkspace := strings.TrimSpace(workspace) != ""
 	hasMounts := len(c.VFS.Mounts) > 0
+	hasInterception := c.VFS.Interception != nil
 
 	if hasWorkspace && !hasMounts {
 		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
 	}
 	if hasMounts && !hasWorkspace {
 		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
+	}
+	if hasInterception && !hasMounts {
+		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
 	}
 	if !hasMounts {
 		return nil

@@ -49,6 +49,7 @@ func volumePathForName(name string) (string, error) {
 	if err := validateVolumeName(name); err != nil {
 		return "", err
 	}
+	name = strings.TrimSpace(name)
 	dir, err := ensureVolumeDir()
 	if err != nil {
 		return "", err

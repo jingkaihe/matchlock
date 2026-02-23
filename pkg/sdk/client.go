@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -273,6 +274,8 @@ func parseVolumeCreatePath(stdout string) (string, error) {
 	return "", ErrParseVolumeCreateResult
 }
 
+var volumeListLinePattern = regexp.MustCompile(`^(\S+)\s+(\S+)\s+(\S+)\s+(.+)$`)
+
 func parseVolumeListOutput(stdout string) ([]VolumeInfo, error) {
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	volumes := make([]VolumeInfo, 0, len(lines))
@@ -283,15 +286,19 @@ func parseVolumeListOutput(stdout string) ([]VolumeInfo, error) {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 4 || strings.ToUpper(fields[2]) != "MB" {
+		matches := volumeListLinePattern.FindStringSubmatch(line)
+		if len(matches) != 5 || strings.ToUpper(matches[3]) != "MB" {
+			return nil, errx.With(ErrParseVolumeListResult, " line %q", line)
+		}
+		path := strings.TrimSpace(matches[4])
+		if path == "" {
 			return nil, errx.With(ErrParseVolumeListResult, " line %q", line)
 		}
 
 		volumes = append(volumes, VolumeInfo{
-			Name: fields[0],
-			Size: fields[1] + " " + fields[2],
-			Path: fields[3],
+			Name: matches[1],
+			Size: matches[2] + " " + matches[3],
+			Path: path,
 		})
 	}
 

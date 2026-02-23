@@ -67,6 +67,17 @@ func TestParseVolumeListOutputInvalidLine(t *testing.T) {
 	assert.ErrorIs(t, err, ErrParseVolumeListResult)
 }
 
+func TestParseVolumeListOutputPathWithSpaces(t *testing.T) {
+	vols, err := parseVolumeListOutput("NAME SIZE PATH\ncache 16.0 MB /Users/Jane Doe/.cache/matchlock/volumes/cache.ext4\n")
+	require.NoError(t, err)
+	require.Len(t, vols, 1)
+	assert.Equal(t, VolumeInfo{
+		Name: "cache",
+		Size: "16.0 MB",
+		Path: "/Users/Jane Doe/.cache/matchlock/volumes/cache.ext4",
+	}, vols[0])
+}
+
 func TestVolumeCommandRequiresBinaryPath(t *testing.T) {
 	client := &Client{}
 	_, err := client.VolumeList()

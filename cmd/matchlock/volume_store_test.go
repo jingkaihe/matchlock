@@ -21,6 +21,17 @@ func TestValidateVolumeName(t *testing.T) {
 	require.Error(t, validateVolumeName("bad/name"))
 }
 
+func TestVolumePathForNameTrimsWhitespace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	trimmed, err := volumePathForName("cache")
+	require.NoError(t, err)
+	padded, err := volumePathForName(" cache ")
+	require.NoError(t, err)
+	assert.Equal(t, trimmed, padded)
+}
+
 func TestListNamedVolumes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -93,4 +104,18 @@ func TestRemoveNamedVolumeNotFound(t *testing.T) {
 	err := removeNamedVolume("missing")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrVolumeNotFound)
+}
+
+func TestRemoveNamedVolumeTrimsWhitespace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	volumeDir := filepath.Join(home, ".cache", "matchlock", "volumes")
+	require.NoError(t, os.MkdirAll(volumeDir, 0755))
+	path := filepath.Join(volumeDir, "cache.ext4")
+	require.NoError(t, os.WriteFile(path, []byte("x"), 0644))
+
+	require.NoError(t, removeNamedVolume(" cache "))
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }

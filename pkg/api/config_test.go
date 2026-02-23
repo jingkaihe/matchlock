@@ -162,6 +162,21 @@ func TestValidateVFS_RejectsMountsWithoutWorkspace(t *testing.T) {
 	assert.Contains(t, err.Error(), "vfs.workspace is required")
 }
 
+func TestValidateVFS_RejectsInterceptionWithoutMounts(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			Interception: &VFSInterceptionConfig{
+				EmitEvents: true,
+			},
+		},
+	}
+
+	err := cfg.ValidateVFS()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "vfs.interception requires at least one")
+}
+
 func TestValidateVFS_RejectsMountOutsideWorkspace(t *testing.T) {
 	cfg := &Config{
 		VFS: &VFSConfig{
@@ -191,4 +206,20 @@ func TestValidateVFS_AllowsValidWorkspaceMounts(t *testing.T) {
 	require.NoError(t, cfg.ValidateVFS())
 	assert.True(t, cfg.HasVFSMounts())
 	assert.Equal(t, "/workspace/project", cfg.GetWorkspace())
+}
+
+func TestValidateVFS_AllowsInterceptionWithMounts(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			Workspace: "/workspace",
+			Mounts: map[string]MountConfig{
+				"/workspace/data": {Type: MountTypeMemory},
+			},
+			Interception: &VFSInterceptionConfig{
+				EmitEvents: true,
+			},
+		},
+	}
+
+	require.NoError(t, cfg.ValidateVFS())
 }
