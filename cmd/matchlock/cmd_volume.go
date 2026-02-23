@@ -27,11 +27,20 @@ var volumeLsCmd = &cobra.Command{
 	RunE:    runVolumeLs,
 }
 
+var volumeRmCmd = &cobra.Command{
+	Use:     "rm <name>",
+	Aliases: []string{"remove"},
+	Short:   "Remove a named volume",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runVolumeRm,
+}
+
 func init() {
 	volumeCreateCmd.Flags().Int("size", defaultNamedVolumeSizeMB, "Volume size in MB")
 
 	volumeCmd.AddCommand(volumeCreateCmd)
 	volumeCmd.AddCommand(volumeLsCmd)
+	volumeCmd.AddCommand(volumeRmCmd)
 	rootCmd.AddCommand(volumeCmd)
 }
 
@@ -61,5 +70,16 @@ func runVolumeLs(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, humanizeMB(v.SizeBytes), v.Path)
 	}
 	w.Flush()
+	return nil
+}
+
+func runVolumeRm(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	if err := removeNamedVolume(name); err != nil {
+		return err
+	}
+
+	fmt.Printf("Removed volume %s\n", name)
 	return nil
 }

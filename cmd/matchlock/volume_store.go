@@ -126,6 +126,22 @@ func createNamedVolume(name string, sizeMB int) (string, error) {
 	return path, nil
 }
 
+func removeNamedVolume(name string) error {
+	path, err := volumePathForName(name)
+	if err != nil {
+		return err
+	}
+
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return errx.With(ErrVolumeNotFound, ": %s", name)
+		}
+		return errx.Wrap(ErrRemoveVolume, err)
+	}
+
+	return nil
+}
+
 func listNamedVolumes() ([]namedVolume, error) {
 	dir, err := ensureVolumeDir()
 	if err != nil {

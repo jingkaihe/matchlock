@@ -56,6 +56,7 @@ var (
 	ErrCreateVolumeDir        = errors.New("create volume directory")
 	ErrCreateVolume           = errors.New("create named volume")
 	ErrListVolumes            = errors.New("list named volumes")
+	ErrRemoveVolume           = errors.New("remove named volume")
 	ErrVolumeExists           = errors.New("named volume already exists")
 	ErrVolumeNotFound         = errors.New("named volume not found")
 	ErrInvalidSecret          = errors.New("invalid secret")

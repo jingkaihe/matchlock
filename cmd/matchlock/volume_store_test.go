@@ -71,3 +71,26 @@ func TestCreateNamedVolumeExists(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrVolumeExists)
 }
+
+func TestRemoveNamedVolume(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	volumeDir := filepath.Join(home, ".cache", "matchlock", "volumes")
+	require.NoError(t, os.MkdirAll(volumeDir, 0755))
+	path := filepath.Join(volumeDir, "cache.ext4")
+	require.NoError(t, os.WriteFile(path, []byte("x"), 0644))
+
+	require.NoError(t, removeNamedVolume("cache"))
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestRemoveNamedVolumeNotFound(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	err := removeNamedVolume("missing")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrVolumeNotFound)
+}
