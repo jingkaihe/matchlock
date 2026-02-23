@@ -243,7 +243,14 @@ class Client:
             raise MatchlockError("volume size must be > 0")
 
         result = subprocess.run(
-            [self._config.binary_path, "volume", "create", name, "--size", str(size_mb)],
+            [
+                self._config.binary_path,
+                "volume",
+                "create",
+                name,
+                "--size",
+                str(size_mb),
+            ],
             capture_output=True,
             text=True,
             check=True,
@@ -278,7 +285,9 @@ class Client:
 
             match = _VOLUME_LS_LINE_RE.match(line)
             if not match:
-                raise MatchlockError(f"failed to parse volume list output line: {line!r}")
+                raise MatchlockError(
+                    f"failed to parse volume list output line: {line!r}"
+                )
 
             size = " ".join(match.group("size").split())
             volumes.append(

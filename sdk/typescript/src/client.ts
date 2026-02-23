@@ -833,8 +833,8 @@ export class Client {
             return;
           }
           resolve({
-            stdout: typeof stdout === "string" ? stdout : stdout.toString("utf8"),
-            stderr: typeof stderr === "string" ? stderr : stderr.toString("utf8"),
+            stdout,
+            stderr,
           });
         },
       );
