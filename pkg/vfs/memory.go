@@ -428,6 +428,7 @@ func (p *MemoryProvider) MkdirAll(path string, mode os.FileMode) error {
 		current += "/" + part
 		if !p.dirs[current] {
 			p.dirs[current] = true
+			p.dirModes[current] = mode
 		}
 	}
 	return nil
