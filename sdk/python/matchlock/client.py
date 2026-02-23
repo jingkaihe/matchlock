@@ -42,6 +42,7 @@ from .types import (
     VFSMutateRequest,
 )
 
+
 class _PendingRequest:
     __slots__ = ("event", "result", "error", "on_notification")
 
@@ -254,9 +255,7 @@ class Client:
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as e:
-            raise MatchlockError(
-                f"failed to parse volume create output: {e}"
-            ) from e
+            raise MatchlockError(f"failed to parse volume create output: {e}") from e
 
         path = str(payload.get("path", "")).strip()
         if not path:

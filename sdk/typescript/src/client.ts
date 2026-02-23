@@ -312,9 +312,9 @@ export class Client {
       throw new MatchlockError(`matchlock volume create ${trimmed}: ${err.message}`);
     }
 
-    let decoded: unknown;
+    let decoded: JSONValue;
     try {
-      decoded = JSON.parse(stdout);
+      decoded = JSON.parse(stdout) as JSONValue;
     } catch (error) {
       const err = toError(error);
       throw new MatchlockError(`failed to parse volume create output: ${err.message}`);
@@ -342,9 +342,9 @@ export class Client {
       throw new MatchlockError(`matchlock volume ls: ${err.message}`);
     }
 
-    let decoded: unknown;
+    let decoded: JSONValue;
     try {
-      decoded = JSON.parse(stdout);
+      decoded = JSON.parse(stdout) as JSONValue;
     } catch (error) {
       const err = toError(error);
       throw new MatchlockError(`failed to parse volume list output: ${err.message}`);
