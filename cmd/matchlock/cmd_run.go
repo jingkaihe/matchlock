@@ -46,7 +46,7 @@ Secrets (--secret):
   Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
 Volume Mounts (-v):
-  Guest paths are relative to workspace (or use full workspace paths):
+  Requires --workspace. Guest paths are relative to workspace (or use full workspace paths):
   ./mycode:code                    Isolated snapshot mount to <workspace>/code (default)
   ./mycode:code:overlay            Same as above (explicit)
   ./data:/workspace/data           Same as above (explicit guest path)
@@ -81,7 +81,7 @@ Custom hosts with --add-host:
 
 func init() {
 	runCmd.Flags().String("image", "", "Container image (required)")
-	runCmd.Flags().String("workspace", api.DefaultWorkspace, "Guest mount point for VFS")
+	runCmd.Flags().String("workspace", "", "Guest mount point for VFS (required with --volume)")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, fmt.Sprintf("Volume mount (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
@@ -103,7 +103,7 @@ func init() {
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
-	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then workspace path)")
+	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then configured workspace path)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
 	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
 	runCmd.Flags().Duration("graceful-shutdown", api.DefaultGracefulShutdownPeriod, "Graceful shutdown timeout before force-stopping the VM ")
@@ -152,6 +152,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	interactive, _ := cmd.Flags().GetBool("interactive")
 	interactiveMode := tty && interactive
 	workspace, _ := cmd.Flags().GetString("workspace")
+	workspaceSet := cmd.Flags().Changed("workspace")
 	workdir, _ := cmd.Flags().GetString("workdir")
 
 	// Network & security
@@ -263,8 +264,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		RootfsFSTypes: buildResult.LowerFSTypes,
 	}
 
-	vfsConfig := &api.VFSConfig{Workspace: workspace}
+	var vfsConfig *api.VFSConfig
+	if workspaceSet || len(volumes) > 0 {
+		vfsConfig = &api.VFSConfig{Workspace: workspace}
+	}
 	if len(volumes) > 0 {
+		if workspace == "" {
+			return fmt.Errorf("--workspace is required when using --volume")
+		}
 		mounts := make(map[string]api.MountConfig)
 		for _, vol := range volumes {
 			spec, err := api.ParseVolumeMountSpec(vol, workspace)
@@ -339,6 +346,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		ImageCfg: imageCfg,
 	}
 	if err := config.Network.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateVFS(); err != nil {
 		return err
 	}
 

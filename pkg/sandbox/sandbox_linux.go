@@ -71,7 +71,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
+	if err := config.ValidateVFS(); err != nil {
+		return nil, err
+	}
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
+	vfsEnabled := config.HasVFSMounts()
 
 	id := config.GetID()
 	hostname := config.GetHostname()
@@ -342,33 +346,39 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	// Create VFS providers
-	vfsProviders := buildVFSProviders(config, workspace)
-	vfsRouter := vfs.NewMountRouter(vfsProviders)
-	var vfsRoot vfs.Provider = vfsRouter
-	vfsHooks := buildVFSHookEngine(config)
-	if vfsHooks != nil {
-		attachVFSFileEvents(vfsHooks, events)
-		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
-	}
-
-	// Create VFS server for guest FUSE daemon connections
-	vfsServer := vfs.NewVFSServer(vfsRoot)
-
-	// Start VFS server on the vsock UDS path for VFS port
-	vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
-	vfsStopFunc, err := vfsServer.ServeUDSBackground(vfsSocketPath)
-	if err != nil {
-		if proxy != nil {
-			proxy.Close()
+	var vfsRoot vfs.Provider
+	var vfsHooks *vfs.HookEngine
+	var vfsServer *vfs.VFSServer
+	var vfsStopFunc func()
+	if vfsEnabled {
+		// Create VFS providers
+		vfsProviders := buildVFSProviders(config)
+		vfsRouter := vfs.NewMountRouter(vfsProviders)
+		vfsRoot = vfsRouter
+		vfsHooks = buildVFSHookEngine(config)
+		if vfsHooks != nil {
+			attachVFSFileEvents(vfsHooks, events)
+			vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
 		}
-		if fwRules != nil {
-			fwRules.Cleanup()
+
+		// Create VFS server for guest FUSE daemon connections
+		vfsServer = vfs.NewVFSServer(vfsRoot)
+
+		// Start VFS server on the vsock UDS path for VFS port
+		vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
+		vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
+		if err != nil {
+			if proxy != nil {
+				proxy.Close()
+			}
+			if fwRules != nil {
+				fwRules.Cleanup()
+			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrVFSServer, err)
 		}
-		machine.Close(ctx)
-		releaseSubnet()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
 	sb = &Sandbox{
@@ -482,18 +492,30 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 }
 
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	if s.vfsRoot == nil {
+		return errx.With(ErrVFSDisabled, ": write_file %q", path)
+	}
 	return writeFile(s.vfsRoot, path, content, mode)
 }
 
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	if s.vfsRoot == nil {
+		return nil, errx.With(ErrVFSDisabled, ": read_file %q", path)
+	}
 	return readFile(s.vfsRoot, path)
 }
 
 func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
+	if s.vfsRoot == nil {
+		return 0, errx.With(ErrVFSDisabled, ": read_file %q", path)
+	}
 	return readFileTo(s.vfsRoot, path, w)
 }
 
 func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	if s.vfsRoot == nil {
+		return nil, errx.With(ErrVFSDisabled, ": list_files %q", path)
+	}
 	return listFiles(s.vfsRoot, path)
 }
 

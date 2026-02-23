@@ -34,8 +34,7 @@ const (
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
 
-	defaultWorkspace = "/workspace"
-	defaultPATH      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	networkInterface  = "eth0"
 	defaultNetworkMTU = 1500
@@ -129,12 +128,14 @@ func runInit() {
 	}
 	mountExtraDisks(cfg.Disks)
 
-	if err := startGuestFused(guestFusedPath); err != nil {
-		fatal(err)
-	}
+	if cfg.Workspace != "" {
+		if err := startGuestFused(guestFusedPath); err != nil {
+			fatal(err)
+		}
 
-	if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
-		fatal(err)
+		if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
+			fatal(err)
+		}
 	}
 
 	if err := unix.Exec(guestAgentPath, []string{guestAgentPath}, os.Environ()); err != nil {
@@ -158,8 +159,7 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	}
 
 	cfg := &bootConfig{
-		Workspace: defaultWorkspace,
-		MTU:       defaultNetworkMTU,
+		MTU: defaultNetworkMTU,
 	}
 	for _, field := range strings.Fields(string(data)) {
 		switch {

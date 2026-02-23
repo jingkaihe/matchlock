@@ -242,13 +242,11 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 			}
 		}
 	}
-	if config.VFS != nil && len(config.VFS.Mounts) > 0 {
-		if err := api.ValidateVFSMountsWithinWorkspace(config.VFS.Mounts, config.GetWorkspace()); err != nil {
-			return &Response{
-				JSONRPC: "2.0",
-				Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
-				ID:      req.ID,
-			}
+	if err := config.ValidateVFS(); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
 		}
 	}
 

@@ -50,6 +50,9 @@ func (r *MountRouter) Stat(path string) (FileInfo, error) {
 	path = filepath.Clean(path)
 	p, rel, err := r.resolve(path)
 	if err != nil {
+		if r.hasDescendantMount(path) {
+			return syntheticDirInfo(filepath.Base(path)), nil
+		}
 		return FileInfo{}, err
 	}
 	info, err := p.Stat(rel)
@@ -65,15 +68,20 @@ func (r *MountRouter) Stat(path string) (FileInfo, error) {
 func (r *MountRouter) ReadDir(path string) ([]DirEntry, error) {
 	path = filepath.Clean(path)
 	p, rel, err := r.resolve(path)
+	var (
+		entries []DirEntry
+		readErr error
+	)
 	if err != nil {
-		return nil, err
-	}
-	entries, readErr := p.ReadDir(rel)
-	if readErr != nil && !isMissingPathError(readErr) {
-		return nil, readErr
-	}
-	if readErr != nil {
-		entries = nil
+		readErr = err
+	} else {
+		entries, readErr = p.ReadDir(rel)
+		if readErr != nil && !isMissingPathError(readErr) {
+			return nil, readErr
+		}
+		if readErr != nil {
+			entries = nil
+		}
 	}
 
 	mountEntries := r.descendantMountEntries(path)

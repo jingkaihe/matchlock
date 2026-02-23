@@ -223,7 +223,8 @@ type CreateOptions struct {
 	Env map[string]string
 	// Secrets defines secrets to inject (replaced in HTTP requests to allowed hosts)
 	Secrets []Secret
-	// Workspace is the mount point for VFS in the guest (default: /workspace)
+	// Workspace is the mount point for VFS in the guest.
+	// This must be set when Mounts is non-empty.
 	Workspace string
 	// VFSInterception configures host-side VFS interception hooks/rules.
 	VFSInterception *VFSInterceptionConfig

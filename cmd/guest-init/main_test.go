@@ -31,14 +31,14 @@ func TestParseBootConfig(t *testing.T) {
 	assert.Equal(t, hostIPMapping{Host: "api.internal", IP: "10.0.0.10"}, cfg.AddHosts[0])
 }
 
-func TestParseBootConfigDefaultsWorkspace(t *testing.T) {
+func TestParseBootConfigDefaultsWithoutWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
 	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=9.9.9.9"), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
 	require.NoError(t, err)
-	assert.Equal(t, defaultWorkspace, cfg.Workspace)
+	assert.Empty(t, cfg.Workspace)
 	assert.Equal(t, []string{"9.9.9.9"}, cfg.DNSServers)
 	assert.Equal(t, defaultNetworkMTU, cfg.MTU)
 }
