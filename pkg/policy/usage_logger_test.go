@@ -403,7 +403,7 @@ func TestUsageLoggerPlugin_EmptyLogPath(t *testing.T) {
 // 16. Factory -- Valid Config
 func TestUsageLoggerPlugin_FromConfig(t *testing.T) {
 	raw := json.RawMessage(`{"log_path": "/tmp/test-usage.jsonl"}`)
-	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil)
+	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, plugin)
 
@@ -414,14 +414,14 @@ func TestUsageLoggerPlugin_FromConfig(t *testing.T) {
 // 17. Factory -- Invalid Config
 func TestUsageLoggerPlugin_FromConfig_Invalid(t *testing.T) {
 	raw := json.RawMessage("{invalid}")
-	_, err := NewUsageLoggerPluginFromConfig(raw, nil)
+	_, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
 	assert.Error(t, err)
 }
 
 // 18. Factory -- Empty Config
 func TestUsageLoggerPlugin_FromConfig_Empty(t *testing.T) {
 	raw := json.RawMessage("{}")
-	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil)
+	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, plugin)
 }

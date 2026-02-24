@@ -845,7 +845,7 @@ func TestEngine_MixedFlatAndPlugin_OverlappingAllows(t *testing.T) {
 			},
 		},
 	}
-	engine := NewEngine(config, nil)
+	engine := NewEngine(config, nil, nil)
 
 	assert.Nil(t, engine.IsHostAllowed("api.example.com"),
 		"Host matching both gates should be allowed")
@@ -911,7 +911,7 @@ func TestEngine_PluginConfigIsEnabled(t *testing.T) {
 // --- AND-semantics tests with mock gates ---
 
 func TestEngine_IsHostAllowed_ANDSemantics_OneDenies(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine := NewEngine(&api.NetworkConfig{}, nil, nil)
 	engine.gates = []GatePlugin{
 		&mockGatePlugin{name: "allow-all", verdict: &GateVerdict{Allowed: true}},
 		&mockGatePlugin{name: "deny-all", verdict: &GateVerdict{Allowed: false, Reason: "denied by mock"}},
@@ -923,7 +923,7 @@ func TestEngine_IsHostAllowed_ANDSemantics_OneDenies(t *testing.T) {
 }
 
 func TestEngine_IsHostAllowed_ANDSemantics_BothAllow(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine := NewEngine(&api.NetworkConfig{}, nil, nil)
 	engine.gates = []GatePlugin{
 		&mockGatePlugin{name: "gate-a", verdict: &GateVerdict{Allowed: true}},
 		&mockGatePlugin{name: "gate-b", verdict: &GateVerdict{Allowed: true}},
@@ -934,7 +934,7 @@ func TestEngine_IsHostAllowed_ANDSemantics_BothAllow(t *testing.T) {
 }
 
 func TestEngine_IsHostAllowed_ANDSemantics_BothDeny(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine := NewEngine(&api.NetworkConfig{}, nil, nil)
 	engine.gates = []GatePlugin{
 		&mockGatePlugin{name: "gate-a", verdict: &GateVerdict{Allowed: false, Reason: "reason-a"}},
 		&mockGatePlugin{name: "gate-b", verdict: &GateVerdict{Allowed: false, Reason: "reason-b"}},
@@ -947,7 +947,7 @@ func TestEngine_IsHostAllowed_ANDSemantics_BothDeny(t *testing.T) {
 }
 
 func TestEngine_IsHostAllowed_ReturnsVerdictFromBlockingGate(t *testing.T) {
-	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine := NewEngine(&api.NetworkConfig{}, nil, nil)
 	engine.gates = []GatePlugin{
 		&mockGatePlugin{name: "host-filter", verdict: &GateVerdict{Allowed: true}},
 		&mockGatePlugin{name: "budget-gate", verdict: &GateVerdict{
@@ -976,7 +976,7 @@ func TestEngine_BudgetGate_Integration(t *testing.T) {
 		AllowedHosts:   []string{"openrouter.ai"},
 		UsageLogPath:   logPath,
 		BudgetLimitUSD: 0.01, // very low limit
-	}, nil)
+	}, nil, nil)
 
 	// Before any usage: should be allowed
 	assert.Nil(t, engine.IsHostAllowed("openrouter.ai"))

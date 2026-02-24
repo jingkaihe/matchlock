@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // UsageLoggerConfig is the typed config for the usage_logger plugin.
@@ -88,7 +90,7 @@ func NewUsageLoggerPlugin(logPath string, logger *slog.Logger) *usageLoggerPlugi
 }
 
 // NewUsageLoggerPluginFromConfig creates a usage_logger plugin from JSON config.
-func NewUsageLoggerPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
+func NewUsageLoggerPluginFromConfig(raw json.RawMessage, logger *slog.Logger, _ *logging.Emitter) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
