@@ -7,7 +7,7 @@ import (
 )
 
 func TestLookupFactory_BuiltIn(t *testing.T) {
-	for _, name := range []string{"host_filter", "secret_injector", "local_model_router"} {
+	for _, name := range []string{"host_filter", "secret_injector", "local_model_router", "usage_logger"} {
 		f, ok := LookupFactory(name)
 		assert.True(t, ok, "built-in %q should be registered", name)
 		assert.NotNil(t, f)
@@ -24,4 +24,5 @@ func TestRegisteredTypes(t *testing.T) {
 	assert.Contains(t, types, "host_filter")
 	assert.Contains(t, types, "secret_injector")
 	assert.Contains(t, types, "local_model_router")
+	assert.Contains(t, types, "usage_logger")
 }

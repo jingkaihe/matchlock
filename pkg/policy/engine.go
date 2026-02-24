@@ -75,6 +75,13 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
 		e.logger.Debug("plugin registered from flat config", "plugin", "local_model_router")
 	}
 
+	if config.UsageLogPath != "" {
+		pluginLogger := e.logger.With("plugin", "usage_logger")
+		e.addPlugin(NewUsageLoggerPlugin(config.UsageLogPath, pluginLogger))
+		flatTypes["usage_logger"] = true
+		e.logger.Debug("plugin registered from flat config", "plugin", "usage_logger")
+	}
+
 	// --- Step 2: Add explicitly configured plugins from network.plugins ---
 
 	for _, pluginCfg := range config.Plugins {

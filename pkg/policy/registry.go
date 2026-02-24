@@ -22,6 +22,7 @@ func init() {
 	Register("host_filter", NewHostFilterPluginFromConfig)
 	Register("secret_injector", NewSecretInjectorPluginFromConfig)
 	Register("local_model_router", NewLocalModelRouterPluginFromConfig)
+	Register("usage_logger", NewUsageLoggerPluginFromConfig)
 }
 
 // Register adds a plugin factory to the global registry.
