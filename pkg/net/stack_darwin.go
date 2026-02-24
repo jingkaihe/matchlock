@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -63,6 +64,7 @@ type Config struct {
 	CAPool     *CAPool
 	DNSServers []string
 	Logger     *slog.Logger
+	Emitter    *logging.Emitter
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -315,7 +317,7 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		dnsServers: cfg.DNSServers,
 	}
 
-	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger)
+	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger, cfg.Emitter)
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)

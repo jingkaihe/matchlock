@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // Engine orchestrates network policy plugins.
@@ -18,18 +19,20 @@ type Engine struct {
 
 	placeholders map[string]string
 	logger       *slog.Logger
+	emitter      *logging.Emitter // nil means no event logging
 }
 
 // NewEngine creates a policy engine from a NetworkConfig.
 // It compiles flat config fields into built-in plugins and processes
 // any explicit plugin entries from config.Plugins.
-func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
+func NewEngine(config *api.NetworkConfig, logger *slog.Logger, emitter *logging.Emitter) *Engine {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	e := &Engine{
 		placeholders: make(map[string]string),
 		logger:       logger.With("component", "policy"),
+		emitter:      emitter,
 	}
 
 	// --- Step 1: Compile flat config fields into built-in plugins ---
@@ -52,7 +55,7 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
 
 	if len(config.Secrets) > 0 {
 		pluginLogger := e.logger.With("plugin", "secret_injector")
-		p := NewSecretInjectorPlugin(config.Secrets, pluginLogger)
+		p := NewSecretInjectorPlugin(config.Secrets, pluginLogger, e.emitter)
 		e.addPlugin(p)
 		flatTypes["secret_injector"] = true
 		e.logger.Debug("plugin registered from flat config", "plugin", "secret_injector")
@@ -116,7 +119,7 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
 		}
 
 		pluginLogger := e.logger.With("plugin", pluginCfg.Type)
-		p, err := factory(pluginCfg.Config, pluginLogger)
+		p, err := factory(pluginCfg.Config, pluginLogger, e.emitter)
 		if err != nil {
 			e.logger.Warn("plugin creation failed, skipping",
 				"type", pluginCfg.Type, "error", err)
@@ -201,9 +204,30 @@ func (e *Engine) IsHostAllowed(host string) *GateVerdict {
 				"host", host,
 				"reason", verdict.Reason,
 			)
+			if e.emitter != nil {
+				_ = e.emitter.Emit(logging.EventGateDecision,
+					fmt.Sprintf("gate blocked %s by %s: %s", host, g.Name(), verdict.Reason),
+					g.Name(),
+					nil,
+					&logging.GateDecisionData{
+						Host:    host,
+						Allowed: false,
+						Reason:  verdict.Reason,
+					})
+			}
 			return verdict
 		}
 		e.logger.Debug("gate allowed", "plugin", g.Name(), "host", host)
+		if e.emitter != nil {
+			_ = e.emitter.Emit(logging.EventGateDecision,
+				fmt.Sprintf("gate allowed %s by %s", host, g.Name()),
+				g.Name(),
+				nil,
+				&logging.GateDecisionData{
+					Host:    host,
+					Allowed: true,
+				})
+		}
 	}
 	return nil
 }
@@ -274,4 +298,9 @@ func (e *Engine) GetPlaceholders() map[string]string {
 		result[k] = v
 	}
 	return result
+}
+
+// Emitter returns the engine's event emitter. May be nil.
+func (e *Engine) Emitter() *logging.Emitter {
+	return e.emitter
 }

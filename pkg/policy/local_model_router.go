@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // LocalModelRouterConfig is the typed config for the local_model_router plugin.
@@ -37,7 +38,7 @@ func NewLocalModelRouterPlugin(routes []api.LocalModelRoute, logger *slog.Logger
 
 // NewLocalModelRouterPluginFromConfig creates from JSON config.
 // Called by the plugin registry factory.
-func NewLocalModelRouterPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
+func NewLocalModelRouterPluginFromConfig(raw json.RawMessage, logger *slog.Logger, emitter *logging.Emitter) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}

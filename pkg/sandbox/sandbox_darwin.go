@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -28,6 +30,7 @@ type Sandbox struct {
 	machine          vm.Machine
 	netStack         *sandboxnet.NetworkStack
 	policy           *policy.Engine
+	emitter          *logging.Emitter
 	vfsRoot          vfs.Provider
 	vfsHooks         *vfs.HookEngine
 	vfsServer        *vfs.VFSServer
@@ -278,7 +281,42 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	policyEngine := policy.NewEngine(config.Network, nil)
+	// Construct event logging emitter if configured
+	var emitter *logging.Emitter
+	if config.Logging != nil && config.Logging.Enabled {
+		runID := config.Logging.RunID
+		if runID == "" {
+			runID = id
+		}
+
+		logPath := config.Logging.EventLogPath
+		if logPath == "" {
+			logDir := filepath.Join(filepath.Dir(stateMgr.Dir(id)), "..", "logs", id)
+			if err := os.MkdirAll(logDir, 0755); err != nil {
+				slog.Warn("failed to create event log directory", "path", logDir, "error", err)
+			} else {
+				logPath = filepath.Join(logDir, "events.jsonl")
+			}
+		}
+
+		if logPath != "" {
+			if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+				slog.Warn("failed to create event log directory", "path", logPath, "error", err)
+			} else {
+				writer, err := logging.NewJSONLWriter(logPath)
+				if err != nil {
+					slog.Warn("failed to create event log writer", "path", logPath, "error", err)
+				} else {
+					emitter = logging.NewEmitter(logging.EmitterConfig{
+						RunID:       runID,
+						AgentSystem: config.Logging.AgentSystem,
+					}, writer)
+				}
+			}
+		}
+	}
+
+	policyEngine := policy.NewEngine(config.Network, nil, emitter)
 	events := make(chan api.Event, 100)
 
 	var netStack *sandboxnet.NetworkStack
@@ -302,6 +340,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			CAPool:     caPool,
 			DNSServers: config.Network.GetDNSServers(),
 			Logger:     nil,
+			Emitter:    emitter,
 		})
 		if err != nil {
 			machine.Close(ctx)
@@ -363,6 +402,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		machine:          machine,
 		netStack:         netStack,
 		policy:           policyEngine,
+		emitter:          emitter,
 		vfsRoot:          vfsRoot,
 		vfsHooks:         vfsHooks,
 		vfsServer:        vfsServer,
@@ -527,6 +567,18 @@ func (s *Sandbox) Close(ctx context.Context) error {
 
 	close(s.events)
 	markCleanup("events_close", nil)
+
+	if s.emitter != nil {
+		if err := s.emitter.Close(); err != nil {
+			errs = append(errs, err)
+			markCleanup("emitter_close", err)
+		} else {
+			markCleanup("emitter_close", nil)
+		}
+	} else {
+		markCleanup("emitter_close", nil)
+	}
+
 	if err := s.stateMgr.Unregister(s.id); err != nil {
 		errs = append(errs, errx.Wrap(ErrUnregisterState, err))
 		markCleanup("state_unregister", err)

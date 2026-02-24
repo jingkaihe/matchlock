@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+
+	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // PluginFactory creates a plugin from its JSON config blob.
 // The logger is pre-scoped with component=policy and plugin=<name>
 // by the engine before calling the factory. Plugins should store
 // it directly and use it for Debug-level logging.
-type PluginFactory func(config json.RawMessage, logger *slog.Logger) (Plugin, error)
+// The emitter is optional (may be nil) and used for structured event logging.
+type PluginFactory func(config json.RawMessage, logger *slog.Logger, emitter *logging.Emitter) (Plugin, error)
 
 var (
 	registryMu sync.RWMutex

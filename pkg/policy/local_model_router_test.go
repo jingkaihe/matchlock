@@ -382,7 +382,7 @@ func TestLocalModelRouterPlugin_FromConfig(t *testing.T) {
 		}]
 	}`)
 
-	plugin, err := NewLocalModelRouterPluginFromConfig(raw, nil)
+	plugin, err := NewLocalModelRouterPluginFromConfig(raw, nil, nil)
 	require.NoError(t, err)
 
 	rp, ok := plugin.(RoutePlugin)
@@ -403,7 +403,7 @@ func TestLocalModelRouterPlugin_FromConfig(t *testing.T) {
 }
 
 func TestLocalModelRouterPlugin_FromConfig_Invalid(t *testing.T) {
-	_, err := NewLocalModelRouterPluginFromConfig(json.RawMessage(`{invalid}`), nil)
+	_, err := NewLocalModelRouterPluginFromConfig(json.RawMessage(`{invalid}`), nil, nil)
 	assert.Error(t, err)
 }
 

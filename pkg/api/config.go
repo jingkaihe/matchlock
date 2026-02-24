@@ -30,6 +30,14 @@ type ImageConfig struct {
 	Env        map[string]string `json:"env,omitempty"`
 }
 
+// LoggingConfig configures the structured event logging system.
+type LoggingConfig struct {
+	EventLogPath string `json:"event_log_path,omitempty"` // Override file path; empty = default
+	Enabled      bool   `json:"enabled,omitempty"`        // Enable JSON-L event logging
+	RunID        string `json:"run_id,omitempty"`         // Caller-supplied session ID
+	AgentSystem  string `json:"agent_system,omitempty"`   // e.g., "openclaw", "aider"
+}
+
 type Config struct {
 	ID         string            `json:"id,omitempty"`
 	Image      string            `json:"image,omitempty"`
@@ -40,6 +48,7 @@ type Config struct {
 	Env        map[string]string `json:"env,omitempty"`
 	ExtraDisks []DiskMount       `json:"extra_disks,omitempty"`
 	ImageCfg   *ImageConfig      `json:"image_config,omitempty"`
+	Logging    *LoggingConfig    `json:"logging,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -335,6 +344,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.ImageCfg != nil {
 		result.ImageCfg = other.ImageCfg
+	}
+	if other.Logging != nil {
+		result.Logging = other.Logging
 	}
 	return &result
 }

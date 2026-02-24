@@ -112,6 +112,9 @@ func init() {
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
 	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
 	runCmd.Flags().Duration("graceful-shutdown", api.DefaultGracefulShutdownPeriod, "Graceful shutdown timeout before force-stopping the VM ")
+	runCmd.Flags().String("event-log", "", "Path for JSON-L event log (enables event logging)")
+	runCmd.Flags().String("run-id", "", "Run/session ID for event log (default: sandbox VM ID)")
+	runCmd.Flags().String("agent-system", "", "Agent system name for event log (e.g., \"openclaw\", \"aider\")")
 	runCmd.MarkFlagRequired("image")
 
 	viper.BindPFlag("run.image", runCmd.Flags().Lookup("image"))
@@ -140,6 +143,9 @@ func init() {
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
 	viper.BindPFlag("run.pull", runCmd.Flags().Lookup("pull"))
 	viper.BindPFlag("run.rm", runCmd.Flags().Lookup("rm"))
+	viper.BindPFlag("run.event-log", runCmd.Flags().Lookup("event-log"))
+	viper.BindPFlag("run.run-id", runCmd.Flags().Lookup("run-id"))
+	viper.BindPFlag("run.agent-system", runCmd.Flags().Lookup("agent-system"))
 
 	rootCmd.AddCommand(runCmd)
 }
@@ -207,6 +213,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Shutdown
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
+
+	// Event logging
+	eventLogPath, _ := cmd.Flags().GetString("event-log")
+	runID, _ := cmd.Flags().GetString("run-id")
+	agentSystem, _ := cmd.Flags().GetString("agent-system")
 
 	user, _ := cmd.Flags().GetString("user")
 	entrypoint, _ := cmd.Flags().GetString("entrypoint")
@@ -372,6 +383,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Env:      parsedEnv,
 		ImageCfg: imageCfg,
 	}
+	// Event logging config
+	if eventLogPath != "" || agentSystem != "" {
+		config.Logging = &api.LoggingConfig{
+			EventLogPath: eventLogPath,
+			Enabled:      true,
+			RunID:        runID,
+			AgentSystem:  agentSystem,
+		}
+	}
+
 	if err := config.Network.Validate(); err != nil {
 		return err
 	}

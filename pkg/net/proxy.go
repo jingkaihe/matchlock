@@ -15,6 +15,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 )
 
@@ -49,6 +50,7 @@ type ProxyConfig struct {
 	Events          chan api.Event
 	CAPool          *CAPool
 	Logger          *slog.Logger
+	Emitter         *logging.Emitter
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -88,7 +90,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
 		passthroughListener: passthroughLn,
-		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger),
+		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger, cfg.Emitter),
 		policy:              cfg.Policy,
 		events:              cfg.Events,
 		httpPort:            actualHTTPPort,

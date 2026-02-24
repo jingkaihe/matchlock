@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 )
 
@@ -21,9 +22,10 @@ type HTTPInterceptor struct {
 	caPool   *CAPool
 	connPool *upstreamConnPool
 	logger   *slog.Logger
+	emitter  *logging.Emitter // nil means no event logging
 }
 
-func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, logger *slog.Logger) *HTTPInterceptor {
+func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, logger *slog.Logger, emitter *logging.Emitter) *HTTPInterceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -33,6 +35,7 @@ func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPoo
 		caPool:   caPool,
 		connPool: newUpstreamConnPool(),
 		logger:   logger.With("component", "net"),
+		emitter:  emitter,
 	}
 }
 
@@ -65,6 +68,17 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			i.emitBlockedEvent(req, host, err.Error())
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
+		}
+
+		if i.emitter != nil {
+			data := &logging.HTTPRequestData{
+				Method: req.Method,
+				Host:   host,
+				Path:   req.URL.Path,
+				Routed: false,
+			}
+			summary := fmt.Sprintf("%s %s%s", req.Method, host, req.URL.Path)
+			_ = i.emitter.Emit(logging.EventHTTPRequest, summary, "", []string{"http"}, data)
 		}
 
 		targetHost := net.JoinHostPort(host, fmt.Sprintf("%d", dstPort))
@@ -118,6 +132,22 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
+
+		if i.emitter != nil {
+			data := &logging.HTTPResponseData{
+				Method:     req.Method,
+				Host:       host,
+				Path:       req.URL.Path,
+				StatusCode: modifiedResp.StatusCode,
+				DurationMS: duration.Milliseconds(),
+				BodyBytes:  int64(len(body)),
+			}
+			summary := fmt.Sprintf("%s %s%s -> %d (%dms)",
+				req.Method, host, req.URL.Path,
+				modifiedResp.StatusCode, duration.Milliseconds())
+			_ = i.emitter.Emit(logging.EventHTTPResponse, summary, "", []string{"http"}, data)
+		}
+
 		i.emitEvent(modifiedReq, modifiedResp, host, duration)
 
 		if err := writeResponse(guestConn, modifiedResp); err != nil {
@@ -196,6 +226,20 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 			return
 		}
 
+		if i.emitter != nil {
+			data := &logging.HTTPRequestData{
+				Method: req.Method,
+				Host:   serverName,
+				Path:   req.URL.Path,
+				Routed: routeDirective != nil,
+			}
+			if routeDirective != nil {
+				data.RoutedTo = fmt.Sprintf("%s:%d", routeDirective.Host, routeDirective.Port)
+			}
+			summary := fmt.Sprintf("%s %s%s", req.Method, serverName, req.URL.Path)
+			_ = i.emitter.Emit(logging.EventHTTPRequest, summary, "", []string{"tls"}, data)
+		}
+
 		// Connect to backend per-request
 		var upstreamConn net.Conn
 
@@ -264,6 +308,22 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
+
+		if i.emitter != nil {
+			data := &logging.HTTPResponseData{
+				Method:     req.Method,
+				Host:       serverName,
+				Path:       req.URL.Path,
+				StatusCode: modifiedResp.StatusCode,
+				DurationMS: duration.Milliseconds(),
+				BodyBytes:  int64(len(body)),
+			}
+			summary := fmt.Sprintf("%s %s%s -> %d (%dms)",
+				req.Method, serverName, req.URL.Path,
+				modifiedResp.StatusCode, duration.Milliseconds())
+			_ = i.emitter.Emit(logging.EventHTTPResponse, summary, "", []string{"tls"}, data)
+		}
+
 		if routeDirective != nil {
 			i.logger.Info(
 				fmt.Sprintf("local model redirect complete: %s %s%s -> %d %s:%d (%dms, %d bytes)",

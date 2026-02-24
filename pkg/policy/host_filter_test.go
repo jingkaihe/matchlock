@@ -124,7 +124,7 @@ func TestHostFilterPlugin_FromConfig(t *testing.T) {
 		"allowed_private_hosts": ["192.168.1.1"]
 	}`)
 
-	plugin, err := NewHostFilterPluginFromConfig(raw, nil)
+	plugin, err := NewHostFilterPluginFromConfig(raw, nil, nil)
 	require.NoError(t, err)
 
 	gp, ok := plugin.(GatePlugin)
@@ -145,7 +145,7 @@ func TestHostFilterPlugin_FromConfig(t *testing.T) {
 }
 
 func TestHostFilterPlugin_FromConfig_Invalid(t *testing.T) {
-	_, err := NewHostFilterPluginFromConfig(json.RawMessage(`{invalid}`), nil)
+	_, err := NewHostFilterPluginFromConfig(json.RawMessage(`{invalid}`), nil, nil)
 	assert.Error(t, err)
 }
 
