@@ -105,7 +105,6 @@ func TestKeyInjectionData_ActionAlwaysPresent(t *testing.T) {
 func TestEventTypeConstants(t *testing.T) {
 	assert.Equal(t, "http_request", EventHTTPRequest)
 	assert.Equal(t, "http_response", EventHTTPResponse)
-	assert.Equal(t, "budget_action", EventBudgetAction)
 	assert.Equal(t, "key_injection", EventKeyInjection)
 	assert.Equal(t, "gate_decision", EventGateDecision)
 }

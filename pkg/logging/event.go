@@ -23,7 +23,6 @@ type Event struct {
 const (
 	EventHTTPRequest       = "http_request"
 	EventHTTPResponse      = "http_response"
-	EventBudgetAction      = "budget_action"
 	EventKeyInjection      = "key_injection"       // DEPRECATED: replaced by EventRequestTransform
 	EventGateDecision      = "gate_decision"
 	EventRouteDecision     = "route_decision"       // NEW
@@ -58,15 +57,6 @@ type GateDecisionData struct {
 	Allowed bool   `json:"allowed"`
 	Reason  string `json:"reason,omitempty"`
 	Pattern string `json:"pattern,omitempty"`
-}
-
-// BudgetActionData is the data payload for budget_action events.
-// Placeholder for v0 -- no emission site exists yet.
-type BudgetActionData struct {
-	Action     string  `json:"action"`
-	TokensUsed int64   `json:"tokens_used,omitempty"`
-	CostUSD    float64 `json:"cost_usd,omitempty"`
-	Remaining  float64 `json:"remaining,omitempty"`
 }
 
 // KeyInjectionData is the data payload for key_injection events.

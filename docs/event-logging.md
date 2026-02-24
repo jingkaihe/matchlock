@@ -130,7 +130,6 @@ Every event has the same top-level shape:
 | `response_transform` | Policy engine | Response | Engine | Response transformation: usage logging or no-op. One per response plugin per request. |
 | `http_request` | HTTP interceptor | Transport | Interceptor | Outbound HTTP/HTTPS request forwarded upstream. Emitted after all policy phases complete. |
 | `http_response` | HTTP interceptor | Transport | Interceptor | Upstream response received before forwarding to guest. Paired with `http_request`. |
-| `budget_action` | -- | -- | -- | Placeholder for future budget tracking. Not emitted yet. |
 
 ---
 
