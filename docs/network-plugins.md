@@ -82,6 +82,27 @@ Intercepts LLM API requests and redirects them to a local inference backend (e.g
 }
 ```
 
+### `usage_logger`
+
+Intercepts OpenRouter API responses, extracts token counts and cost, and writes them to a JSONL log file. Maintains a running cost total in memory for budget enforcement.
+
+- **Interfaces:** `ResponsePlugin`, `CostProvider`
+- **File:** `pkg/policy/usage_logger.go`
+- **Flat config field:** `usage_log_path`
+
+Only responses to `POST /api/v1/chat/completions` or `POST /v1/chat/completions` on OpenRouter hosts are logged. Restores the running total from an existing log file on startup.
+
+### `budget_gate`
+
+Blocks all outbound requests when cumulative API costs exceed a configured USD limit. Returns HTTP 429 with an OpenAI-format JSON error body.
+
+- **Interfaces:** `GatePlugin`
+- **File:** `pkg/policy/budget_gate.go`
+- **Flat config field:** `budget_limit_usd`
+- **Depends on:** `usage_logger` (via `CostProvider` interface)
+
+Requires `usage_logger` to be active. See [Budget Enforcement](usage/budget-enforcement.md) for full details.
+
 ## Configuration
 
 Plugins can be configured two ways. Both produce the same behavior.
@@ -153,6 +174,8 @@ The CLI flags compile into the same plugins as the JSON config above. Each flag 
 | `--secret` | `secret_injector` | `secrets` |
 | `--local-model-backend` | `local_model_router` | `routes[].backend_host`, `routes[].backend_port` |
 | `--local-model-route` | `local_model_router` | `routes[].source_host`, `routes[].models` |
+| `--usage-log-path` | `usage_logger` | `log_path` |
+| `--budget-limit-usd` | `budget_gate` | `limit_usd` |
 
 ### Examples
 
@@ -254,7 +277,17 @@ All plugins implement `Plugin` (just a `Name() string` method). Then implement o
 
 type GatePlugin interface {
     Plugin
-    Gate(host string) (allowed bool, reason string)
+    Gate(host string) *GateVerdict
+}
+
+// GateVerdict carries the result of a gate evaluation.
+// nil from Engine.IsHostAllowed = allowed; non-nil = blocked.
+type GateVerdict struct {
+    Allowed     bool
+    Reason      string
+    StatusCode  int    // 0 = default (403)
+    ContentType string // "" = "text/plain"
+    Body        string // "" = "Blocked by policy"
 }
 
 type RoutePlugin interface {
@@ -388,13 +421,15 @@ Create `pkg/policy/your_plugin_test.go`. Test both constructors and the plugin b
 
 ```
 pkg/policy/
-  plugin.go              # Interfaces (Plugin, GatePlugin, RoutePlugin, etc.)
+  plugin.go              # Interfaces (Plugin, GatePlugin, GateVerdict, RoutePlugin, etc.)
   registry.go            # Factory registry (Register, LookupFactory)
   engine.go              # Orchestrator (compiles config -> plugins, runs pipeline)
   util.go                # Shared helpers (matchGlob, isPrivateIP, etc.)
   host_filter.go         # GatePlugin: host allowlist + private IP blocking
   secret_injector.go     # RequestPlugin + PlaceholderProvider: secret injection
   local_model_router.go  # RoutePlugin + RequestPlugin: LLM request routing
+  usage_logger.go        # ResponsePlugin + CostProvider: API cost/token logging
+  budget_gate.go         # GatePlugin: budget enforcement (HTTP 429)
 ```
 
 ## Log Output
@@ -422,6 +457,11 @@ DEBUG model matched, rewriting request  plugin=local_model_router  model=meta-ll
 WARN gate blocked  plugin=host_filter  host=evil.com  reason=host not in allowlist
 ```
 
+```
+WARN budget gate blocking request  plugin=budget_gate  host=openrouter.ai  current_cost_usd=5.0100  limit_usd=5.00
+WARN gate blocked  plugin=budget_gate  host=openrouter.ai  reason="budget exceeded: $5.0100 spent of $5.00 limit"
+```
+
 ### Log levels
 
 | Level | Who logs | What |
@@ -438,7 +478,7 @@ Secret values and placeholder strings are **never** logged. Only secret names (e
 
 | Phase | Multiple plugins | Behavior |
 |-------|-----------------|----------|
-| Gate | OR -- any gate allowing = allowed | If no gates registered, all hosts allowed |
+| Gate | AND -- all gates must allow | If any gate denies, request is blocked. If no gates registered, all hosts allowed |
 | Route | First non-nil directive wins | Remaining routers are skipped |
 | Request | Chained -- output feeds into next | Error blocks the request |
 | Response | Chained -- output feeds into next | Error drops the response |
