@@ -22,7 +22,7 @@ var (
 var (
 	ErrImageRequired     = errors.New("image is required (e.g., alpine:latest)")
 	ErrInvalidNetworkMTU = errors.New("network mtu must be > 0")
-	ErrNoNetworkConflict = errors.New("no network cannot be combined with allowed hosts or secrets")
+	ErrNoNetworkConflict = errors.New("no network cannot be combined with allowed hosts, secrets, or forced interception")
 	ErrInvalidAddHost    = errors.New("invalid add-host mapping")
 	ErrParseCreateResult = errors.New("parse create result")
 	ErrInvalidVFSHook    = errors.New("invalid vfs hook")
@@ -41,6 +41,8 @@ var (
 var (
 	ErrParseReadResult = errors.New("parse read result")
 	ErrParseListResult = errors.New("parse list result")
+	ErrAllowListHosts  = errors.New("allow-list hosts are required")
+	ErrParseAllowList  = errors.New("parse allow-list result")
 )
 
 // Close / Remove errors

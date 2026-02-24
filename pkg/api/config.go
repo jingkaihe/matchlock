@@ -83,6 +83,7 @@ type NetworkConfig struct {
 	AddHosts        []HostIPMapping   `json:"add_hosts,omitempty"`
 	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
 	NoNetwork       bool              `json:"no_network,omitempty"`
+	Intercept       bool              `json:"intercept,omitempty"`
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
@@ -116,6 +117,9 @@ func (n *NetworkConfig) Validate() error {
 	}
 	if len(n.Secrets) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
+	}
+	if n.Intercept {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.intercept")
 	}
 	return nil
 }

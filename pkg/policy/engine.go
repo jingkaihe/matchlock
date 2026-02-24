@@ -6,16 +6,22 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
 type Engine struct {
+	mu           sync.RWMutex
 	config       *api.NetworkConfig
 	placeholders map[string]string
 }
 
 func NewEngine(config *api.NetworkConfig) *Engine {
+	if config == nil {
+		config = &api.NetworkConfig{}
+	}
+
 	e := &Engine{
 		config:       config,
 		placeholders: make(map[string]string),
@@ -43,10 +49,15 @@ func generatePlaceholder() string {
 }
 
 func (e *Engine) GetPlaceholder(name string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.placeholders[name]
 }
 
 func (e *Engine) GetPlaceholders() map[string]string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	result := make(map[string]string)
 	for k, v := range e.placeholders {
 		result[k] = v
@@ -54,7 +65,103 @@ func (e *Engine) GetPlaceholders() map[string]string {
 	return result
 }
 
+func (e *Engine) AddAllowedHosts(hosts ...string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.config == nil {
+		e.config = &api.NetworkConfig{}
+	}
+
+	existing := make(map[string]struct{}, len(e.config.AllowedHosts))
+	for _, host := range e.config.AllowedHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		existing[host] = struct{}{}
+	}
+
+	added := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if _, ok := existing[host]; ok {
+			continue
+		}
+		e.config.AllowedHosts = append(e.config.AllowedHosts, host)
+		existing[host] = struct{}{}
+		added = append(added, host)
+	}
+
+	return added
+}
+
+func (e *Engine) RemoveAllowedHosts(hosts ...string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.config == nil || len(e.config.AllowedHosts) == 0 {
+		return nil
+	}
+
+	toRemove := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		toRemove[host] = struct{}{}
+	}
+	if len(toRemove) == 0 {
+		return nil
+	}
+
+	next := make([]string, 0, len(e.config.AllowedHosts))
+	removed := make([]string, 0, len(toRemove))
+	removedSet := make(map[string]struct{}, len(toRemove))
+	for _, host := range e.config.AllowedHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if _, ok := toRemove[host]; ok {
+			if _, seen := removedSet[host]; !seen {
+				removed = append(removed, host)
+				removedSet[host] = struct{}{}
+			}
+			continue
+		}
+		next = append(next, host)
+	}
+	e.config.AllowedHosts = next
+	return removed
+}
+
+func (e *Engine) AllowedHosts() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	if e.config == nil || len(e.config.AllowedHosts) == 0 {
+		return nil
+	}
+	hosts := make([]string, 0, len(e.config.AllowedHosts))
+	for _, host := range e.config.AllowedHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts
+}
+
 func (e *Engine) IsHostAllowed(host string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	host = strings.Split(host, ":")[0]
 
 	if e.config.BlockPrivateIPs {
@@ -77,6 +184,9 @@ func (e *Engine) IsHostAllowed(host string) bool {
 }
 
 func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
 	host = strings.Split(host, ":")[0]
 
 	for name, secret := range e.config.Secrets {

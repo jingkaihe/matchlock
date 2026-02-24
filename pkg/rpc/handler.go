@@ -57,6 +57,9 @@ type VM interface {
 	WriteFile(ctx context.Context, path string, content []byte, mode uint32) error
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	ListFiles(ctx context.Context, path string) ([]api.FileInfo, error)
+	AddAllowedHosts(ctx context.Context, hosts []string) ([]string, error)
+	RemoveAllowedHosts(ctx context.Context, hosts []string) ([]string, error)
+	AllowedHosts(ctx context.Context) ([]string, error)
 	Events() <-chan api.Event
 	Close(ctx context.Context) error
 }
@@ -186,6 +189,10 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleReadFile(ctx, req)
 	case "list_files":
 		return h.handleListFiles(ctx, req)
+	case "allow_list_add":
+		return h.handleAllowListAdd(ctx, req)
+	case "allow_list_delete":
+		return h.handleAllowListDelete(ctx, req)
 	case "port_forward":
 		return h.handlePortForward(ctx, req)
 	case "close":
@@ -579,6 +586,116 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 		JSONRPC: "2.0",
 		Result: map[string]interface{}{
 			"files": files,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleAllowListAdd(ctx context.Context, req *Request) *Response {
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Hosts []string `json:"hosts"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	if len(params.Hosts) == 0 {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "hosts is required"},
+			ID:      req.ID,
+		}
+	}
+
+	added, err := vm.AddAllowedHosts(ctx, params.Hosts)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	allowedHosts, err := vm.AllowedHosts(ctx)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"added":         added,
+			"allowed_hosts": allowedHosts,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleAllowListDelete(ctx context.Context, req *Request) *Response {
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Hosts []string `json:"hosts"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	if len(params.Hosts) == 0 {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "hosts is required"},
+			ID:      req.ID,
+		}
+	}
+
+	removed, err := vm.RemoveAllowedHosts(ctx, params.Hosts)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	allowedHosts, err := vm.AllowedHosts(ctx)
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"removed":       removed,
+			"allowed_hosts": allowedHosts,
 		},
 		ID: req.ID,
 	}

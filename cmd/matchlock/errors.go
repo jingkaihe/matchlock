@@ -65,6 +65,8 @@ var (
 	ErrInvalidPortForward     = errors.New("invalid port-forward specification")
 	ErrInvalidPortForwardAddr = errors.New("invalid port-forward bind address")
 	ErrPortForwardListen      = errors.New("start port-forward listener")
+	ErrInvalidAllowListHost   = errors.New("invalid allow-list host")
+	ErrAllowListUpdate        = errors.New("update allow-list")
 	ErrCreateSandbox          = errors.New("creating sandbox")
 	ErrStartSandbox           = errors.New("starting sandbox")
 	ErrCloseSandbox           = errors.New("closing sandbox")

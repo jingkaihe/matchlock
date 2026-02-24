@@ -165,6 +165,14 @@ func TestBuilderNoNetwork(t *testing.T) {
 	require.True(t, opts.NoNetwork)
 }
 
+func TestBuilderNetworkInterception(t *testing.T) {
+	opts := New("alpine:latest").
+		WithNetworkInterception().
+		Options()
+
+	require.True(t, opts.ForceInterception)
+}
+
 func TestBuilderPortForwards(t *testing.T) {
 	opts := New("alpine:latest").
 		WithPortForward(18080, 8080).

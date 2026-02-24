@@ -122,6 +122,18 @@ func TestNetworkConfigValidateNoNetworkWithSecrets(t *testing.T) {
 	assert.Contains(t, err.Error(), "network.no_network")
 }
 
+func TestNetworkConfigValidateNoNetworkWithIntercept(t *testing.T) {
+	cfg := &NetworkConfig{
+		NoNetwork: true,
+		Intercept: true,
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network")
+}
+
 func TestNetworkConfigValidateNoNetworkOnly(t *testing.T) {
 	cfg := &NetworkConfig{NoNetwork: true}
 	require.NoError(t, cfg.Validate())

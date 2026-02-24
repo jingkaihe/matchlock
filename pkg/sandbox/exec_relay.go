@@ -26,6 +26,9 @@ const (
 	relayMsgExit            uint8 = 7
 	relayMsgExecPipe        uint8 = 8
 	relayMsgPortForward     uint8 = 9
+	relayMsgAllowListAdd    uint8 = 10
+	relayMsgAllowListDelete uint8 = 11
+	relayMsgAllowListResult uint8 = 12
 )
 
 type relayExecRequest struct {
@@ -44,6 +47,23 @@ type relayExecInteractiveRequest struct {
 
 type relayPortForwardRequest struct {
 	RemotePort int `json:"remote_port"`
+}
+
+type relayAllowListRequest struct {
+	Hosts []string `json:"hosts"`
+}
+
+type relayAllowListResult struct {
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	Added        []string `json:"added,omitempty"`
+	Removed      []string `json:"removed,omitempty"`
+	Error        string   `json:"error,omitempty"`
+}
+
+type AllowListUpdateResult struct {
+	AllowedHosts []string
+	Added        []string
+	Removed      []string
 }
 
 type relayExecResult struct {
@@ -119,6 +139,10 @@ func (r *ExecRelay) handleConn(conn net.Conn) {
 		r.handleExecPipe(conn, data)
 	case relayMsgPortForward:
 		r.handlePortForward(conn, data)
+	case relayMsgAllowListAdd:
+		r.handleAllowListAdd(conn, data)
+	case relayMsgAllowListDelete:
+		r.handleAllowListDelete(conn, data)
 	}
 }
 
@@ -328,6 +352,57 @@ func (r *ExecRelay) handlePortForward(conn net.Conn, data []byte) {
 	}
 }
 
+func (r *ExecRelay) handleAllowListAdd(conn net.Conn, data []byte) {
+	r.handleAllowListMutation(conn, data, true)
+}
+
+func (r *ExecRelay) handleAllowListDelete(conn net.Conn, data []byte) {
+	r.handleAllowListMutation(conn, data, false)
+}
+
+func (r *ExecRelay) handleAllowListMutation(conn net.Conn, data []byte, add bool) {
+	var req relayAllowListRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendRelayAllowListResult(conn, &relayAllowListResult{Error: err.Error()})
+		return
+	}
+
+	if len(req.Hosts) == 0 {
+		sendRelayAllowListResult(conn, &relayAllowListResult{Error: "hosts is required"})
+		return
+	}
+
+	var (
+		changed []string
+		err     error
+	)
+	if add {
+		changed, err = r.sb.AddAllowedHosts(context.Background(), req.Hosts)
+	} else {
+		changed, err = r.sb.RemoveAllowedHosts(context.Background(), req.Hosts)
+	}
+	if err != nil {
+		sendRelayAllowListResult(conn, &relayAllowListResult{Error: err.Error()})
+		return
+	}
+
+	allowedHosts, err := r.sb.AllowedHosts(context.Background())
+	if err != nil {
+		sendRelayAllowListResult(conn, &relayAllowListResult{Error: err.Error()})
+		return
+	}
+
+	result := &relayAllowListResult{
+		AllowedHosts: allowedHosts,
+	}
+	if add {
+		result.Added = changed
+	} else {
+		result.Removed = changed
+	}
+	sendRelayAllowListResult(conn, result)
+}
+
 // relayWriter forwards writes to the relay connection as messages.
 type relayWriter struct {
 	conn    net.Conn
@@ -386,6 +461,11 @@ func sendRelayExit(conn net.Conn, code int) {
 	exitData := make([]byte, 4)
 	binary.BigEndian.PutUint32(exitData, uint32(code))
 	sendRelayMsg(conn, relayMsgExit, exitData)
+}
+
+func sendRelayAllowListResult(conn net.Conn, result *relayAllowListResult) {
+	data, _ := json.Marshal(result)
+	sendRelayMsg(conn, relayMsgAllowListResult, data)
 }
 
 // ExecViaRelay connects to an exec relay socket and runs a command.
@@ -585,4 +665,63 @@ func ExecPipeViaRelay(ctx context.Context, socketPath, command, workingDir, user
 	case <-ctx.Done():
 		return 1, ctx.Err()
 	}
+}
+
+func AllowListAddViaRelay(ctx context.Context, socketPath string, hosts []string) (*AllowListUpdateResult, error) {
+	return allowListUpdateViaRelay(ctx, socketPath, relayMsgAllowListAdd, hosts)
+}
+
+func AllowListDeleteViaRelay(ctx context.Context, socketPath string, hosts []string) (*AllowListUpdateResult, error) {
+	return allowListUpdateViaRelay(ctx, socketPath, relayMsgAllowListDelete, hosts)
+}
+
+func allowListUpdateViaRelay(ctx context.Context, socketPath string, msgType uint8, hosts []string) (*AllowListUpdateResult, error) {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return nil, errx.Wrap(ErrRelayConnect, err)
+	}
+	defer conn.Close()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
+
+	reqData, _ := json.Marshal(relayAllowListRequest{Hosts: hosts})
+	if err := sendRelayMsg(conn, msgType, reqData); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errx.Wrap(ErrRelaySend, err)
+	}
+
+	resultType, resultData, err := readRelayMsg(conn)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errx.Wrap(ErrRelayRead, err)
+	}
+	if resultType != relayMsgAllowListResult {
+		return nil, errx.With(ErrRelayUnexpected, ": %d", resultType)
+	}
+
+	var result relayAllowListResult
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		return nil, errx.Wrap(ErrRelayDecode, err)
+	}
+	if result.Error != "" {
+		return nil, fmt.Errorf("%s", result.Error)
+	}
+
+	return &AllowListUpdateResult{
+		AllowedHosts: result.AllowedHosts,
+		Added:        result.Added,
+		Removed:      result.Removed,
+	}, nil
 }

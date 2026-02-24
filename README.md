@@ -36,6 +36,12 @@ matchlock run --image alpine:latest --no-network -- sh -lc 'echo offline'
 matchlock run --image python:3.12-alpine \
   --allow-host "api.openai.com" python agent.py
 
+# Keep interception enabled even with an empty allowlist,
+# so hosts can be added/removed at runtime.
+matchlock run --image alpine:latest --rm=false --network-intercept
+matchlock allow-list add <vm-id> api.openai.com,api.anthropic.com
+matchlock allow-list delete <vm-id> api.openai.com
+
 # Secret injection (never enters the VM)
 export ANTHROPIC_API_KEY=sk-xxx
 matchlock run --image python:3.12-alpine \

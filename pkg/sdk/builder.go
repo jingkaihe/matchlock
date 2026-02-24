@@ -159,6 +159,12 @@ func (b *SandboxBuilder) WithNoNetwork() *SandboxBuilder {
 	return b
 }
 
+// WithNetworkInterception forces network interception even with an empty allow-list.
+func (b *SandboxBuilder) WithNetworkInterception() *SandboxBuilder {
+	b.opts.ForceInterception = true
+	return b
+}
+
 // WithPortForward adds a host-to-guest port mapping.
 func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuilder {
 	b.opts.PortForwards = append(b.opts.PortForwards, api.PortForward{
