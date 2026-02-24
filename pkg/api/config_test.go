@@ -134,6 +134,26 @@ func TestNetworkConfigValidateNoNetworkWithIntercept(t *testing.T) {
 	assert.Contains(t, err.Error(), "network.no_network")
 }
 
+func TestNetworkConfigValidateNoNetworkWithInterceptionRules(t *testing.T) {
+	cfg := &NetworkConfig{
+		NoNetwork: true,
+		Interception: &NetworkInterceptionConfig{
+			Rules: []NetworkHookRule{
+				{
+					Phase:  "before",
+					Action: "block",
+					Hosts:  []string{"api.openai.com"},
+				},
+			},
+		},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network")
+}
+
 func TestNetworkConfigValidateNoNetworkOnly(t *testing.T) {
 	cfg := &NetworkConfig{NoNetwork: true}
 	require.NoError(t, cfg.Validate())

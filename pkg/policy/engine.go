@@ -15,6 +15,7 @@ type Engine struct {
 	mu           sync.RWMutex
 	config       *api.NetworkConfig
 	placeholders map[string]string
+	networkRules []compiledNetworkRule
 }
 
 func NewEngine(config *api.NetworkConfig) *Engine {
@@ -25,6 +26,7 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 	e := &Engine{
 		config:       config,
 		placeholders: make(map[string]string),
+		networkRules: compileNetworkRules(config.Interception),
 	}
 
 	for name, secret := range config.Secrets {
@@ -189,6 +191,10 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 
 	host = strings.Split(host, ":")[0]
 
+	if err := e.applyBeforeNetworkRules(req, host); err != nil {
+		return nil, err
+	}
+
 	for name, secret := range e.config.Secrets {
 		if !e.isSecretAllowedForHost(name, host) {
 			if e.requestContainsPlaceholder(req, secret.Placeholder) {
@@ -203,7 +209,11 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 }
 
 func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
-	return resp, nil
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	host = strings.Split(host, ":")[0]
+	return e.applyAfterNetworkRules(resp, req, host)
 }
 
 func (e *Engine) isSecretAllowedForHost(secretName, host string) bool {

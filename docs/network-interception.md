@@ -1,0 +1,164 @@
+# Network Interception
+
+Network interception is the host-side HTTP(S) control plane for Matchlock.
+It powers:
+
+- outbound host allow-list enforcement
+- secret placeholder replacement (real secret never enters the VM)
+- request/response hook rules (block or mutate)
+- runtime allow-list updates for running sandboxes
+
+## When It Is Enabled
+
+Interception is enabled when policy requires it, or when forced:
+
+- allow-list is configured (`--allow-host`, `.AllowHost(...)`)
+- secrets are configured (`--secret`, `.AddSecret(...)`)
+- hook rules are configured (`.WithNetworkInterception(&cfg)`)
+- interception is forced (`--network-intercept`, `.WithNetworkInterception()` with no args)
+
+Notes:
+
+- `--network-intercept` forces interception even with an empty allow-list.
+- `--no-network` cannot be combined with allow-list, secrets, or interception.
+- Hook rules are currently configured through the Go SDK (or wire API), not via dedicated CLI rule flags.
+
+## Runtime Allow-List Mutation
+
+Use this when you want to start a VM and evolve egress policy while it runs.
+
+CLI example:
+
+```bash
+# Start a long-lived VM with interception enabled.
+matchlock run --image alpine:latest --rm=false --network-intercept
+
+# Add or remove hosts at runtime (comma-separated values accepted).
+matchlock allow-list add <vm-id> api.openai.com,api.anthropic.com
+matchlock allow-list delete <vm-id> api.openai.com
+```
+
+Go SDK example:
+
+```go
+client, _ := sdk.NewClient(sdk.DefaultConfig())
+defer client.Close(0)
+defer client.Remove()
+
+vm := sdk.New("alpine:latest").WithNetworkInterception()
+_, _ = client.Launch(vm)
+
+added, _ := client.AllowListAdd(context.Background(), "api.openai.com,api.anthropic.com")
+removed, _ := client.AllowListDelete(context.Background(), "api.openai.com")
+
+_ = added
+_ = removed
+```
+
+Behavior:
+
+- add/delete input is normalized (comma-splitting, trim, de-dup)
+- empty allow-list means "allow all hosts"
+- for CLI usage, a running VM with an available exec relay socket is required (`--rm=false` is the practical mode)
+
+## Rule Model
+
+Rules live under `network.interception.rules` (wire API) or `sdk.NetworkInterceptionConfig` (Go SDK).
+
+Each rule has:
+
+- `phase`: `before` or `after`
+- `action`: `allow`, `block`, or `mutate`
+- optional matchers: `hosts`, `methods`, `path`
+
+Matcher semantics:
+
+- `hosts`: glob patterns (`*.example.com`), empty means all hosts
+- `methods`: HTTP methods, empty means all methods
+- `path`: URL path glob, empty means all paths
+
+If mutation fields are present and `action` is `allow`, the rule is treated as mutate.
+
+## Traffic Scope
+
+- Hook rules apply to HTTP and HTTPS traffic handled by Matchlock interception.
+- HTTPS hooks run on decrypted traffic inside the host MITM path.
+- Non-HTTP protocols are not mutated by hook rules.
+
+## Before-Phase Request Controls
+
+For `phase=before`, you can mutate the outbound request with:
+
+- `set_headers`
+- `delete_headers`
+- `set_query`
+- `delete_query`
+- `rewrite_path`
+
+You can also block outright with `action=block`.
+
+## After-Phase Response Controls
+
+For `phase=after`, you can mutate the inbound response with:
+
+- `set_response_headers`
+- `delete_response_headers`
+- `body_replacements` (literal find/replace)
+
+You can also block at response time with `action=block`.
+
+### SSE Behavior
+
+For `text/event-stream` responses, `body_replacements` are applied only to each `data:` line payload, preserving SSE framing.
+
+For non-SSE responses, replacements are applied to the full response body.
+
+## Secret Replacement Scope
+
+Secret placeholders are replaced in:
+
+- request headers
+- URL/query string
+
+Request body replacement is intentionally not performed for secrets.
+
+## Go SDK Example With Hooks
+
+```go
+sandbox := sdk.New("alpine:latest").
+	AllowHost("httpbin.org").
+	WithNetworkInterception(&sdk.NetworkInterceptionConfig{
+		Rules: []sdk.NetworkHookRule{
+			{
+				Phase:         sdk.NetworkHookPhaseBefore,
+				Action:        sdk.NetworkHookActionMutate,
+				Hosts:         []string{"httpbin.org"},
+				Path:          "/anything/v1",
+				SetHeaders:    map[string]string{"X-Hook": "set"},
+				DeleteHeaders: []string{"X-Remove"},
+				SetQuery:      map[string]string{"trace": "hooked"},
+				DeleteQuery:   []string{"drop"},
+				RewritePath:   "/anything/v2",
+			},
+			{
+				Phase:                 sdk.NetworkHookPhaseAfter,
+				Action:                sdk.NetworkHookActionMutate,
+				Hosts:                 []string{"httpbin.org"},
+				Path:                  "/response-headers",
+				SetResponseHeaders:    map[string]string{"X-Intercepted": "true"},
+				DeleteResponseHeaders: []string{"X-Upstream"},
+				BodyReplacements: []sdk.NetworkBodyTransform{
+					{Find: "foo", Replace: "bar"},
+				},
+			},
+		},
+	})
+```
+
+## Current Scope
+
+- Hook-rule APIs are available in the Go SDK and wire API.
+- Python and TypeScript SDK builders currently expose allow-list/secret controls but not typed network hook-rule builders.
+
+See runnable examples:
+- [`examples/go/network_interception/main.go`](../examples/go/network_interception/main.go)

@@ -147,7 +147,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	// Create CAPool early and inject cert into writable upper before VM creation
-	needsProxy := !noNetwork && config.Network != nil && (config.Network.Intercept || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := !noNetwork && config.Network != nil && (config.Network.Intercept || config.Network.Interception != nil || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error

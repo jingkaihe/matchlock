@@ -124,6 +124,26 @@ sandbox := sdk.New("alpine:latest").
 	AddHost("api.internal", "10.0.0.10").
 	WithNetworkMTU(1200).
 	AllowPrivateIPs() // explicit override: block_private_ips=false
+
+// SDK network interception (request/response mutation, body shaping, SSE data-line transform)
+sandbox = sandbox.WithNetworkInterception(&sdk.NetworkInterceptionConfig{
+	Rules: []sdk.NetworkHookRule{
+		{
+			Phase:      sdk.NetworkHookPhaseBefore,
+			Action:     sdk.NetworkHookActionMutate,
+			Hosts:      []string{"api.openai.com"},
+			SetHeaders: map[string]string{"X-Trace-Id": "trace-123"},
+		},
+		{
+			Phase:  sdk.NetworkHookPhaseAfter,
+			Action: sdk.NetworkHookActionMutate,
+			Hosts:  []string{"api.openai.com"},
+			BodyReplacements: []sdk.NetworkBodyTransform{
+				{Find: "internal-id", Replace: "redacted"},
+			},
+		},
+	},
+})
 ```
 
 If you use `client.Create(...)` directly (without the builder), set:
@@ -193,6 +213,8 @@ await client.close();
 
 See full examples in:
 - [`examples/go/basic/main.go`](examples/go/basic/main.go)
+- [`examples/go/network_interception/main.go`](examples/go/network_interception/main.go)
+- [`examples/go/network_interception/README.md`](examples/go/network_interception/README.md)
 - [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
 - [`examples/python/basic/main.py`](examples/python/basic/main.py)
 - [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
@@ -237,6 +259,7 @@ graph LR
 ## Docs
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
+- [Network Interception](docs/network-interception.md)
 - [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 

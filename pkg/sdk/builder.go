@@ -159,9 +159,14 @@ func (b *SandboxBuilder) WithNoNetwork() *SandboxBuilder {
 	return b
 }
 
-// WithNetworkInterception forces network interception even with an empty allow-list.
-func (b *SandboxBuilder) WithNetworkInterception() *SandboxBuilder {
+// WithNetworkInterception enables network interception.
+// With no args, it only forces interception for runtime allow-list mutation.
+// With one config arg, it also installs network interception rules.
+func (b *SandboxBuilder) WithNetworkInterception(cfg ...*NetworkInterceptionConfig) *SandboxBuilder {
 	b.opts.ForceInterception = true
+	if len(cfg) > 0 {
+		b.opts.NetworkInterception = cfg[0]
+	}
 	return b
 }
 

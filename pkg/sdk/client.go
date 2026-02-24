@@ -312,6 +312,8 @@ type CreateOptions struct {
 	NoNetwork bool
 	// ForceInterception forces network interception even when allow-list/secrets are empty.
 	ForceInterception bool
+	// NetworkInterception configures host-side network interception rules.
+	NetworkInterception *NetworkInterceptionConfig
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
 	// Env defines non-secret environment variables for command execution.
@@ -358,6 +360,55 @@ type Secret struct {
 	Value string
 	// Hosts is a list of hosts where this secret can be used (supports wildcards)
 	Hosts []string
+}
+
+// Network hook phases.
+type NetworkHookPhase = string
+
+const (
+	NetworkHookPhaseBefore NetworkHookPhase = "before"
+	NetworkHookPhaseAfter  NetworkHookPhase = "after"
+)
+
+// Network hook actions.
+type NetworkHookAction = string
+
+const (
+	NetworkHookActionAllow  NetworkHookAction = "allow"
+	NetworkHookActionBlock  NetworkHookAction = "block"
+	NetworkHookActionMutate NetworkHookAction = "mutate"
+)
+
+// NetworkBodyTransform applies a literal response-body replacement.
+// For SSE responses, replacements are applied to each `data:` line payload.
+type NetworkBodyTransform struct {
+	Find    string `json:"find"`
+	Replace string `json:"replace,omitempty"`
+}
+
+// NetworkHookRule describes a network interception rule.
+type NetworkHookRule struct {
+	Name    string            `json:"name,omitempty"`
+	Phase   NetworkHookPhase  `json:"phase,omitempty"`
+	Hosts   []string          `json:"hosts,omitempty"`
+	Methods []string          `json:"methods,omitempty"`
+	Path    string            `json:"path,omitempty"`
+	Action  NetworkHookAction `json:"action,omitempty"`
+
+	SetHeaders    map[string]string `json:"set_headers,omitempty"`
+	DeleteHeaders []string          `json:"delete_headers,omitempty"`
+	SetQuery      map[string]string `json:"set_query,omitempty"`
+	DeleteQuery   []string          `json:"delete_query,omitempty"`
+	RewritePath   string            `json:"rewrite_path,omitempty"`
+
+	SetResponseHeaders    map[string]string      `json:"set_response_headers,omitempty"`
+	DeleteResponseHeaders []string               `json:"delete_response_headers,omitempty"`
+	BodyReplacements      []NetworkBodyTransform `json:"body_replacements,omitempty"`
+}
+
+// NetworkInterceptionConfig configures host-side network interception rules.
+type NetworkInterceptionConfig struct {
+	Rules []NetworkHookRule `json:"rules,omitempty"`
 }
 
 // MountConfig defines a VFS mount
@@ -517,7 +568,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.NetworkMTU < 0 {
 		return "", ErrInvalidNetworkMTU
 	}
-	if opts.NoNetwork && (len(opts.AllowedHosts) > 0 || len(opts.Secrets) > 0 || opts.ForceInterception) {
+	if opts.NoNetwork && (len(opts.AllowedHosts) > 0 || len(opts.Secrets) > 0 || opts.ForceInterception || opts.NetworkInterception != nil) {
 		return "", ErrNoNetworkConflict
 	}
 	for _, mapping := range opts.AddHosts {
@@ -603,9 +654,11 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 	hasMTU := opts.NetworkMTU > 0
 	hasNoNetwork := opts.NoNetwork
 	hasForceInterception := opts.ForceInterception
+	wireInterception := buildWireNetworkInterception(opts.NetworkInterception)
+	hasNetworkInterception := wireInterception != nil
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasNoNetwork || hasBlockPrivateIPsOverride || hasForceInterception
+	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasNoNetwork || hasBlockPrivateIPsOverride || hasForceInterception || hasNetworkInterception
 	if !includeNetwork {
 		return nil
 	}
@@ -636,8 +689,11 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 		"allowed_hosts":     opts.AllowedHosts,
 		"block_private_ips": blockPrivateIPs,
 	}
-	if hasForceInterception {
+	if hasForceInterception || hasNetworkInterception {
 		network["intercept"] = true
+	}
+	if hasNetworkInterception {
+		network["interception"] = wireInterception
 	}
 	if hasAddHosts {
 		network["add_hosts"] = opts.AddHosts
@@ -662,6 +718,58 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 		network["mtu"] = opts.NetworkMTU
 	}
 	return network
+}
+
+func buildWireNetworkInterception(cfg *NetworkInterceptionConfig) *api.NetworkInterceptionConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	wire := &api.NetworkInterceptionConfig{
+		Rules: make([]api.NetworkHookRule, 0, len(cfg.Rules)),
+	}
+	for _, rule := range cfg.Rules {
+		wireRule := api.NetworkHookRule{
+			Name:                  rule.Name,
+			Phase:                 string(rule.Phase),
+			Hosts:                 append([]string(nil), rule.Hosts...),
+			Methods:               append([]string(nil), rule.Methods...),
+			Path:                  rule.Path,
+			Action:                string(rule.Action),
+			SetHeaders:            cloneStringMap(rule.SetHeaders),
+			DeleteHeaders:         append([]string(nil), rule.DeleteHeaders...),
+			SetQuery:              cloneStringMap(rule.SetQuery),
+			DeleteQuery:           append([]string(nil), rule.DeleteQuery...),
+			RewritePath:           rule.RewritePath,
+			SetResponseHeaders:    cloneStringMap(rule.SetResponseHeaders),
+			DeleteResponseHeaders: append([]string(nil), rule.DeleteResponseHeaders...),
+		}
+		if len(rule.BodyReplacements) > 0 {
+			wireRule.BodyReplacements = make([]api.NetworkBodyTransform, 0, len(rule.BodyReplacements))
+			for _, item := range rule.BodyReplacements {
+				wireRule.BodyReplacements = append(wireRule.BodyReplacements, api.NetworkBodyTransform{
+					Find:    item.Find,
+					Replace: item.Replace,
+				})
+			}
+		}
+		wire.Rules = append(wire.Rules, wireRule)
+	}
+	if len(wire.Rules) == 0 {
+		return nil
+	}
+	return wire
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func resolveCreateBlockPrivateIPs(opts CreateOptions) (value bool, hasOverride bool) {

@@ -173,6 +173,26 @@ func TestBuilderNetworkInterception(t *testing.T) {
 	require.True(t, opts.ForceInterception)
 }
 
+func TestBuilderNetworkInterceptionRules(t *testing.T) {
+	cfg := &NetworkInterceptionConfig{
+		Rules: []NetworkHookRule{
+			{
+				Phase:  NetworkHookPhaseBefore,
+				Action: NetworkHookActionBlock,
+				Hosts:  []string{"example.com"},
+			},
+		},
+	}
+	opts := New("alpine:latest").
+		WithNetworkInterception(cfg).
+		Options()
+
+	require.True(t, opts.ForceInterception)
+	require.NotNil(t, opts.NetworkInterception)
+	require.Len(t, opts.NetworkInterception.Rules, 1)
+	assert.Equal(t, "example.com", opts.NetworkInterception.Rules[0].Hosts[0])
+}
+
 func TestBuilderPortForwards(t *testing.T) {
 	opts := New("alpine:latest").
 		WithPortForward(18080, 8080).

@@ -143,7 +143,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}()
 
 	// Determine if we need network interception (calculated before VM creation)
-	needsInterception := !noNetwork && config.Network != nil && (config.Network.Intercept || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsInterception := !noNetwork && config.Network != nil && (config.Network.Intercept || config.Network.Interception != nil || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
 	// Create CAPool early so we can inject the cert into rootfs before the VM sees the disk
 	var caPool *sandboxnet.CAPool
