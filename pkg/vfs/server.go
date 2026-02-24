@@ -78,9 +78,10 @@ type VFSDirEntry struct {
 }
 
 type VFSServer struct {
-	provider Provider
-	handles  sync.Map
-	nextFH   uint64
+	provider   Provider
+	handles    sync.Map
+	appendMode sync.Map // fh -> bool; tracks handles opened with O_APPEND
+	nextFH     uint64
 }
 
 func NewVFSServer(provider Provider) *VFSServer {
@@ -168,6 +169,9 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		}
 		fh := atomic.AddUint64(&s.nextFH, 1)
 		s.handles.Store(fh, h)
+		if req.Flags&uint32(syscall.O_APPEND) != 0 {
+			s.appendMode.Store(fh, true)
+		}
 		return &VFSResponse{Handle: fh}
 
 	case OpCreate:
@@ -203,7 +207,16 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 			return &VFSResponse{Err: -int32(syscall.EBADF)}
 		}
 		h := hi.(Handle)
-		n, err := h.WriteAt(req.Data, req.Offset)
+		// Go's os.File.WriteAt rejects files opened with O_APPEND.
+		// For append-mode handles, use Write() which lets the kernel
+		// atomically seek to EOF and write.
+		var n int
+		var err error
+		if _, isAppend := s.appendMode.Load(req.Handle); isAppend {
+			n, err = h.Write(req.Data)
+		} else {
+			n, err = h.WriteAt(req.Data, req.Offset)
+		}
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -213,6 +226,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if hi, ok := s.handles.LoadAndDelete(req.Handle); ok {
 			hi.(Handle).Close()
 		}
+		s.appendMode.Delete(req.Handle)
 		return &VFSResponse{}
 
 	case OpReaddir:

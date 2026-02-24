@@ -102,6 +102,76 @@ func TestInodeFromSysNamespacesByDevice(t *testing.T) {
 	assert.Equal(t, sameInoDevA, repeated)
 }
 
+func TestDispatchWriteAppendMode(t *testing.T) {
+	dir := t.TempDir()
+	s := NewVFSServer(NewRealFSProvider(dir))
+
+	// Create a file via the VFS server
+	createResp := s.dispatch(&VFSRequest{Op: OpCreate, Path: "/test.txt", Mode: 0644})
+	require.Equal(t, int32(0), createResp.Err)
+	writeResp := s.dispatch(&VFSRequest{Op: OpWrite, Handle: createResp.Handle, Data: []byte("hello\n"), Offset: 0})
+	require.Equal(t, int32(0), writeResp.Err)
+	s.dispatch(&VFSRequest{Op: OpRelease, Handle: createResp.Handle})
+
+	// Open with O_APPEND and write — this is the bug scenario
+	openResp := s.dispatch(&VFSRequest{
+		Op:    OpOpen,
+		Path:  "/test.txt",
+		Flags: uint32(syscall.O_WRONLY | syscall.O_APPEND),
+		Mode:  0644,
+	})
+	require.Equal(t, int32(0), openResp.Err)
+
+	appendResp := s.dispatch(&VFSRequest{
+		Op:     OpWrite,
+		Handle: openResp.Handle,
+		Data:   []byte("world\n"),
+		Offset: 0,
+	})
+	assert.Equal(t, int32(0), appendResp.Err, "write on O_APPEND handle should succeed")
+	assert.Equal(t, uint32(6), appendResp.Written)
+
+	s.dispatch(&VFSRequest{Op: OpRelease, Handle: openResp.Handle})
+
+	// Verify file contents: "hello\nworld\n"
+	content, err := os.ReadFile(dir + "/test.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "hello\nworld\n", string(content))
+}
+
+func TestDispatchWriteNonAppendUsesOffset(t *testing.T) {
+	dir := t.TempDir()
+	s := NewVFSServer(NewRealFSProvider(dir))
+
+	// Create a file
+	createResp := s.dispatch(&VFSRequest{Op: OpCreate, Path: "/test.txt", Mode: 0644})
+	require.Equal(t, int32(0), createResp.Err)
+	s.dispatch(&VFSRequest{Op: OpWrite, Handle: createResp.Handle, Data: []byte("hello world\n"), Offset: 0})
+	s.dispatch(&VFSRequest{Op: OpRelease, Handle: createResp.Handle})
+
+	// Open without O_APPEND, write at a specific offset
+	openResp := s.dispatch(&VFSRequest{
+		Op:    OpOpen,
+		Path:  "/test.txt",
+		Flags: uint32(syscall.O_RDWR),
+		Mode:  0644,
+	})
+	require.Equal(t, int32(0), openResp.Err)
+
+	writeResp := s.dispatch(&VFSRequest{
+		Op:     OpWrite,
+		Handle: openResp.Handle,
+		Data:   []byte("WORLD"),
+		Offset: 6,
+	})
+	assert.Equal(t, int32(0), writeResp.Err)
+	s.dispatch(&VFSRequest{Op: OpRelease, Handle: openResp.Handle})
+
+	content, err := os.ReadFile(dir + "/test.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "hello WORLD\n", string(content))
+}
+
 type denyStatProvider struct {
 	Provider
 }
