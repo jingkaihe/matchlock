@@ -55,30 +55,30 @@ func (p *hostFilterPlugin) Name() string {
 
 // Gate implements GatePlugin.
 // Logic is extracted from Engine.IsHostAllowed.
-func (p *hostFilterPlugin) Gate(host string) (bool, string) {
+func (p *hostFilterPlugin) Gate(host string) *GateVerdict {
 	host = strings.Split(host, ":")[0]
 
 	if p.config.BlockPrivateIPs {
 		if isPrivateIP(host) {
 			if !p.isPrivateHostAllowed(host) {
-				return false, "private IP blocked"
+				return &GateVerdict{Allowed: false, Reason: "private IP blocked"}
 			}
 			p.logger.Debug("private IP allowed via exception", "host", host)
 		}
 	}
 
 	if len(p.config.AllowedHosts) == 0 {
-		return true, ""
+		return &GateVerdict{Allowed: true}
 	}
 
 	for _, pattern := range p.config.AllowedHosts {
 		if matchGlob(pattern, host) {
 			p.logger.Debug("matched allowlist pattern", "host", host, "pattern", pattern)
-			return true, ""
+			return &GateVerdict{Allowed: true}
 		}
 	}
 
-	return false, "host not in allowlist"
+	return &GateVerdict{Allowed: false, Reason: "host not in allowlist"}
 }
 
 func (p *hostFilterPlugin) isPrivateHostAllowed(host string) bool {

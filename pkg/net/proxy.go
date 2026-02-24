@@ -158,8 +158,8 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 	defer conn.Close()
 
 	host := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
-	if !tp.policy.IsHostAllowed(dstIP) {
-		tp.emitBlockedEvent(host, "host not in allowlist")
+	if verdict := tp.policy.IsHostAllowed(dstIP); verdict != nil {
+		tp.emitBlockedEvent(host, verdict.Reason)
 		return
 	}
 

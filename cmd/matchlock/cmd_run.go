@@ -92,6 +92,7 @@ func init() {
 	runCmd.Flags().String("local-model-backend", "", "Default backend for local model routing (HOST:PORT, e.g., 127.0.0.1:11434)")
 	runCmd.Flags().StringSlice("local-model-route", nil, "Model route: SOURCE_HOST/SOURCE_MODEL=TARGET_MODEL[@HOST:PORT] (repeatable)")
 	runCmd.Flags().String("usage-log-path", "", "Path to JSONL file for logging LLM API usage and costs")
+	runCmd.Flags().Float64("budget-limit-usd", 0, "Maximum allowed spend in USD per session (0 = unlimited)")
 	runCmd.Flags().StringSlice("dns-servers", nil, "DNS servers (default: 8.8.8.8,8.8.4.4)")
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
@@ -125,6 +126,7 @@ func init() {
 	viper.BindPFlag("run.local-model-backend", runCmd.Flags().Lookup("local-model-backend"))
 	viper.BindPFlag("run.local-model-route", runCmd.Flags().Lookup("local-model-route"))
 	viper.BindPFlag("run.usage-log-path", runCmd.Flags().Lookup("usage-log-path"))
+	viper.BindPFlag("run.budget-limit-usd", runCmd.Flags().Lookup("budget-limit-usd"))
 	viper.BindPFlag("run.hostname", runCmd.Flags().Lookup("hostname"))
 	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
 	viper.BindPFlag("run.no-network", runCmd.Flags().Lookup("no-network"))
@@ -173,6 +175,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	localModelBackend, _ := cmd.Flags().GetString("local-model-backend")
 	localModelRouteFlags, _ := cmd.Flags().GetStringSlice("local-model-route")
 	usageLogPath, _ := cmd.Flags().GetString("usage-log-path")
+	budgetLimitUSD, _ := cmd.Flags().GetFloat64("budget-limit-usd")
 	dnsServers, _ := cmd.Flags().GetStringSlice("dns-servers")
 	hostname, _ := cmd.Flags().GetString("hostname")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
@@ -196,6 +199,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if len(allowPrivateHosts) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --allow-private-host")
 		}
+	}
+
+	if budgetLimitUSD > 0 && usageLogPath == "" {
+		return fmt.Errorf("--budget-limit-usd requires --usage-log-path to be set")
 	}
 
 	// Shutdown
@@ -359,6 +366,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			MTU:                 networkMTU,
 			LocalModelRouting:   localModelRoutes,
 			UsageLogPath:        usageLogPath,
+			BudgetLimitUSD:      budgetLimitUSD,
 		},
 		VFS:      vfsConfig,
 		Env:      parsedEnv,

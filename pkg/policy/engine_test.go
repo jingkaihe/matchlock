@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,10 +14,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// --- mockGatePlugin for AND-semantics tests ---
+
+type mockGatePlugin struct {
+	name    string
+	verdict *GateVerdict
+}
+
+func (m *mockGatePlugin) Name() string           { return m.name }
+func (m *mockGatePlugin) Gate(host string) *GateVerdict { return m.verdict }
+
 func TestEngine_IsHostAllowed_NoRestrictions(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{}, nil)
 
-	assert.True(t, engine.IsHostAllowed("example.com"), "All hosts should be allowed when no restrictions")
+	assert.Nil(t, engine.IsHostAllowed("example.com"), "All hosts should be allowed when no restrictions")
 }
 
 func TestEngine_IsHostAllowed_Allowlist(t *testing.T) {
@@ -37,7 +48,12 @@ func TestEngine_IsHostAllowed_Allowlist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			assert.Equal(t, tt.allowed, engine.IsHostAllowed(tt.host))
+			verdict := engine.IsHostAllowed(tt.host)
+			if tt.allowed {
+				assert.Nil(t, verdict)
+			} else {
+				assert.NotNil(t, verdict)
+			}
 		})
 	}
 }
@@ -60,7 +76,12 @@ func TestEngine_IsHostAllowed_BlockPrivateIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			assert.Equal(t, tt.allowed, engine.IsHostAllowed(tt.host))
+			verdict := engine.IsHostAllowed(tt.host)
+			if tt.allowed {
+				assert.Nil(t, verdict)
+			} else {
+				assert.NotNil(t, verdict)
+			}
 		})
 	}
 }
@@ -71,10 +92,10 @@ func TestEngine_IsHostAllowed_AllowedPrivateHosts(t *testing.T) {
 		AllowedPrivateHosts: []string{"192.168.1.100"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Explicitly allowed private IP should be allowed")
-	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
-	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
-	assert.True(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
+	assert.Nil(t, engine.IsHostAllowed("192.168.1.100"), "Explicitly allowed private IP should be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
+	assert.NotNil(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
+	assert.Nil(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
 }
 
 func TestEngine_IsHostAllowed_AllowedPrivateHostsGlob(t *testing.T) {
@@ -83,10 +104,10 @@ func TestEngine_IsHostAllowed_AllowedPrivateHostsGlob(t *testing.T) {
 		AllowedPrivateHosts: []string{"192.168.64.*"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("192.168.64.1"), "IP matching glob should be allowed")
-	assert.True(t, engine.IsHostAllowed("192.168.64.255"), "IP matching glob should be allowed")
-	assert.False(t, engine.IsHostAllowed("192.168.65.1"), "IP not matching glob should be blocked")
-	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
+	assert.Nil(t, engine.IsHostAllowed("192.168.64.1"), "IP matching glob should be allowed")
+	assert.Nil(t, engine.IsHostAllowed("192.168.64.255"), "IP matching glob should be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("192.168.65.1"), "IP not matching glob should be blocked")
+	assert.NotNil(t, engine.IsHostAllowed("10.0.0.1"), "Other private IP should be blocked")
 }
 
 func TestEngine_IsHostAllowed_EmptyAllowedPrivateHosts(t *testing.T) {
@@ -95,9 +116,9 @@ func TestEngine_IsHostAllowed_EmptyAllowedPrivateHosts(t *testing.T) {
 		AllowedPrivateHosts: []string{},
 	}, nil)
 
-	assert.False(t, engine.IsHostAllowed("192.168.1.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
-	assert.False(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
-	assert.True(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("192.168.1.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
+	assert.NotNil(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be blocked with empty AllowedPrivateHosts")
+	assert.Nil(t, engine.IsHostAllowed("8.8.8.8"), "Public IP should still be allowed")
 }
 
 func TestEngine_IsHostAllowed_AllowedPrivateHostsNoBlock(t *testing.T) {
@@ -106,9 +127,9 @@ func TestEngine_IsHostAllowed_AllowedPrivateHostsNoBlock(t *testing.T) {
 		AllowedPrivateHosts: []string{"192.168.1.100"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP should be allowed when BlockPrivateIPs is false")
-	assert.True(t, engine.IsHostAllowed("192.168.1.101"), "Private IP should be allowed when BlockPrivateIPs is false")
-	assert.True(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be allowed when BlockPrivateIPs is false")
+	assert.Nil(t, engine.IsHostAllowed("192.168.1.100"), "Private IP should be allowed when BlockPrivateIPs is false")
+	assert.Nil(t, engine.IsHostAllowed("192.168.1.101"), "Private IP should be allowed when BlockPrivateIPs is false")
+	assert.Nil(t, engine.IsHostAllowed("10.0.0.1"), "Private IP should be allowed when BlockPrivateIPs is false")
 }
 
 func TestEngine_IsHostAllowed_PrivateHostNeedsAllowedHosts(t *testing.T) {
@@ -118,10 +139,10 @@ func TestEngine_IsHostAllowed_PrivateHostNeedsAllowedHosts(t *testing.T) {
 		AllowedHosts:        []string{"example.com", "192.168.1.100"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "Private IP in both AllowedPrivateHosts and AllowedHosts should be allowed")
-	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Private IP not in AllowedPrivateHosts should be blocked")
-	assert.True(t, engine.IsHostAllowed("example.com"), "Public host in AllowedHosts should be allowed")
-	assert.False(t, engine.IsHostAllowed("other.com"), "Host not in AllowedHosts should be blocked")
+	assert.Nil(t, engine.IsHostAllowed("192.168.1.100"), "Private IP in both AllowedPrivateHosts and AllowedHosts should be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("192.168.1.101"), "Private IP not in AllowedPrivateHosts should be blocked")
+	assert.Nil(t, engine.IsHostAllowed("example.com"), "Public host in AllowedHosts should be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("other.com"), "Host not in AllowedHosts should be blocked")
 }
 
 func TestEngine_IsHostAllowed_MultipleAllowedPrivateHosts(t *testing.T) {
@@ -130,12 +151,12 @@ func TestEngine_IsHostAllowed_MultipleAllowedPrivateHosts(t *testing.T) {
 		AllowedPrivateHosts: []string{"192.168.1.100", "10.0.0.5", "172.16.0.*"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("192.168.1.100"), "First allowed private IP should pass")
-	assert.True(t, engine.IsHostAllowed("10.0.0.5"), "Second allowed private IP should pass")
-	assert.True(t, engine.IsHostAllowed("172.16.0.1"), "IP matching glob pattern should pass")
-	assert.True(t, engine.IsHostAllowed("172.16.0.254"), "IP matching glob pattern should pass")
-	assert.False(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
-	assert.False(t, engine.IsHostAllowed("10.0.0.6"), "Non-allowed private IP should be blocked")
+	assert.Nil(t, engine.IsHostAllowed("192.168.1.100"), "First allowed private IP should pass")
+	assert.Nil(t, engine.IsHostAllowed("10.0.0.5"), "Second allowed private IP should pass")
+	assert.Nil(t, engine.IsHostAllowed("172.16.0.1"), "IP matching glob pattern should pass")
+	assert.Nil(t, engine.IsHostAllowed("172.16.0.254"), "IP matching glob pattern should pass")
+	assert.NotNil(t, engine.IsHostAllowed("192.168.1.101"), "Non-allowed private IP should be blocked")
+	assert.NotNil(t, engine.IsHostAllowed("10.0.0.6"), "Non-allowed private IP should be blocked")
 }
 
 func TestEngine_IsHostAllowed_WithPort(t *testing.T) {
@@ -143,7 +164,7 @@ func TestEngine_IsHostAllowed_WithPort(t *testing.T) {
 		AllowedHosts: []string{"api.example.com"},
 	}, nil)
 
-	assert.True(t, engine.IsHostAllowed("api.example.com:443"), "Should allow host with port")
+	assert.Nil(t, engine.IsHostAllowed("api.example.com:443"), "Should allow host with port")
 }
 
 func TestEngine_GetPlaceholder(t *testing.T) {
@@ -768,7 +789,7 @@ func TestEngine_PluginDisabled(t *testing.T) {
 	engine := NewEngine(config, nil)
 
 	// No gate plugins registered (the one plugin is disabled)
-	assert.True(t, engine.IsHostAllowed("anything.com"),
+	assert.Nil(t, engine.IsHostAllowed("anything.com"),
 		"All hosts should be allowed when only plugin is disabled")
 }
 
@@ -783,28 +804,55 @@ func TestEngine_ExplicitPluginConfig(t *testing.T) {
 	}
 	engine := NewEngine(config, nil)
 
-	assert.True(t, engine.IsHostAllowed("only-this.com"))
-	assert.False(t, engine.IsHostAllowed("other.com"))
+	assert.Nil(t, engine.IsHostAllowed("only-this.com"))
+	assert.NotNil(t, engine.IsHostAllowed("other.com"))
 }
 
+// TestEngine_MixedFlatAndPlugin tests AND semantics with two host_filter gates.
+// Under AND semantics, a host must be allowed by ALL gates to pass.
+// Two host_filters with different allowlists means only hosts in BOTH lists pass.
 func TestEngine_MixedFlatAndPlugin(t *testing.T) {
 	config := &api.NetworkConfig{
-		AllowedHosts: []string{"flat-host.com"},
+		AllowedHosts: []string{"shared.com", "flat-only.com"},
 		Plugins: []api.PluginConfig{
 			{
 				Type:   "host_filter",
-				Config: json.RawMessage(`{"allowed_hosts":["plugin-host.com"]}`),
+				Config: json.RawMessage(`{"allowed_hosts":["shared.com","plugin-only.com"]}`),
 			},
 		},
 	}
 	engine := NewEngine(config, nil)
 
-	assert.True(t, engine.IsHostAllowed("flat-host.com"),
-		"Host from flat field should be allowed")
-	assert.True(t, engine.IsHostAllowed("plugin-host.com"),
-		"Host from explicit plugin should be allowed")
-	assert.False(t, engine.IsHostAllowed("neither.com"),
+	assert.Nil(t, engine.IsHostAllowed("shared.com"),
+		"Host in both gates should be allowed (AND satisfied)")
+	assert.NotNil(t, engine.IsHostAllowed("flat-only.com"),
+		"Host only in flat gate should be blocked (plugin gate denies)")
+	assert.NotNil(t, engine.IsHostAllowed("plugin-only.com"),
+		"Host only in plugin gate should be blocked (flat gate denies)")
+	assert.NotNil(t, engine.IsHostAllowed("neither.com"),
 		"Host in neither should be blocked")
+}
+
+// TestEngine_MixedFlatAndPlugin_OverlappingAllows verifies that overlapping
+// allowlists work correctly under AND semantics.
+func TestEngine_MixedFlatAndPlugin_OverlappingAllows(t *testing.T) {
+	config := &api.NetworkConfig{
+		AllowedHosts: []string{"*.example.com"},
+		Plugins: []api.PluginConfig{
+			{
+				Type:   "host_filter",
+				Config: json.RawMessage(`{"allowed_hosts":["api.example.com","other.com"]}`),
+			},
+		},
+	}
+	engine := NewEngine(config, nil)
+
+	assert.Nil(t, engine.IsHostAllowed("api.example.com"),
+		"Host matching both gates should be allowed")
+	assert.NotNil(t, engine.IsHostAllowed("web.example.com"),
+		"Host matching only flat gate glob should be blocked")
+	assert.NotNil(t, engine.IsHostAllowed("other.com"),
+		"Host matching only plugin gate should be blocked")
 }
 
 func TestEngine_UnknownPluginType(t *testing.T) {
@@ -819,7 +867,7 @@ func TestEngine_UnknownPluginType(t *testing.T) {
 	engine := NewEngine(config, nil)
 
 	// Engine should create successfully; unknown plugin is skipped
-	assert.True(t, engine.IsHostAllowed("anything.com"))
+	assert.Nil(t, engine.IsHostAllowed("anything.com"))
 }
 
 func TestEngine_PluginSecretInjection(t *testing.T) {
@@ -858,4 +906,109 @@ func TestEngine_PluginConfigIsEnabled(t *testing.T) {
 	disabled := false
 	p3 := api.PluginConfig{Type: "host_filter", Enabled: &disabled}
 	assert.False(t, p3.IsEnabled())
+}
+
+// --- AND-semantics tests with mock gates ---
+
+func TestEngine_IsHostAllowed_ANDSemantics_OneDenies(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine.gates = []GatePlugin{
+		&mockGatePlugin{name: "allow-all", verdict: &GateVerdict{Allowed: true}},
+		&mockGatePlugin{name: "deny-all", verdict: &GateVerdict{Allowed: false, Reason: "denied by mock"}},
+	}
+
+	verdict := engine.IsHostAllowed("example.com")
+	require.NotNil(t, verdict, "Should be blocked when one gate denies")
+	assert.Equal(t, "denied by mock", verdict.Reason)
+}
+
+func TestEngine_IsHostAllowed_ANDSemantics_BothAllow(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine.gates = []GatePlugin{
+		&mockGatePlugin{name: "gate-a", verdict: &GateVerdict{Allowed: true}},
+		&mockGatePlugin{name: "gate-b", verdict: &GateVerdict{Allowed: true}},
+	}
+
+	assert.Nil(t, engine.IsHostAllowed("example.com"),
+		"Should be allowed when all gates allow")
+}
+
+func TestEngine_IsHostAllowed_ANDSemantics_BothDeny(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine.gates = []GatePlugin{
+		&mockGatePlugin{name: "gate-a", verdict: &GateVerdict{Allowed: false, Reason: "reason-a"}},
+		&mockGatePlugin{name: "gate-b", verdict: &GateVerdict{Allowed: false, Reason: "reason-b"}},
+	}
+
+	verdict := engine.IsHostAllowed("example.com")
+	require.NotNil(t, verdict, "Should be blocked when both gates deny")
+	assert.Equal(t, "reason-a", verdict.Reason,
+		"Should return first denier's verdict")
+}
+
+func TestEngine_IsHostAllowed_ReturnsVerdictFromBlockingGate(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{}, nil)
+	engine.gates = []GatePlugin{
+		&mockGatePlugin{name: "host-filter", verdict: &GateVerdict{Allowed: true}},
+		&mockGatePlugin{name: "budget-gate", verdict: &GateVerdict{
+			Allowed:     false,
+			Reason:      "budget exceeded: $5.00 >= $5.00",
+			StatusCode:  429,
+			ContentType: "application/json",
+			Body:        `{"error":{"message":"budget exceeded","type":"budget_limit"}}`,
+		}},
+	}
+
+	verdict := engine.IsHostAllowed("api.openai.com")
+	require.NotNil(t, verdict)
+	assert.Equal(t, 429, verdict.StatusCode)
+	assert.Equal(t, "application/json", verdict.ContentType)
+	assert.Contains(t, verdict.Body, "budget exceeded")
+	assert.Equal(t, "budget exceeded: $5.00 >= $5.00", verdict.Reason)
+}
+
+// --- Budget gate integration test ---
+
+func TestEngine_BudgetGate_Integration(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "usage.jsonl")
+
+	engine := NewEngine(&api.NetworkConfig{
+		AllowedHosts:   []string{"openrouter.ai"},
+		UsageLogPath:   logPath,
+		BudgetLimitUSD: 0.01, // very low limit
+	}, nil)
+
+	// Before any usage: should be allowed
+	assert.Nil(t, engine.IsHostAllowed("openrouter.ai"))
+
+	// Simulate a response that records cost
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id": "gen-test",
+			"model": "anthropic/claude-sonnet-4",
+			"usage": {
+				"prompt_tokens": 100,
+				"completion_tokens": 50,
+				"total_tokens": 150,
+				"cost": 0.02
+			}
+		}`)),
+	}
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+	}
+	_, err := engine.OnResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+
+	// After exceeding budget: should be blocked with 429
+	verdict := engine.IsHostAllowed("openrouter.ai")
+	require.NotNil(t, verdict)
+	assert.False(t, verdict.Allowed)
+	assert.Equal(t, 429, verdict.StatusCode)
+	assert.Equal(t, "application/json", verdict.ContentType)
+	assert.Contains(t, verdict.Body, "budget_exceeded")
 }

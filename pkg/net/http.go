@@ -54,9 +54,9 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			host = dstIP
 		}
 
-		if !i.policy.IsHostAllowed(host) {
-			i.emitBlockedEvent(req, host, "host not in allowlist")
-			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
+		if verdict := i.policy.IsHostAllowed(host); verdict != nil {
+			i.emitBlockedEvent(req, host, verdict.Reason)
+			writeGateError(guestConn, verdict)
 			return
 		}
 
@@ -158,16 +158,17 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		serverName = dstIP
 	}
 
-	if !i.policy.IsHostAllowed(serverName) {
-		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
-		return
-	}
-
 	guestReader := bufio.NewReader(tlsConn)
 
 	for {
 		req, err := http.ReadRequest(guestReader)
 		if err != nil {
+			return
+		}
+
+		if verdict := i.policy.IsHostAllowed(serverName); verdict != nil {
+			i.emitBlockedEvent(req, serverName, verdict.Reason)
+			writeGateError(tlsConn, verdict)
 			return
 		}
 
@@ -358,6 +359,31 @@ func (i *HTTPInterceptor) emitBlockedEvent(req *http.Request, host, reason strin
 func writeHTTPError(conn net.Conn, status int, message string) {
 	resp := fmt.Sprintf("HTTP/1.1 %d %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		status, http.StatusText(status), len(message), message)
+	io.WriteString(conn, resp)
+}
+
+// writeGateError sends an HTTP error response based on a gate verdict.
+// Uses verdict fields if set, otherwise falls back to defaults.
+func writeGateError(conn net.Conn, verdict *policy.GateVerdict) {
+	status := verdict.StatusCode
+	if status == 0 {
+		status = http.StatusForbidden
+	}
+
+	body := verdict.Body
+	if body == "" {
+		body = "Blocked by policy"
+	}
+
+	contentType := verdict.ContentType
+	if contentType == "" {
+		contentType = "text/plain"
+	}
+
+	resp := fmt.Sprintf(
+		"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		status, http.StatusText(status), contentType, len(body), body,
+	)
 	io.WriteString(conn, resp)
 }
 

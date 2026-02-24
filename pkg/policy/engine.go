@@ -75,11 +75,25 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger) *Engine {
 		e.logger.Debug("plugin registered from flat config", "plugin", "local_model_router")
 	}
 
+	var usageLogger *usageLoggerPlugin
+
 	if config.UsageLogPath != "" {
 		pluginLogger := e.logger.With("plugin", "usage_logger")
-		e.addPlugin(NewUsageLoggerPlugin(config.UsageLogPath, pluginLogger))
+		usageLogger = NewUsageLoggerPlugin(config.UsageLogPath, pluginLogger)
+		e.addPlugin(usageLogger)
 		flatTypes["usage_logger"] = true
 		e.logger.Debug("plugin registered from flat config", "plugin", "usage_logger")
+	}
+
+	if config.BudgetLimitUSD > 0 {
+		if usageLogger == nil {
+			e.logger.Error("budget_limit_usd requires usage_log_path to be set; budget enforcement disabled")
+		} else {
+			pluginLogger := e.logger.With("plugin", "budget_gate")
+			e.addPlugin(NewBudgetGatePlugin(config.BudgetLimitUSD, usageLogger, pluginLogger))
+			flatTypes["budget_gate"] = true
+			e.logger.Debug("plugin registered from flat config", "plugin", "budget_gate")
+		}
 	}
 
 	// --- Step 2: Add explicitly configured plugins from network.plugins ---
@@ -173,21 +187,25 @@ func (e *Engine) collectPlaceholders() {
 // --- Public API (signatures unchanged) ---
 
 // IsHostAllowed checks whether the given host is permitted by gate plugins.
-// If no gate plugins are registered, all hosts are allowed.
-// With multiple gates, OR semantics: any gate allowing = allowed.
-func (e *Engine) IsHostAllowed(host string) bool {
+// Returns nil if the host is allowed (all gates passed or no gates registered).
+// Returns a non-nil *GateVerdict if a gate blocked the host.
+func (e *Engine) IsHostAllowed(host string) *GateVerdict {
 	if len(e.gates) == 0 {
-		return true
+		return nil
 	}
 	for _, g := range e.gates {
-		allowed, reason := g.Gate(host)
-		if allowed {
-			e.logger.Debug("gate allowed", "plugin", g.Name(), "host", host)
-			return true
+		verdict := g.Gate(host)
+		if !verdict.Allowed {
+			e.logger.Warn("gate blocked",
+				"plugin", g.Name(),
+				"host", host,
+				"reason", verdict.Reason,
+			)
+			return verdict
 		}
-		e.logger.Warn("gate blocked", "plugin", g.Name(), "host", host, "reason", reason)
+		e.logger.Debug("gate allowed", "plugin", g.Name(), "host", host)
 	}
-	return false
+	return nil
 }
 
 // RouteRequest inspects a request and returns a RouteDirective if a router

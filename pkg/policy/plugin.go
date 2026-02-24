@@ -17,13 +17,40 @@ type Plugin interface {
 // Gate plugins run during the IsHostAllowed phase.
 //
 // Semantics: If multiple gate plugins are registered, the engine uses
-// OR logic -- if ANY gate allows the host, the request proceeds.
+// AND logic -- ALL gates must allow the host for the request to proceed.
+// If ANY gate denies the host, the request is blocked and the first
+// denying gate's verdict is returned to the caller.
 // If no gate plugins are registered, all hosts are allowed.
 type GatePlugin interface {
 	Plugin
-	// Gate returns true if the host is allowed.
-	// The reason string explains why the host was blocked (empty if allowed).
-	Gate(host string) (allowed bool, reason string)
+	// Gate evaluates whether the given host is allowed.
+	// Return a verdict with Allowed=true to permit the request.
+	// Return a verdict with Allowed=false to block it; set the optional
+	// HTTP response fields (StatusCode, ContentType, Body) to customize
+	// the error sent to the guest.
+	Gate(host string) *GateVerdict
+}
+
+// GateVerdict carries the result of a gate evaluation.
+//
+// When returned from Engine.IsHostAllowed:
+//   - nil means the host is allowed (all gates passed or no gates registered).
+//   - non-nil means the host was blocked by a gate.
+//
+// When returned from GatePlugin.Gate:
+//   - Allowed=true means this gate permits the host.
+//   - Allowed=false means this gate denies the host.
+type GateVerdict struct {
+	Allowed bool   // Whether the host is allowed.
+	Reason  string // Human-readable reason for denial (used in logs; empty if allowed).
+
+	// HTTP error response fields (optional, used only when Allowed=false).
+	// When set, the HTTP interceptor sends this response to the guest
+	// instead of the default behavior. When unset (zero values), the
+	// interceptor falls back to its default (HTTP 403 "Blocked by policy").
+	StatusCode  int    // HTTP status code (e.g., 429, 403). 0 = use default (403).
+	ContentType string // Content-Type header. Empty = "text/plain".
+	Body        string // Response body. Empty = "Blocked by policy".
 }
 
 // RoutePlugin can redirect requests to alternative backends.

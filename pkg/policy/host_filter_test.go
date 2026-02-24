@@ -11,9 +11,8 @@ import (
 func TestHostFilterPlugin_NoRestrictions(t *testing.T) {
 	p := NewHostFilterPlugin(nil, false, nil, nil)
 
-	allowed, reason := p.Gate("example.com")
-	assert.True(t, allowed, "All hosts should be allowed when no restrictions")
-	assert.Empty(t, reason)
+	verdict := p.Gate("example.com")
+	assert.True(t, verdict.Allowed, "All hosts should be allowed when no restrictions")
 }
 
 func TestHostFilterPlugin_Allowlist(t *testing.T) {
@@ -32,8 +31,8 @@ func TestHostFilterPlugin_Allowlist(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			allowed, _ := p.Gate(tt.host)
-			assert.Equal(t, tt.allowed, allowed)
+			verdict := p.Gate(tt.host)
+			assert.Equal(t, tt.allowed, verdict.Allowed)
 		})
 	}
 }
@@ -54,8 +53,8 @@ func TestHostFilterPlugin_BlockPrivateIPs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.host, func(t *testing.T) {
-			allowed, _ := p.Gate(tt.host)
-			assert.Equal(t, tt.allowed, allowed)
+			verdict := p.Gate(tt.host)
+			assert.Equal(t, tt.allowed, verdict.Allowed)
 		})
 	}
 }
@@ -63,54 +62,54 @@ func TestHostFilterPlugin_BlockPrivateIPs(t *testing.T) {
 func TestHostFilterPlugin_AllowedPrivateHosts(t *testing.T) {
 	p := NewHostFilterPlugin(nil, true, []string{"192.168.1.100"}, nil)
 
-	allowed, _ := p.Gate("192.168.1.100")
-	assert.True(t, allowed, "Explicitly allowed private IP should be allowed")
+	verdict := p.Gate("192.168.1.100")
+	assert.True(t, verdict.Allowed, "Explicitly allowed private IP should be allowed")
 
-	allowed, _ = p.Gate("192.168.1.101")
-	assert.False(t, allowed, "Non-allowed private IP should be blocked")
+	verdict = p.Gate("192.168.1.101")
+	assert.False(t, verdict.Allowed, "Non-allowed private IP should be blocked")
 
-	allowed, _ = p.Gate("10.0.0.1")
-	assert.False(t, allowed, "Other private IP should be blocked")
+	verdict = p.Gate("10.0.0.1")
+	assert.False(t, verdict.Allowed, "Other private IP should be blocked")
 
-	allowed, _ = p.Gate("8.8.8.8")
-	assert.True(t, allowed, "Public IP should still be allowed")
+	verdict = p.Gate("8.8.8.8")
+	assert.True(t, verdict.Allowed, "Public IP should still be allowed")
 }
 
 func TestHostFilterPlugin_AllowedPrivateHostsGlob(t *testing.T) {
 	p := NewHostFilterPlugin(nil, true, []string{"192.168.64.*"}, nil)
 
-	allowed, _ := p.Gate("192.168.64.1")
-	assert.True(t, allowed)
+	verdict := p.Gate("192.168.64.1")
+	assert.True(t, verdict.Allowed)
 
-	allowed, _ = p.Gate("192.168.64.255")
-	assert.True(t, allowed)
+	verdict = p.Gate("192.168.64.255")
+	assert.True(t, verdict.Allowed)
 
-	allowed, _ = p.Gate("192.168.65.1")
-	assert.False(t, allowed)
+	verdict = p.Gate("192.168.65.1")
+	assert.False(t, verdict.Allowed)
 
-	allowed, _ = p.Gate("10.0.0.1")
-	assert.False(t, allowed)
+	verdict = p.Gate("10.0.0.1")
+	assert.False(t, verdict.Allowed)
 }
 
 func TestHostFilterPlugin_WithPort(t *testing.T) {
 	p := NewHostFilterPlugin([]string{"api.example.com"}, false, nil, nil)
 
-	allowed, _ := p.Gate("api.example.com:443")
-	assert.True(t, allowed, "Should allow host with port")
+	verdict := p.Gate("api.example.com:443")
+	assert.True(t, verdict.Allowed, "Should allow host with port")
 }
 
 func TestHostFilterPlugin_BlockedReason(t *testing.T) {
 	p := NewHostFilterPlugin([]string{"allowed.com"}, false, nil, nil)
 
-	_, reason := p.Gate("blocked.com")
-	assert.Equal(t, "host not in allowlist", reason)
+	verdict := p.Gate("blocked.com")
+	assert.Equal(t, "host not in allowlist", verdict.Reason)
 }
 
 func TestHostFilterPlugin_PrivateBlockedReason(t *testing.T) {
 	p := NewHostFilterPlugin(nil, true, nil, nil)
 
-	_, reason := p.Gate("192.168.1.1")
-	assert.Equal(t, "private IP blocked", reason)
+	verdict := p.Gate("192.168.1.1")
+	assert.Equal(t, "private IP blocked", verdict.Reason)
 }
 
 func TestHostFilterPlugin_Name(t *testing.T) {
@@ -131,21 +130,31 @@ func TestHostFilterPlugin_FromConfig(t *testing.T) {
 	gp, ok := plugin.(GatePlugin)
 	require.True(t, ok)
 
-	allowed, _ := gp.Gate("only-this.com")
-	assert.True(t, allowed)
+	verdict := gp.Gate("only-this.com")
+	assert.True(t, verdict.Allowed)
 
-	allowed, _ = gp.Gate("other.com")
-	assert.False(t, allowed)
+	verdict = gp.Gate("other.com")
+	assert.False(t, verdict.Allowed)
 
 	// Private IP in both AllowedPrivateHosts and AllowedHosts should be allowed
-	allowed, _ = gp.Gate("192.168.1.1")
-	assert.True(t, allowed)
+	verdict = gp.Gate("192.168.1.1")
+	assert.True(t, verdict.Allowed)
 
-	allowed, _ = gp.Gate("10.0.0.1")
-	assert.False(t, allowed)
+	verdict = gp.Gate("10.0.0.1")
+	assert.False(t, verdict.Allowed)
 }
 
 func TestHostFilterPlugin_FromConfig_Invalid(t *testing.T) {
 	_, err := NewHostFilterPluginFromConfig(json.RawMessage(`{invalid}`), nil)
 	assert.Error(t, err)
+}
+
+func TestHostFilterPlugin_BlockedVerdictDefaultFields(t *testing.T) {
+	p := NewHostFilterPlugin([]string{"allowed.com"}, false, nil, nil)
+
+	verdict := p.Gate("blocked.com")
+	require.False(t, verdict.Allowed)
+	assert.Equal(t, 0, verdict.StatusCode, "host_filter should leave StatusCode at zero")
+	assert.Empty(t, verdict.ContentType, "host_filter should leave ContentType empty")
+	assert.Empty(t, verdict.Body, "host_filter should leave Body empty")
 }

@@ -89,6 +89,7 @@ type NetworkConfig struct {
 	MTU                 int                 `json:"mtu,omitempty"`
 	LocalModelRouting   []LocalModelRoute   `json:"local_model_routing,omitempty"`
 	UsageLogPath        string              `json:"usage_log_path,omitempty"`
+	BudgetLimitUSD      float64             `json:"budget_limit_usd,omitempty"`
 	// Plugins contains explicit plugin configurations.
 	// Flat fields (AllowedHosts, Secrets, LocalModelRouting) are compiled
 	// into built-in plugins internally. This array is for advanced
