@@ -56,37 +56,39 @@ type GateVerdict struct {
 // RoutePlugin can redirect requests to alternative backends.
 // Route plugins run during the RouteRequest phase.
 //
-// Semantics: First non-nil RouteDirective wins. Subsequent route plugins
-// are not called once a directive is returned.
+// Semantics: First non-nil RouteDecision.Directive wins. Subsequent route
+// plugins are not called once a directive is returned.
 type RoutePlugin interface {
 	Plugin
-	// Route inspects a request and optionally returns a RouteDirective.
-	// Returning (nil, nil) means "use the original destination."
-	// Returning (nil, err) means "block the request with an error."
-	Route(req *http.Request, host string) (*RouteDirective, error)
+	// Route inspects a request and returns a RouteDecision.
+	// Set Directive to nil for passthrough (use original destination).
+	// Return a non-nil error to block the request.
+	Route(req *http.Request, host string) (*RouteDecision, error)
 }
 
 // RequestPlugin transforms outbound requests before they are sent upstream.
 // Request plugins run during the OnRequest phase.
 //
-// Semantics: Plugins are chained -- the output of one feeds into the next.
-// Returning an error blocks the request.
+// Semantics: Plugins are chained -- the output Request of one feeds into the
+// next. Returning an error blocks the request.
 type RequestPlugin interface {
 	Plugin
-	// TransformRequest modifies the request in-place or returns a new request.
+	// TransformRequest modifies the request and returns a decision describing
+	// what was done. The Request field in the returned decision must be non-nil.
 	// Return a non-nil error to block the request (e.g., secret leak detection).
-	TransformRequest(req *http.Request, host string) (*http.Request, error)
+	TransformRequest(req *http.Request, host string) (*RequestDecision, error)
 }
 
 // ResponsePlugin transforms inbound responses before they reach the guest.
 // Response plugins run during the OnResponse phase.
 //
-// Semantics: Plugins are chained -- the output of one feeds into the next.
-// Returning an error drops the response.
+// Semantics: Plugins are chained -- the output Response of one feeds into the
+// next. Returning an error drops the response.
 type ResponsePlugin interface {
 	Plugin
-	// TransformResponse modifies the response in-place or returns a new response.
-	TransformResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error)
+	// TransformResponse modifies the response and returns a decision describing
+	// what was done. The Response field in the returned decision must be non-nil.
+	TransformResponse(resp *http.Response, req *http.Request, host string) (*ResponseDecision, error)
 }
 
 // PlaceholderProvider is an optional interface for plugins that manage
@@ -108,4 +110,64 @@ type RouteDirective struct {
 	Host   string // Target host, e.g., "127.0.0.1"
 	Port   int    // Target port, e.g., 11434
 	UseTLS bool   // Whether to use TLS for the upstream connection
+}
+
+// RouteDecision captures a routing plugin's full decision.
+// Returned by RoutePlugin.Route().
+//
+// The engine reads Directive to determine routing behavior and emits
+// a route_decision event using the Reason field.
+type RouteDecision struct {
+	// Directive is the routing instruction. nil means passthrough
+	// (use the original destination).
+	Directive *RouteDirective
+
+	// Reason is a human-readable explanation of the routing decision.
+	// Examples: "matched model llama3.1:8b -> 127.0.0.1:11434",
+	//           "no matching route for openai/gpt-4o",
+	//           "passthrough (wrong host)"
+	Reason string
+}
+
+// RequestDecision captures what a request transform plugin did.
+// Returned by RequestPlugin.TransformRequest().
+//
+// The engine reads Request to continue the chain and emits a
+// request_transform event using Action and Reason.
+type RequestDecision struct {
+	// Request is the (possibly modified) outbound request.
+	// Must be non-nil on success.
+	Request *http.Request
+
+	// Action describes what happened in machine-readable form.
+	// Conventions: "injected", "skipped", "leak_blocked", "no_op",
+	// "rewritten". Plugins should pick from these or define new
+	// lowercase_snake actions.
+	Action string
+
+	// Reason is a human-readable explanation.
+	// Examples: "secret OPENROUTER_API_KEY injected for openrouter.ai",
+	//           "no secrets applicable for this host"
+	// MUST NOT contain secret values.
+	Reason string
+}
+
+// ResponseDecision captures what a response transform plugin did.
+// Returned by ResponsePlugin.TransformResponse().
+//
+// The engine reads Response to continue the chain and emits a
+// response_transform event using Action and Reason.
+type ResponseDecision struct {
+	// Response is the (possibly modified) inbound response.
+	// Must be non-nil on success.
+	Response *http.Response
+
+	// Action describes what happened in machine-readable form.
+	// Conventions: "logged_usage", "no_op", "modified".
+	Action string
+
+	// Reason is a human-readable explanation.
+	// Examples: "recorded $0.0023 cost for claude-3.5-haiku",
+	//           "skipped: non-openrouter host"
+	Reason string
 }

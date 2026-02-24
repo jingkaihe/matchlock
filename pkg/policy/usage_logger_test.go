@@ -120,9 +120,9 @@ func TestUsageLoggerPlugin_OpenRouterResponse(t *testing.T) {
 	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	entries := readJSONLEntries(t, logPath)
 	require.Len(t, entries, 1)
@@ -161,9 +161,9 @@ func TestUsageLoggerPlugin_OllamaResponse(t *testing.T) {
 	})
 	req := makeUsageRequest("POST", "/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	entries := readJSONLEntries(t, logPath)
 	require.Len(t, entries, 1)
@@ -197,11 +197,11 @@ func TestUsageLoggerPlugin_BodyPreserved(t *testing.T) {
 	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	require.NoError(t, err)
 
 	// Read the body after plugin processed it
-	body, err := io.ReadAll(result.Body)
+	body, err := io.ReadAll(decision.Response.Body)
 	require.NoError(t, err)
 	assert.Equal(t, openRouterResponseJSON, string(body))
 }
@@ -214,9 +214,9 @@ func TestUsageLoggerPlugin_NonMatchingHost(t *testing.T) {
 	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "api.openai.com")
+	decision, err := p.TransformResponse(resp, req, "api.openai.com")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	_, statErr := os.Stat(logPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -230,9 +230,9 @@ func TestUsageLoggerPlugin_NonMatchingPath(t *testing.T) {
 	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
 	req := makeUsageRequest("GET", "/api/v1/models")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	_, statErr := os.Stat(logPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -262,9 +262,9 @@ func TestUsageLoggerPlugin_Non200StatusCode(t *testing.T) {
 	resp := makeUsageResponse(400, `{"error": "bad request"}`, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	_, statErr := os.Stat(logPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -278,9 +278,9 @@ func TestUsageLoggerPlugin_MalformedJSON(t *testing.T) {
 	resp := makeUsageResponse(200, "not json at all", nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	_, statErr := os.Stat(logPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -294,9 +294,9 @@ func TestUsageLoggerPlugin_NoUsageObject(t *testing.T) {
 	resp := makeUsageResponse(200, noUsageResponseJSON, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 
 	_, statErr := os.Stat(logPath)
 	assert.True(t, os.IsNotExist(statErr))
@@ -394,16 +394,16 @@ func TestUsageLoggerPlugin_EmptyLogPath(t *testing.T) {
 	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result)
+	assert.Equal(t, resp, decision.Response)
 	assert.Equal(t, 0.0, p.TotalCostUSD())
 }
 
 // 16. Factory -- Valid Config
 func TestUsageLoggerPlugin_FromConfig(t *testing.T) {
 	raw := json.RawMessage(`{"log_path": "/tmp/test-usage.jsonl"}`)
-	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
+	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, plugin)
 
@@ -414,14 +414,14 @@ func TestUsageLoggerPlugin_FromConfig(t *testing.T) {
 // 17. Factory -- Invalid Config
 func TestUsageLoggerPlugin_FromConfig_Invalid(t *testing.T) {
 	raw := json.RawMessage("{invalid}")
-	_, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
+	_, err := NewUsageLoggerPluginFromConfig(raw, nil)
 	assert.Error(t, err)
 }
 
 // 18. Factory -- Empty Config
 func TestUsageLoggerPlugin_FromConfig_Empty(t *testing.T) {
 	raw := json.RawMessage("{}")
-	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil, nil)
+	plugin, err := NewUsageLoggerPluginFromConfig(raw, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, plugin)
 }
@@ -461,9 +461,58 @@ func TestUsageLoggerPlugin_ResponseNotModified(t *testing.T) {
 	})
 	req := makeUsageRequest("POST", "/api/v1/chat/completions")
 
-	result, err := p.TransformResponse(resp, req, "openrouter.ai")
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
 	assert.NoError(t, err)
-	assert.Equal(t, resp, result) // same pointer
-	assert.Equal(t, 200, result.StatusCode)
-	assert.Equal(t, "test-value", result.Header.Get("X-Custom-Header"))
+	assert.Equal(t, resp, decision.Response) // same pointer
+	assert.Equal(t, 200, decision.Response.StatusCode)
+	assert.Equal(t, "test-value", decision.Response.Header.Get("X-Custom-Header"))
+}
+
+// --- New Decision Struct Tests ---
+
+func TestUsageLoggerPlugin_Decision_LoggedUsage(t *testing.T) {
+	logPath := tempLogPath(t)
+	p := NewUsageLoggerPlugin(logPath, nil)
+
+	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Equal(t, "logged_usage", decision.Action)
+	assert.Contains(t, decision.Reason, "recorded $")
+	assert.Contains(t, decision.Reason, "anthropic/claude-sonnet-4")
+}
+
+func TestUsageLoggerPlugin_Decision_NoOp_WrongHost(t *testing.T) {
+	p := NewUsageLoggerPlugin("", nil)
+
+	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "api.openai.com")
+	require.NoError(t, err)
+	assert.Equal(t, "no_op", decision.Action)
+}
+
+func TestUsageLoggerPlugin_Decision_NoOp_WrongPath(t *testing.T) {
+	p := NewUsageLoggerPlugin("", nil)
+
+	resp := makeUsageResponse(200, openRouterResponseJSON, nil)
+	req := makeUsageRequest("GET", "/api/v1/models")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Equal(t, "no_op", decision.Action)
+}
+
+func TestUsageLoggerPlugin_Decision_NoOp_Non200(t *testing.T) {
+	p := NewUsageLoggerPlugin("", nil)
+
+	resp := makeUsageResponse(500, `{"error":"internal"}`, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Equal(t, "no_op", decision.Action)
 }

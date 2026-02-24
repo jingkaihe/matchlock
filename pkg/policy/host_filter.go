@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
-
-	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // HostFilterConfig is the typed config for the host_filter plugin.
@@ -40,7 +38,7 @@ func NewHostFilterPlugin(allowedHosts []string, blockPrivateIPs bool, allowedPri
 
 // NewHostFilterPluginFromConfig creates a host_filter plugin from JSON config.
 // Called by the plugin registry factory.
-func NewHostFilterPluginFromConfig(raw json.RawMessage, logger *slog.Logger, emitter *logging.Emitter) (Plugin, error) {
+func NewHostFilterPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}

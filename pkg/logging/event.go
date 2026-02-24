@@ -21,11 +21,14 @@ type Event struct {
 
 // Event type constants for v0.
 const (
-	EventHTTPRequest   = "http_request"
-	EventHTTPResponse  = "http_response"
-	EventBudgetAction  = "budget_action"
-	EventKeyInjection  = "key_injection"
-	EventGateDecision  = "gate_decision"
+	EventHTTPRequest       = "http_request"
+	EventHTTPResponse      = "http_response"
+	EventBudgetAction      = "budget_action"
+	EventKeyInjection      = "key_injection"       // DEPRECATED: replaced by EventRequestTransform
+	EventGateDecision      = "gate_decision"
+	EventRouteDecision     = "route_decision"       // NEW
+	EventRequestTransform  = "request_transform"    // NEW
+	EventResponseTransform = "response_transform"   // NEW
 )
 
 // HTTPRequestData is the data payload for http_request events.
@@ -71,4 +74,26 @@ type KeyInjectionData struct {
 	SecretName string `json:"secret_name"`
 	Host       string `json:"host"`
 	Action     string `json:"action"` // "injected", "skipped", "leak_blocked"
+}
+
+// RouteDecisionData is the data payload for route_decision events.
+type RouteDecisionData struct {
+	Host     string `json:"host"`
+	Action   string `json:"action"`              // "passthrough" or "redirected"
+	RoutedTo string `json:"routed_to,omitempty"` // "host:port" when redirected
+	Reason   string `json:"reason,omitempty"`
+}
+
+// RequestTransformData is the data payload for request_transform events.
+type RequestTransformData struct {
+	Host   string `json:"host"`
+	Action string `json:"action"`          // "injected", "skipped", "no_op", etc.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ResponseTransformData is the data payload for response_transform events.
+type ResponseTransformData struct {
+	Host   string `json:"host"`
+	Action string `json:"action"`          // "logged_usage", "no_op", etc.
+	Reason string `json:"reason,omitempty"`
 }

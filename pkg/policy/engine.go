@@ -55,7 +55,7 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger, emitter *logging.
 
 	if len(config.Secrets) > 0 {
 		pluginLogger := e.logger.With("plugin", "secret_injector")
-		p := NewSecretInjectorPlugin(config.Secrets, pluginLogger, e.emitter)
+		p := NewSecretInjectorPlugin(config.Secrets, pluginLogger)
 		e.addPlugin(p)
 		flatTypes["secret_injector"] = true
 		e.logger.Debug("plugin registered from flat config", "plugin", "secret_injector")
@@ -119,7 +119,7 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger, emitter *logging.
 		}
 
 		pluginLogger := e.logger.With("plugin", pluginCfg.Type)
-		p, err := factory(pluginCfg.Config, pluginLogger, e.emitter)
+		p, err := factory(pluginCfg.Config, pluginLogger)
 		if err != nil {
 			e.logger.Warn("plugin creation failed, skipping",
 				"type", pluginCfg.Type, "error", err)
@@ -234,20 +234,45 @@ func (e *Engine) IsHostAllowed(host string) *GateVerdict {
 
 // RouteRequest inspects a request and returns a RouteDirective if a router
 // plugin wants to redirect it. First non-nil directive wins.
+// Emits a route_decision event for each router plugin evaluated.
 func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, error) {
 	for _, r := range e.routers {
-		directive, err := r.Route(req, host)
+		decision, err := r.Route(req, host)
 		if err != nil {
 			e.logger.Warn("route error", "plugin", r.Name(), "host", host, "error", err)
 			return nil, err
 		}
-		if directive != nil {
+
+		if e.emitter != nil {
+			action := "passthrough"
+			routedTo := ""
+			if decision.Directive != nil {
+				action = "redirected"
+				routedTo = fmt.Sprintf("%s:%d", decision.Directive.Host, decision.Directive.Port)
+			}
+			summary := fmt.Sprintf("route %s %s by %s", action, host, r.Name())
+			if routedTo != "" {
+				summary = fmt.Sprintf("route %s %s -> %s by %s", action, host, routedTo, r.Name())
+			}
+			_ = e.emitter.Emit(logging.EventRouteDecision,
+				summary,
+				r.Name(),
+				nil,
+				&logging.RouteDecisionData{
+					Host:     host,
+					Action:   action,
+					RoutedTo: routedTo,
+					Reason:   decision.Reason,
+				})
+		}
+
+		if decision.Directive != nil {
 			e.logger.Info(
 				fmt.Sprintf("local model redirect: %s request to %s%s redirected to -> %s:%d (local-backend)",
-					req.Method, host, req.URL.Path, directive.Host, directive.Port),
+					req.Method, host, req.URL.Path, decision.Directive.Host, decision.Directive.Port),
 				"plugin", r.Name(),
 			)
-			return directive, nil
+			return decision.Directive, nil
 		}
 	}
 	e.logger.Debug("route passthrough",
@@ -259,29 +284,57 @@ func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, 
 }
 
 // OnRequest runs request transform plugins in chain order.
+// Emits a request_transform event for each plugin.
 func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error) {
-	var err error
 	for _, p := range e.requests {
-		req, err = p.TransformRequest(req, host)
+		decision, err := p.TransformRequest(req, host)
 		if err != nil {
 			e.logger.Warn("request transform failed",
 				"plugin", p.Name(), "host", host, "error", err)
 			return nil, err
 		}
+
+		if e.emitter != nil {
+			_ = e.emitter.Emit(logging.EventRequestTransform,
+				fmt.Sprintf("%s: %s for %s", p.Name(), decision.Action, host),
+				p.Name(),
+				nil,
+				&logging.RequestTransformData{
+					Host:   host,
+					Action: decision.Action,
+					Reason: decision.Reason,
+				})
+		}
+
+		req = decision.Request
 	}
 	return req, nil
 }
 
 // OnResponse runs response transform plugins in chain order.
+// Emits a response_transform event for each plugin.
 func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
-	var err error
 	for _, p := range e.responses {
-		resp, err = p.TransformResponse(resp, req, host)
+		decision, err := p.TransformResponse(resp, req, host)
 		if err != nil {
 			e.logger.Warn("response transform failed",
 				"plugin", p.Name(), "host", host, "error", err)
 			return nil, err
 		}
+
+		if e.emitter != nil {
+			_ = e.emitter.Emit(logging.EventResponseTransform,
+				fmt.Sprintf("%s: %s for %s", p.Name(), decision.Action, host),
+				p.Name(),
+				nil,
+				&logging.ResponseTransformData{
+					Host:   host,
+					Action: decision.Action,
+					Reason: decision.Reason,
+				})
+		}
+
+		resp = decision.Response
 	}
 	return resp, nil
 }

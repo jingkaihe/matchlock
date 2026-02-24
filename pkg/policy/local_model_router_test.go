@@ -42,13 +42,13 @@ func TestLocalModelRouterPlugin_MatchingModel(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
+	require.NotNil(t, decision.Directive)
 
-	assert.Equal(t, "127.0.0.1", directive.Host)
-	assert.Equal(t, 11434, directive.Port)
-	assert.False(t, directive.UseTLS)
+	assert.Equal(t, "127.0.0.1", decision.Directive.Host)
+	assert.Equal(t, 11434, decision.Directive.Port)
+	assert.False(t, decision.Directive.UseTLS)
 }
 
 func TestLocalModelRouterPlugin_NonMatchingModel(t *testing.T) {
@@ -62,9 +62,10 @@ func TestLocalModelRouterPlugin_NonMatchingModel(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
+	assert.NotEmpty(t, decision.Reason)
 }
 
 func TestLocalModelRouterPlugin_WrongHost(t *testing.T) {
@@ -78,9 +79,10 @@ func TestLocalModelRouterPlugin_WrongHost(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "other-api.com")
+	decision, err := p.Route(req, "other-api.com")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
+	assert.NotEmpty(t, decision.Reason)
 }
 
 func TestLocalModelRouterPlugin_WrongPath(t *testing.T) {
@@ -94,9 +96,9 @@ func TestLocalModelRouterPlugin_WrongPath(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_GETMethod(t *testing.T) {
@@ -108,9 +110,9 @@ func TestLocalModelRouterPlugin_GETMethod(t *testing.T) {
 		Header: http.Header{},
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_NilBody(t *testing.T) {
@@ -123,9 +125,9 @@ func TestLocalModelRouterPlugin_NilBody(t *testing.T) {
 		Body:   nil,
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_MalformedJSON(t *testing.T) {
@@ -138,9 +140,9 @@ func TestLocalModelRouterPlugin_MalformedJSON(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader("not json")),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_BodyRewritten(t *testing.T) {
@@ -159,9 +161,9 @@ func TestLocalModelRouterPlugin_BodyRewritten(t *testing.T) {
 		Body: io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
+	require.NotNil(t, decision.Directive)
 
 	assert.Equal(t, "/v1/chat/completions", req.URL.Path)
 
@@ -195,10 +197,10 @@ func TestLocalModelRouterPlugin_HostWithPort(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai:443")
+	decision, err := p.Route(req, "openrouter.ai:443")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
-	assert.Equal(t, "127.0.0.1", directive.Host)
+	require.NotNil(t, decision.Directive)
+	assert.Equal(t, "127.0.0.1", decision.Directive.Host)
 }
 
 func TestLocalModelRouterPlugin_EmptyRoutes(t *testing.T) {
@@ -212,9 +214,9 @@ func TestLocalModelRouterPlugin_EmptyRoutes(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_PerModelBackendOverride(t *testing.T) {
@@ -242,9 +244,9 @@ func TestLocalModelRouterPlugin_PerModelBackendOverride(t *testing.T) {
 	}
 	d1, err := p.Route(req1, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, d1)
-	assert.Equal(t, "127.0.0.1", d1.Host)
-	assert.Equal(t, 11434, d1.Port)
+	require.NotNil(t, d1.Directive)
+	assert.Equal(t, "127.0.0.1", d1.Directive.Host)
+	assert.Equal(t, 11434, d1.Directive.Port)
 
 	body2 := `{"model":"qwen/qwen-2.5-coder-32b-instruct","messages":[]}`
 	req2 := &http.Request{
@@ -255,9 +257,9 @@ func TestLocalModelRouterPlugin_PerModelBackendOverride(t *testing.T) {
 	}
 	d2, err := p.Route(req2, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, d2)
-	assert.Equal(t, "10.0.0.5", d2.Host)
-	assert.Equal(t, 8080, d2.Port)
+	require.NotNil(t, d2.Directive)
+	assert.Equal(t, "10.0.0.5", d2.Directive.Host)
+	assert.Equal(t, 8080, d2.Directive.Port)
 }
 
 func TestLocalModelRouterPlugin_CustomPath(t *testing.T) {
@@ -278,9 +280,9 @@ func TestLocalModelRouterPlugin_CustomPath(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "api.openai.com")
+	decision, err := p.Route(req, "api.openai.com")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
+	require.NotNil(t, decision.Directive)
 }
 
 func TestLocalModelRouterPlugin_MultipleSourceHosts(t *testing.T) {
@@ -312,9 +314,9 @@ func TestLocalModelRouterPlugin_MultipleSourceHosts(t *testing.T) {
 	}
 	d1, err := p.Route(req1, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, d1)
-	assert.Equal(t, "127.0.0.1", d1.Host)
-	assert.Equal(t, 11434, d1.Port)
+	require.NotNil(t, d1.Directive)
+	assert.Equal(t, "127.0.0.1", d1.Directive.Host)
+	assert.Equal(t, 11434, d1.Directive.Port)
 
 	body2 := `{"model":"gpt-4o-mini","messages":[]}`
 	req2 := &http.Request{
@@ -325,9 +327,9 @@ func TestLocalModelRouterPlugin_MultipleSourceHosts(t *testing.T) {
 	}
 	d2, err := p.Route(req2, "api.openai.com")
 	require.NoError(t, err)
-	require.NotNil(t, d2)
-	assert.Equal(t, "10.0.0.5", d2.Host)
-	assert.Equal(t, 8080, d2.Port)
+	require.NotNil(t, d2.Directive)
+	assert.Equal(t, "10.0.0.5", d2.Directive.Host)
+	assert.Equal(t, 8080, d2.Directive.Port)
 }
 
 func TestLocalModelRouterPlugin_HostHeaderRewritten(t *testing.T) {
@@ -349,9 +351,9 @@ func TestLocalModelRouterPlugin_HostHeaderRewritten(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
+	require.NotNil(t, decision.Directive)
 
 	assert.Equal(t, "192.168.1.50:9090", req.Host)
 }
@@ -364,10 +366,11 @@ func TestLocalModelRouterPlugin_TransformRequestNoop(t *testing.T) {
 		URL:    &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "example.com")
+	decision, err := p.TransformRequest(req, "example.com")
 	require.NoError(t, err)
-	assert.Equal(t, req, result)
-	assert.Equal(t, "unchanged", result.Header.Get("X-Test"))
+	assert.Equal(t, req, decision.Request)
+	assert.Equal(t, "no_op", decision.Action)
+	assert.Equal(t, "unchanged", decision.Request.Header.Get("X-Test"))
 }
 
 func TestLocalModelRouterPlugin_FromConfig(t *testing.T) {
@@ -382,7 +385,7 @@ func TestLocalModelRouterPlugin_FromConfig(t *testing.T) {
 		}]
 	}`)
 
-	plugin, err := NewLocalModelRouterPluginFromConfig(raw, nil, nil)
+	plugin, err := NewLocalModelRouterPluginFromConfig(raw, nil)
 	require.NoError(t, err)
 
 	rp, ok := plugin.(RoutePlugin)
@@ -396,14 +399,14 @@ func TestLocalModelRouterPlugin_FromConfig(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	directive, err := rp.Route(req, "openrouter.ai")
+	decision, err := rp.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	require.NotNil(t, directive)
-	assert.Equal(t, "127.0.0.1", directive.Host)
+	require.NotNil(t, decision.Directive)
+	assert.Equal(t, "127.0.0.1", decision.Directive.Host)
 }
 
 func TestLocalModelRouterPlugin_FromConfig_Invalid(t *testing.T) {
-	_, err := NewLocalModelRouterPluginFromConfig(json.RawMessage(`{invalid}`), nil, nil)
+	_, err := NewLocalModelRouterPluginFromConfig(json.RawMessage(`{invalid}`), nil)
 	assert.Error(t, err)
 }
 
@@ -418,11 +421,79 @@ func TestLocalModelRouterPlugin_BodyRestored_OnNoMatch(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(originalBody)),
 	}
 
-	directive, err := p.Route(req, "openrouter.ai")
+	decision, err := p.Route(req, "openrouter.ai")
 	require.NoError(t, err)
-	assert.Nil(t, directive)
+	assert.Nil(t, decision.Directive)
 
 	gotBody, err := io.ReadAll(req.Body)
 	require.NoError(t, err)
 	assert.Equal(t, originalBody, string(gotBody))
+}
+
+// --- New Decision Struct Tests ---
+
+func TestLocalModelRouterPlugin_Decision_Redirected(t *testing.T) {
+	p := NewLocalModelRouterPlugin(localModelRouterRoutes(), nil)
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	decision, err := p.Route(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, decision.Directive)
+	assert.Contains(t, decision.Reason, "matched model")
+}
+
+func TestLocalModelRouterPlugin_Decision_Passthrough_WrongHost(t *testing.T) {
+	p := NewLocalModelRouterPlugin(localModelRouterRoutes(), nil)
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	decision, err := p.Route(req, "other-api.com")
+	require.NoError(t, err)
+	assert.Nil(t, decision.Directive)
+	assert.Contains(t, decision.Reason, "no route entry")
+}
+
+func TestLocalModelRouterPlugin_Decision_Passthrough_NoMatch(t *testing.T) {
+	p := NewLocalModelRouterPlugin(localModelRouterRoutes(), nil)
+
+	body := `{"model":"openai/gpt-4o","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	decision, err := p.Route(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, decision.Directive)
+	assert.Contains(t, decision.Reason, "no matching route")
+}
+
+func TestLocalModelRouterPlugin_Decision_TransformRequestNoOp(t *testing.T) {
+	p := NewLocalModelRouterPlugin(nil, nil)
+
+	req := &http.Request{
+		Header: http.Header{},
+		URL:    &url.URL{},
+	}
+
+	decision, err := p.TransformRequest(req, "example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "no_op", decision.Action)
+	assert.Equal(t, req, decision.Request)
+	assert.NotEmpty(t, decision.Reason)
 }

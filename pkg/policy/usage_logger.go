@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // UsageLoggerConfig is the typed config for the usage_logger plugin.
@@ -90,7 +88,7 @@ func NewUsageLoggerPlugin(logPath string, logger *slog.Logger) *usageLoggerPlugi
 }
 
 // NewUsageLoggerPluginFromConfig creates a usage_logger plugin from JSON config.
-func NewUsageLoggerPluginFromConfig(raw json.RawMessage, logger *slog.Logger, _ *logging.Emitter) (Plugin, error) {
+func NewUsageLoggerPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -105,31 +103,47 @@ func (p *usageLoggerPlugin) Name() string {
 	return "usage_logger"
 }
 
-func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
+func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Request, host string) (*ResponseDecision, error) {
 	// Strip port from host
 	host = strings.Split(host, ":")[0]
 
 	// Guard: only intercept openrouter.ai
 	if host != "openrouter.ai" {
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   fmt.Sprintf("skipped: host %s is not openrouter.ai", host),
+		}, nil
 	}
 
 	// Guard: only intercept chat completions paths
 	path := req.URL.Path
 	if path != "/api/v1/chat/completions" && path != "/v1/chat/completions" {
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   fmt.Sprintf("skipped: path %s is not a chat completions endpoint", path),
+		}, nil
 	}
 
 	// Guard: only log successful responses
 	if resp.StatusCode != 200 {
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   fmt.Sprintf("skipped: status %d is not 200", resp.StatusCode),
+		}, nil
 	}
 
 	// Read the response body
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		p.logger.Warn("usage_logger: failed to read response body", "error", err)
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   "skipped: failed to read response body",
+		}, nil
 	}
 	// Reassign body so downstream can still read it
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -138,12 +152,20 @@ func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Req
 	var parsed openRouterResponse
 	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
 		p.logger.Warn("usage_logger: failed to parse response JSON", "error", err)
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   "skipped: invalid JSON in response body",
+		}, nil
 	}
 
 	if parsed.Usage == nil {
 		p.logger.Warn("usage_logger: response missing usage object", "id", parsed.ID)
-		return resp, nil
+		return &ResponseDecision{
+			Response: resp,
+			Action:   "no_op",
+			Reason:   "skipped: response missing usage object",
+		}, nil
 	}
 
 	// Determine backend
@@ -194,7 +216,11 @@ func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Req
 	if p.logPath != "" {
 		if err := p.appendLogEntry(entry); err != nil {
 			p.logger.Warn("usage_logger: failed to write log entry", "error", err)
-			return resp, nil
+			return &ResponseDecision{
+				Response: resp,
+				Action:   "no_op",
+				Reason:   "skipped: failed to write log entry",
+			}, nil
 		}
 	}
 
@@ -204,7 +230,11 @@ func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Req
 		"cost_usd", entry.CostUSD,
 	)
 
-	return resp, nil
+	return &ResponseDecision{
+		Response: resp,
+		Action:   "logged_usage",
+		Reason:   fmt.Sprintf("recorded $%.4f cost for %s via %s", entry.CostUSD, entry.Model, backend),
+	}, nil
 }
 
 // TotalCostUSD returns the current running total cost in USD. Thread-safe.

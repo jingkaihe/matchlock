@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/logging"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1011,4 +1012,220 @@ func TestEngine_BudgetGate_Integration(t *testing.T) {
 	assert.Equal(t, 429, verdict.StatusCode)
 	assert.Equal(t, "application/json", verdict.ContentType)
 	assert.Contains(t, verdict.Body, "budget_exceeded")
+}
+
+// --- Engine Event Emission Tests ---
+
+func TestEngine_RouteRequest_EmitsRouteDecisionEvent(t *testing.T) {
+	capture := &captureSink{}
+	emitter := logging.NewEmitter(logging.EmitterConfig{
+		RunID: "test-run", AgentSystem: "test",
+	}, capture)
+
+	engine := NewEngine(routingConfig(), nil, emitter)
+
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[{"role":"user","content":"hi"}]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{"Content-Type": []string{"application/json"}},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	require.NotNil(t, directive)
+
+	require.Len(t, capture.events, 1)
+	event := capture.events[0]
+	assert.Equal(t, "route_decision", event.EventType)
+	assert.Equal(t, "local_model_router", event.Plugin)
+
+	var data logging.RouteDecisionData
+	require.NoError(t, json.Unmarshal(event.Data, &data))
+	assert.Equal(t, "redirected", data.Action)
+	assert.NotEmpty(t, data.RoutedTo)
+}
+
+func TestEngine_RouteRequest_EmitsPassthroughEvent(t *testing.T) {
+	capture := &captureSink{}
+	emitter := logging.NewEmitter(logging.EmitterConfig{
+		RunID: "test-run", AgentSystem: "test",
+	}, capture)
+
+	engine := NewEngine(routingConfig(), nil, emitter)
+
+	body := `{"model":"openai/gpt-4o","messages":[]}`
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+
+	directive, err := engine.RouteRequest(req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Nil(t, directive)
+
+	require.Len(t, capture.events, 1)
+	event := capture.events[0]
+	assert.Equal(t, "route_decision", event.EventType)
+
+	var data logging.RouteDecisionData
+	require.NoError(t, json.Unmarshal(event.Data, &data))
+	assert.Equal(t, "passthrough", data.Action)
+}
+
+func TestEngine_OnRequest_EmitsRequestTransformEvent(t *testing.T) {
+	capture := &captureSink{}
+	emitter := logging.NewEmitter(logging.EmitterConfig{
+		RunID: "test-run", AgentSystem: "test",
+	}, capture)
+
+	config := &api.NetworkConfig{
+		Secrets: map[string]api.Secret{
+			"API_KEY": {
+				Value: "real-secret",
+				Hosts: []string{"api.example.com"},
+			},
+		},
+	}
+	engine := NewEngine(config, nil, emitter)
+
+	placeholder := engine.GetPlaceholder("API_KEY")
+	req := &http.Request{
+		Header: http.Header{
+			"Authorization": []string{"Bearer " + placeholder},
+		},
+		URL: &url.URL{},
+	}
+
+	result, err := engine.OnRequest(req, "api.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
+
+	// Find the request_transform event (there may also be gate events from host_filter)
+	var requestTransformEvents []*logging.Event
+	for _, ev := range capture.events {
+		if ev.EventType == "request_transform" {
+			requestTransformEvents = append(requestTransformEvents, ev)
+		}
+	}
+	require.Len(t, requestTransformEvents, 1)
+	event := requestTransformEvents[0]
+	assert.Equal(t, "secret_injector", event.Plugin)
+
+	var data logging.RequestTransformData
+	require.NoError(t, json.Unmarshal(event.Data, &data))
+	assert.Equal(t, "injected", data.Action)
+}
+
+func TestEngine_OnResponse_EmitsResponseTransformEvent(t *testing.T) {
+	capture := &captureSink{}
+	emitter := logging.NewEmitter(logging.EmitterConfig{
+		RunID: "test-run", AgentSystem: "test",
+	}, capture)
+
+	logPath := filepath.Join(t.TempDir(), "usage.jsonl")
+	config := &api.NetworkConfig{
+		UsageLogPath: logPath,
+	}
+	engine := NewEngine(config, nil, emitter)
+
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body: io.NopCloser(strings.NewReader(`{
+			"id": "gen-test",
+			"model": "anthropic/claude-sonnet-4",
+			"usage": {
+				"prompt_tokens": 100,
+				"completion_tokens": 50,
+				"total_tokens": 150,
+				"cost": 0.002
+			}
+		}`)),
+	}
+	req := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+	}
+
+	_, err := engine.OnResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+
+	var responseTransformEvents []*logging.Event
+	for _, ev := range capture.events {
+		if ev.EventType == "response_transform" {
+			responseTransformEvents = append(responseTransformEvents, ev)
+		}
+	}
+	require.Len(t, responseTransformEvents, 1)
+	event := responseTransformEvents[0]
+	assert.Equal(t, "usage_logger", event.Plugin)
+
+	var data logging.ResponseTransformData
+	require.NoError(t, json.Unmarshal(event.Data, &data))
+	assert.Equal(t, "logged_usage", data.Action)
+}
+
+func TestEngine_NilEmitter_NoEventsPanic(t *testing.T) {
+	config := &api.NetworkConfig{
+		AllowedHosts: []string{"openrouter.ai"},
+		Secrets: map[string]api.Secret{
+			"API_KEY": {
+				Value: "real-secret",
+				Hosts: []string{"openrouter.ai"},
+			},
+		},
+		LocalModelRouting: []api.LocalModelRoute{{
+			SourceHost:  "openrouter.ai",
+			BackendHost: "127.0.0.1",
+			BackendPort: 11434,
+			Models: map[string]api.ModelRoute{
+				"meta-llama/llama-3.1-8b-instruct": {Target: "llama3.1:8b"},
+			},
+		}},
+	}
+	engine := NewEngine(config, nil, nil) // nil emitter
+
+	// Gate phase
+	assert.Nil(t, engine.IsHostAllowed("openrouter.ai"))
+
+	// Route phase
+	body := `{"model":"meta-llama/llama-3.1-8b-instruct","messages":[]}`
+	routeReq := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+		Body:   io.NopCloser(strings.NewReader(body)),
+	}
+	_, err := engine.RouteRequest(routeReq, "openrouter.ai")
+	require.NoError(t, err)
+
+	// Request phase
+	placeholder := engine.GetPlaceholder("API_KEY")
+	onReq := &http.Request{
+		Header: http.Header{
+			"Authorization": []string{"Bearer " + placeholder},
+		},
+		URL: &url.URL{},
+	}
+	_, err = engine.OnRequest(onReq, "openrouter.ai")
+	require.NoError(t, err)
+
+	// Response phase
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{}`)),
+	}
+	respReq := &http.Request{
+		Method: "POST",
+		URL:    &url.URL{Path: "/api/v1/chat/completions"},
+		Header: http.Header{},
+	}
+	_, err = engine.OnResponse(resp, respReq, "openrouter.ai")
+	require.NoError(t, err)
 }

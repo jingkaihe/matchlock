@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
-	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // LocalModelRouterConfig is the typed config for the local_model_router plugin.
@@ -38,7 +37,7 @@ func NewLocalModelRouterPlugin(routes []api.LocalModelRoute, logger *slog.Logger
 
 // NewLocalModelRouterPluginFromConfig creates from JSON config.
 // Called by the plugin registry factory.
-func NewLocalModelRouterPluginFromConfig(raw json.RawMessage, logger *slog.Logger, emitter *logging.Emitter) (Plugin, error) {
+func NewLocalModelRouterPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -59,9 +58,9 @@ func (p *localModelRouterPlugin) Name() string {
 // This method also performs request rewriting as a side effect
 // (same as the current engine). The Route() call both determines the routing
 // directive AND rewrites the request body/headers.
-func (p *localModelRouterPlugin) Route(req *http.Request, host string) (*RouteDirective, error) {
+func (p *localModelRouterPlugin) Route(req *http.Request, host string) (*RouteDecision, error) {
 	if len(p.routes) == 0 {
-		return nil, nil
+		return &RouteDecision{Reason: "no routes configured"}, nil
 	}
 
 	host = strings.Split(host, ":")[0]
@@ -72,15 +71,15 @@ func (p *localModelRouterPlugin) Route(req *http.Request, host string) (*RouteDi
 		}
 
 		if req.Method != "POST" || req.URL.Path != route.GetPath() {
-			return nil, nil
+			return &RouteDecision{Reason: fmt.Sprintf("passthrough: method=%s path=%s", req.Method, req.URL.Path)}, nil
 		}
 
 		if req.Body == nil {
-			return nil, nil
+			return &RouteDecision{Reason: "passthrough: no request body"}, nil
 		}
 		bodyBytes, err := io.ReadAll(req.Body)
 		if err != nil {
-			return nil, nil
+			return &RouteDecision{Reason: "passthrough: failed to read body"}, nil
 		}
 		req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
@@ -88,14 +87,16 @@ func (p *localModelRouterPlugin) Route(req *http.Request, host string) (*RouteDi
 			Model string `json:"model"`
 		}
 		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			return nil, nil
+			return &RouteDecision{Reason: "passthrough: invalid JSON body"}, nil
 		}
 
 		modelRoute, ok := route.Models[payload.Model]
 		if !ok {
 			p.logger.Debug("model not in route table, passing through",
 				"model", payload.Model, "source_host", host)
-			return nil, nil
+			return &RouteDecision{
+				Reason: fmt.Sprintf("no matching route for %s", payload.Model),
+			}, nil
 		}
 
 		backendHost := modelRoute.EffectiveBackendHost(route.GetBackendHost())
@@ -110,21 +111,29 @@ func (p *localModelRouterPlugin) Route(req *http.Request, host string) (*RouteDi
 		// Perform request rewriting inline (same as current engine behavior)
 		rewriteRequestForLocal(req, bodyBytes, payload.Model, modelRoute.Target, backendHost, backendPort)
 
-		return &RouteDirective{
-			Host:   backendHost,
-			Port:   backendPort,
-			UseTLS: false,
+		return &RouteDecision{
+			Directive: &RouteDirective{
+				Host:   backendHost,
+				Port:   backendPort,
+				UseTLS: false,
+			},
+			Reason: fmt.Sprintf("matched model %s -> %s at %s:%d",
+				payload.Model, modelRoute.Target, backendHost, backendPort),
 		}, nil
 	}
 
-	return nil, nil
+	return &RouteDecision{Reason: fmt.Sprintf("no route entry for host %s", host)}, nil
 }
 
 // TransformRequest implements RequestPlugin.
 // For the local_model_router, the rewriting is already done in Route().
 // This is a no-op pass-through to satisfy the interface.
-func (p *localModelRouterPlugin) TransformRequest(req *http.Request, host string) (*http.Request, error) {
-	return req, nil
+func (p *localModelRouterPlugin) TransformRequest(req *http.Request, host string) (*RequestDecision, error) {
+	return &RequestDecision{
+		Request: req,
+		Action:  "no_op",
+		Reason:  "request transform is handled in Route()",
+	}, nil
 }
 
 // rewriteRequestForLocal is extracted from Engine.rewriteRequestForLocal.

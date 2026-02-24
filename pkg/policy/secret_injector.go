@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
-	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
 // SecretInjectorConfig is the typed config for the secret_injector plugin.
@@ -21,13 +20,12 @@ type secretInjectorPlugin struct {
 	secrets      map[string]api.Secret
 	placeholders map[string]string
 	logger       *slog.Logger
-	emitter      *logging.Emitter // nil means no event logging
 }
 
 // NewSecretInjectorPlugin creates a secret_injector plugin from a secrets map.
 // Called during flat-field compilation in NewEngine.
 // Generates placeholders for secrets that don't already have one.
-func NewSecretInjectorPlugin(secrets map[string]api.Secret, logger *slog.Logger, emitter *logging.Emitter) *secretInjectorPlugin {
+func NewSecretInjectorPlugin(secrets map[string]api.Secret, logger *slog.Logger) *secretInjectorPlugin {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -35,7 +33,6 @@ func NewSecretInjectorPlugin(secrets map[string]api.Secret, logger *slog.Logger,
 		secrets:      make(map[string]api.Secret),
 		placeholders: make(map[string]string),
 		logger:       logger,
-		emitter:      emitter,
 	}
 	for name, secret := range secrets {
 		if secret.Placeholder == "" {
@@ -49,7 +46,7 @@ func NewSecretInjectorPlugin(secrets map[string]api.Secret, logger *slog.Logger,
 
 // NewSecretInjectorPluginFromConfig creates a secret_injector plugin from JSON config.
 // Called by the plugin registry factory.
-func NewSecretInjectorPluginFromConfig(raw json.RawMessage, logger *slog.Logger, emitter *logging.Emitter) (Plugin, error) {
+func NewSecretInjectorPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -57,7 +54,7 @@ func NewSecretInjectorPluginFromConfig(raw json.RawMessage, logger *slog.Logger,
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, err
 	}
-	return NewSecretInjectorPlugin(cfg.Secrets, logger, emitter), nil
+	return NewSecretInjectorPlugin(cfg.Secrets, logger), nil
 }
 
 func (p *secretInjectorPlugin) Name() string {
@@ -75,56 +72,44 @@ func (p *secretInjectorPlugin) GetPlaceholders() map[string]string {
 
 // TransformRequest implements RequestPlugin.
 // Logic extracted from Engine.OnRequest.
-func (p *secretInjectorPlugin) TransformRequest(req *http.Request, host string) (*http.Request, error) {
+func (p *secretInjectorPlugin) TransformRequest(req *http.Request, host string) (*RequestDecision, error) {
 	host = strings.Split(host, ":")[0]
+
+	var injected []string
+	var skipped []string
 
 	for name, secret := range p.secrets {
 		if !p.isSecretAllowedForHost(name, host) {
 			if p.requestContainsPlaceholder(req, secret.Placeholder) {
 				p.logger.Debug("secret leak detected", "name", name, "host", host)
-				if p.emitter != nil {
-					_ = p.emitter.Emit(logging.EventKeyInjection,
-						fmt.Sprintf("secret %q leak blocked for %s", name, host),
-						"secret_injector",
-						nil,
-						&logging.KeyInjectionData{
-							SecretName: name,
-							Host:       host,
-							Action:     "leak_blocked",
-						})
-				}
 				return nil, api.ErrSecretLeak
 			}
 			p.logger.Debug("secret skipped for host", "name", name, "host", host)
-			if p.emitter != nil {
-				_ = p.emitter.Emit(logging.EventKeyInjection,
-					fmt.Sprintf("secret %q skipped for %s", name, host),
-					"secret_injector",
-					nil,
-					&logging.KeyInjectionData{
-						SecretName: name,
-						Host:       host,
-						Action:     "skipped",
-					})
-			}
+			skipped = append(skipped, name)
 			continue
 		}
 		p.replaceInRequest(req, secret.Placeholder, secret.Value)
 		p.logger.Debug("secret injected", "name", name, "host", host)
-		if p.emitter != nil {
-			_ = p.emitter.Emit(logging.EventKeyInjection,
-				fmt.Sprintf("secret %q injected for %s", name, host),
-				"secret_injector",
-				nil,
-				&logging.KeyInjectionData{
-					SecretName: name,
-					Host:       host,
-					Action:     "injected",
-				})
-		}
+		injected = append(injected, name)
 	}
 
-	return req, nil
+	// Determine overall action and reason
+	action := "no_op"
+	reason := fmt.Sprintf("no secrets applicable for %s", host)
+
+	if len(injected) > 0 {
+		action = "injected"
+		reason = fmt.Sprintf("%d secret(s) injected for %s", len(injected), host)
+	} else if len(skipped) > 0 {
+		action = "skipped"
+		reason = fmt.Sprintf("%d secret(s) skipped for %s", len(skipped), host)
+	}
+
+	return &RequestDecision{
+		Request: req,
+		Action:  action,
+		Reason:  reason,
+	}, nil
 }
 
 func (p *secretInjectorPlugin) isSecretAllowedForHost(secretName, host string) bool {

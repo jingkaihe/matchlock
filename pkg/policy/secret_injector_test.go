@@ -38,14 +38,14 @@ func (s *captureSink) Close() error {
 }
 
 func TestSecretInjectorPlugin_Name(t *testing.T) {
-	p := NewSecretInjectorPlugin(nil, nil, nil)
+	p := NewSecretInjectorPlugin(nil, nil)
 	assert.Equal(t, "secret_injector", p.Name())
 }
 
 func TestSecretInjectorPlugin_PlaceholderGeneration(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {Value: "sk-secret-123"},
-	}, nil, nil)
+	}, nil)
 
 	placeholders := p.GetPlaceholders()
 	assert.Len(t, placeholders, 1)
@@ -56,7 +56,7 @@ func TestSecretInjectorPlugin_PlaceholderGeneration(t *testing.T) {
 func TestSecretInjectorPlugin_PlaceholderPreserved(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {Value: "sk-secret-123", Placeholder: "SANDBOX_SECRET_custom"},
-	}, nil, nil)
+	}, nil)
 
 	placeholders := p.GetPlaceholders()
 	assert.Equal(t, "SANDBOX_SECRET_custom", placeholders["API_KEY"])
@@ -66,7 +66,7 @@ func TestSecretInjectorPlugin_MultiplePlaceholders(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"KEY1": {Value: "val1"},
 		"KEY2": {Value: "val2"},
-	}, nil, nil)
+	}, nil)
 
 	placeholders := p.GetPlaceholders()
 	assert.Len(t, placeholders, 2)
@@ -78,7 +78,7 @@ func TestSecretInjectorPlugin_ReplacementInHeaders(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -88,9 +88,9 @@ func TestSecretInjectorPlugin_ReplacementInHeaders(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
+	assert.Equal(t, "Bearer real-secret", decision.Request.Header.Get("Authorization"))
 }
 
 func TestSecretInjectorPlugin_ReplacementInURL(t *testing.T) {
@@ -99,7 +99,7 @@ func TestSecretInjectorPlugin_ReplacementInURL(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -109,9 +109,9 @@ func TestSecretInjectorPlugin_ReplacementInURL(t *testing.T) {
 		},
 	}
 
-	result, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
-	assert.Contains(t, result.URL.RawQuery, "real-secret")
+	assert.Contains(t, decision.Request.URL.RawQuery, "real-secret")
 }
 
 func TestSecretInjectorPlugin_NoBodyReplacement(t *testing.T) {
@@ -120,7 +120,7 @@ func TestSecretInjectorPlugin_NoBodyReplacement(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	body := `{"key":"` + placeholder + `"}`
@@ -130,10 +130,10 @@ func TestSecretInjectorPlugin_NoBodyReplacement(t *testing.T) {
 		Body:   io.NopCloser(strings.NewReader(body)),
 	}
 
-	result, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
 
-	got, _ := io.ReadAll(result.Body)
+	got, _ := io.ReadAll(decision.Request.Body)
 	assert.NotContains(t, string(got), "real-secret")
 	assert.Contains(t, string(got), placeholder)
 }
@@ -144,7 +144,7 @@ func TestSecretInjectorPlugin_LeakDetection(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -164,7 +164,7 @@ func TestSecretInjectorPlugin_NoSecretForHost(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	req := &http.Request{
 		Header: http.Header{
@@ -173,9 +173,9 @@ func TestSecretInjectorPlugin_NoSecretForHost(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "other.com")
+	decision, err := p.TransformRequest(req, "other.com")
 	require.NoError(t, err)
-	assert.Equal(t, "normal-value", result.Header.Get("X-Custom"))
+	assert.Equal(t, "normal-value", decision.Request.Header.Get("X-Custom"))
 }
 
 func TestSecretInjectorPlugin_EmptyHostsMeansAll(t *testing.T) {
@@ -184,7 +184,7 @@ func TestSecretInjectorPlugin_EmptyHostsMeansAll(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -194,9 +194,9 @@ func TestSecretInjectorPlugin_EmptyHostsMeansAll(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "any-host.com")
+	decision, err := p.TransformRequest(req, "any-host.com")
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
+	assert.Equal(t, "Bearer real-secret", decision.Request.Header.Get("Authorization"))
 }
 
 func TestSecretInjectorPlugin_GlobHostMatch(t *testing.T) {
@@ -205,7 +205,7 @@ func TestSecretInjectorPlugin_GlobHostMatch(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"*.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -215,9 +215,9 @@ func TestSecretInjectorPlugin_GlobHostMatch(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
+	assert.Equal(t, "Bearer real-secret", decision.Request.Header.Get("Authorization"))
 }
 
 func TestSecretInjectorPlugin_HostWithPort(t *testing.T) {
@@ -226,7 +226,7 @@ func TestSecretInjectorPlugin_HostWithPort(t *testing.T) {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, nil)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -236,9 +236,9 @@ func TestSecretInjectorPlugin_HostWithPort(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	result, err := p.TransformRequest(req, "api.example.com:443")
+	decision, err := p.TransformRequest(req, "api.example.com:443")
 	require.NoError(t, err)
-	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
+	assert.Equal(t, "Bearer real-secret", decision.Request.Header.Get("Authorization"))
 }
 
 func TestSecretInjectorPlugin_FromConfig(t *testing.T) {
@@ -251,7 +251,7 @@ func TestSecretInjectorPlugin_FromConfig(t *testing.T) {
 		}
 	}`)
 
-	plugin, err := NewSecretInjectorPluginFromConfig(raw, nil, nil)
+	plugin, err := NewSecretInjectorPluginFromConfig(raw, nil)
 	require.NoError(t, err)
 
 	pp, ok := plugin.(PlaceholderProvider)
@@ -262,22 +262,19 @@ func TestSecretInjectorPlugin_FromConfig(t *testing.T) {
 }
 
 func TestSecretInjectorPlugin_FromConfig_Invalid(t *testing.T) {
-	_, err := NewSecretInjectorPluginFromConfig(json.RawMessage(`{invalid}`), nil, nil)
+	_, err := NewSecretInjectorPluginFromConfig(json.RawMessage(`{invalid}`), nil)
 	assert.Error(t, err)
 }
 
-func TestSecretInjectorPlugin_EmitsInjectedEvent(t *testing.T) {
-	capture := &captureSink{}
-	emitter := logging.NewEmitter(logging.EmitterConfig{
-		RunID: "test-run", AgentSystem: "test",
-	}, capture)
+// --- New Decision Struct Tests ---
 
+func TestSecretInjectorPlugin_Decision_Injected(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, emitter)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -287,35 +284,21 @@ func TestSecretInjectorPlugin_EmitsInjectedEvent(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	_, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
-
-	require.Len(t, capture.events, 1)
-	event := capture.events[0]
-	assert.Equal(t, "key_injection", event.EventType)
-	assert.Equal(t, "secret_injector", event.Plugin)
-	assert.Contains(t, event.Summary, "API_KEY")
-	assert.NotContains(t, event.Summary, "real-secret")
-
-	var data logging.KeyInjectionData
-	require.NoError(t, json.Unmarshal(event.Data, &data))
-	assert.Equal(t, "API_KEY", data.SecretName)
-	assert.Equal(t, "api.example.com", data.Host)
-	assert.Equal(t, "injected", data.Action)
+	assert.Equal(t, "injected", decision.Action)
+	assert.Contains(t, decision.Reason, "1 secret(s) injected")
+	assert.NotNil(t, decision.Request)
+	assert.Equal(t, "Bearer real-secret", decision.Request.Header.Get("Authorization"))
 }
 
-func TestSecretInjectorPlugin_EmitsSkippedEvent(t *testing.T) {
-	capture := &captureSink{}
-	emitter := logging.NewEmitter(logging.EmitterConfig{
-		RunID: "test-run", AgentSystem: "test",
-	}, capture)
-
+func TestSecretInjectorPlugin_Decision_Skipped(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, emitter)
+	}, nil)
 
 	req := &http.Request{
 		Header: http.Header{
@@ -324,33 +307,34 @@ func TestSecretInjectorPlugin_EmitsSkippedEvent(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	_, err := p.TransformRequest(req, "other.com")
+	decision, err := p.TransformRequest(req, "other.com")
 	require.NoError(t, err)
-
-	require.Len(t, capture.events, 1)
-	event := capture.events[0]
-	assert.Equal(t, "key_injection", event.EventType)
-	assert.Equal(t, "secret_injector", event.Plugin)
-
-	var data logging.KeyInjectionData
-	require.NoError(t, json.Unmarshal(event.Data, &data))
-	assert.Equal(t, "API_KEY", data.SecretName)
-	assert.Equal(t, "other.com", data.Host)
-	assert.Equal(t, "skipped", data.Action)
+	assert.Equal(t, "skipped", decision.Action)
+	assert.Contains(t, decision.Reason, "1 secret(s) skipped")
+	assert.NotNil(t, decision.Request)
 }
 
-func TestSecretInjectorPlugin_EmitsLeakBlockedEvent(t *testing.T) {
-	capture := &captureSink{}
-	emitter := logging.NewEmitter(logging.EmitterConfig{
-		RunID: "test-run", AgentSystem: "test",
-	}, capture)
+func TestSecretInjectorPlugin_Decision_NoOp(t *testing.T) {
+	p := NewSecretInjectorPlugin(map[string]api.Secret{}, nil)
 
+	req := &http.Request{
+		Header: http.Header{},
+		URL:    &url.URL{},
+	}
+
+	decision, err := p.TransformRequest(req, "any-host.com")
+	require.NoError(t, err)
+	assert.Equal(t, "no_op", decision.Action)
+	assert.NotNil(t, decision.Request)
+}
+
+func TestSecretInjectorPlugin_Decision_LeakReturnsError(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {
 			Value: "real-secret",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, emitter)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -360,55 +344,18 @@ func TestSecretInjectorPlugin_EmitsLeakBlockedEvent(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	_, err := p.TransformRequest(req, "evil.com")
+	decision, err := p.TransformRequest(req, "evil.com")
 	require.ErrorIs(t, err, api.ErrSecretLeak)
-
-	require.Len(t, capture.events, 1)
-	event := capture.events[0]
-	assert.Equal(t, "key_injection", event.EventType)
-	assert.Equal(t, "secret_injector", event.Plugin)
-
-	var data logging.KeyInjectionData
-	require.NoError(t, json.Unmarshal(event.Data, &data))
-	assert.Equal(t, "API_KEY", data.SecretName)
-	assert.Equal(t, "evil.com", data.Host)
-	assert.Equal(t, "leak_blocked", data.Action)
+	assert.Nil(t, decision)
 }
 
-func TestSecretInjectorPlugin_NilEmitterNoEvents(t *testing.T) {
-	p := NewSecretInjectorPlugin(map[string]api.Secret{
-		"API_KEY": {
-			Value: "real-secret",
-			Hosts: []string{"api.example.com"},
-		},
-	}, nil, nil)
-
-	placeholder := p.GetPlaceholders()["API_KEY"]
-	req := &http.Request{
-		Header: http.Header{
-			"Authorization": []string{"Bearer " + placeholder},
-		},
-		URL: &url.URL{},
-	}
-
-	// Should work without panicking when emitter is nil
-	result, err := p.TransformRequest(req, "api.example.com")
-	require.NoError(t, err)
-	assert.Equal(t, "Bearer real-secret", result.Header.Get("Authorization"))
-}
-
-func TestSecretInjectorPlugin_NoSecretValuesInEvents(t *testing.T) {
-	capture := &captureSink{}
-	emitter := logging.NewEmitter(logging.EmitterConfig{
-		RunID: "test-run", AgentSystem: "test",
-	}, capture)
-
+func TestSecretInjectorPlugin_Decision_NoSecretValues(t *testing.T) {
 	p := NewSecretInjectorPlugin(map[string]api.Secret{
 		"API_KEY": {
 			Value: "super-secret-value-12345",
 			Hosts: []string{"api.example.com"},
 		},
-	}, nil, emitter)
+	}, nil)
 
 	placeholder := p.GetPlaceholders()["API_KEY"]
 	req := &http.Request{
@@ -418,13 +365,8 @@ func TestSecretInjectorPlugin_NoSecretValuesInEvents(t *testing.T) {
 		URL: &url.URL{},
 	}
 
-	_, err := p.TransformRequest(req, "api.example.com")
+	decision, err := p.TransformRequest(req, "api.example.com")
 	require.NoError(t, err)
-
-	require.Len(t, capture.events, 1)
-	event := capture.events[0]
-	// Check summary does not contain secret value
-	assert.NotContains(t, event.Summary, "super-secret-value-12345")
-	// Check data does not contain secret value
-	assert.NotContains(t, string(event.Data), "super-secret-value-12345")
+	assert.NotContains(t, decision.Reason, "super-secret-value-12345")
+	assert.NotContains(t, decision.Reason, placeholder)
 }
