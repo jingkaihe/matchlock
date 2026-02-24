@@ -14,6 +14,7 @@ Guest Request
   v
 [Engine.IsHostAllowed]
   |-- calls GatePlugin.Gate() -> *GateVerdict
+  |   (host_filter, budget_gate -- both already return *GateVerdict)
   |-- Engine emits gate_decision event        <-- TARGET PATTERN
   |
   v
@@ -52,6 +53,7 @@ Guest Request
   v
 [Engine.IsHostAllowed]
   |-- calls GatePlugin.Gate() -> *GateVerdict
+  |   (host_filter, budget_gate -- both already done, no changes needed)
   |-- Engine emits gate_decision event        (unchanged)
   |
   v
@@ -144,12 +146,12 @@ follows the same structure:
 
 Each decision struct wraps the original return type plus metadata:
 
-| Phase | Original Return | New Return | Wrapped Field |
-|-------|----------------|------------|---------------|
-| Gate | `*GateVerdict` | `*GateVerdict` | (already structured) |
-| Route | `*RouteDirective` | `*RouteDecision` | `.Directive` |
-| Request | `*http.Request` | `*RequestDecision` | `.Request` |
-| Response | `*http.Response` | `*ResponseDecision` | `.Response` |
+| Phase | Original Return | New Return | Wrapped Field | Plugins |
+|-------|----------------|------------|---------------|---------|
+| Gate | `*GateVerdict` | `*GateVerdict` | (already structured) | host_filter, budget_gate (no changes) |
+| Route | `*RouteDirective` | `*RouteDecision` | `.Directive` | local_model_router |
+| Request | `*http.Request` | `*RequestDecision` | `.Request` | secret_injector, local_model_router |
+| Response | `*http.Response` | `*ResponseDecision` | `.Response` | usage_logger |
 
 ### 3. Engine Owns the Emitter
 
