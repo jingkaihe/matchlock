@@ -360,6 +360,12 @@ func (n *NFTablesNAT) Setup() error {
 		Priority: nftables.ChainPriorityFilter,
 	})
 
+	// Docker's filter FORWARD chain has policy drop and only accepts Docker
+	// bridge traffic. Insert accept rules for our TAP interface into Docker's
+	// DOCKER-USER chain (which Docker provides for exactly this purpose) so
+	// forwarded traffic (e.g. DNS UDP) isn't dropped by Docker's policy.
+	n.ensureDockerUserRules(conn)
+
 	conn.AddRule(&nftables.Rule{
 		Table: n.table,
 		Chain: postChain,
@@ -415,6 +421,119 @@ func (n *NFTablesNAT) Setup() error {
 	return nil
 }
 
+// ensureDockerUserRules inserts accept rules for the TAP interface into
+// Docker's DOCKER-USER chain if it exists. Docker's filter FORWARD chain
+// has policy drop and only accepts traffic from Docker bridges, which blocks
+// forwarded traffic from matchlock TAP interfaces (e.g. DNS UDP to 8.8.8.8).
+// DOCKER-USER is the official extension point for user-defined forwarding rules.
+// Rules include a comment so they can be identified and cleaned up later.
+func (n *NFTablesNAT) ensureDockerUserRules(conn *nftables.Conn) {
+	tables, err := conn.ListTables()
+	if err != nil {
+		return
+	}
+
+	var filterTable *nftables.Table
+	for _, t := range tables {
+		if t.Name == "filter" && t.Family == nftables.TableFamilyIPv4 {
+			filterTable = t
+			break
+		}
+	}
+	if filterTable == nil {
+		return
+	}
+
+	chains, err := conn.ListChainsOfTableFamily(nftables.TableFamilyIPv4)
+	if err != nil {
+		return
+	}
+
+	var dockerUserChain *nftables.Chain
+	for _, c := range chains {
+		if c.Table.Name == "filter" && c.Name == "DOCKER-USER" {
+			dockerUserChain = c
+			break
+		}
+	}
+	if dockerUserChain == nil {
+		return
+	}
+
+	// Insert rules at the beginning of DOCKER-USER (before the return rule).
+	// Use UserData to tag rules for cleanup.
+	tag := []byte("matchlock:" + n.tapInterface)
+
+	conn.InsertRule(&nftables.Rule{
+		Table:    filterTable,
+		Chain:    dockerUserChain,
+		UserData: tag,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(n.tapInterface)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+	conn.InsertRule(&nftables.Rule{
+		Table:    filterTable,
+		Chain:    dockerUserChain,
+		UserData: tag,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ifname(n.tapInterface)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+}
+
+// cleanupDockerUserRules removes any rules tagged with our TAP interface
+// from Docker's DOCKER-USER chain.
+func (n *NFTablesNAT) cleanupDockerUserRules(conn *nftables.Conn) {
+	tables, err := conn.ListTables()
+	if err != nil {
+		return
+	}
+
+	var filterTable *nftables.Table
+	for _, t := range tables {
+		if t.Name == "filter" && t.Family == nftables.TableFamilyIPv4 {
+			filterTable = t
+			break
+		}
+	}
+	if filterTable == nil {
+		return
+	}
+
+	chains, err := conn.ListChainsOfTableFamily(nftables.TableFamilyIPv4)
+	if err != nil {
+		return
+	}
+
+	var dockerUserChain *nftables.Chain
+	for _, c := range chains {
+		if c.Table.Name == "filter" && c.Name == "DOCKER-USER" {
+			dockerUserChain = c
+			break
+		}
+	}
+	if dockerUserChain == nil {
+		return
+	}
+
+	rules, err := conn.GetRules(filterTable, dockerUserChain)
+	if err != nil {
+		return
+	}
+
+	tag := []byte("matchlock:" + n.tapInterface)
+	for _, rule := range rules {
+		if string(rule.UserData) == string(tag) {
+			conn.DelRule(rule)
+		}
+	}
+}
+
 func (n *NFTablesNAT) Cleanup() error {
 	if n.conn == nil {
 		conn, err := nftables.New()
@@ -423,6 +542,9 @@ func (n *NFTablesNAT) Cleanup() error {
 		}
 		n.conn = conn
 	}
+
+	// Remove DOCKER-USER rules before deleting our table
+	n.cleanupDockerUserRules(n.conn)
 
 	tables, err := n.conn.ListTables()
 	if err != nil {
