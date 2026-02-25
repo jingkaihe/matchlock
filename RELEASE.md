@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## 0.1.24
 
 * Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
 * Added Go SDK callback-based network interception hooks.
