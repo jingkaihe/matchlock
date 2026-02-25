@@ -1,19 +1,19 @@
 # Python SDK Network Interception Example
 
-This mirrors the Go interception demo with a **callback-based** `after` hook.
+This mirrors the Go network interception demo: it streams a response from the Anthropic API, but injects the real API key with a host-side `before` hook so the secret never enters the VM.
 
-It shows one callback that:
+The callback:
 
-- runs only for `host=httpbin.org` and `path=/response-headers`
-- removes response header `X-Upstream`
-- adds response header `X-Intercepted: callback`
-- fully replaces the response body with `{"msg":"from-callback"}`
+- runs for outbound requests to `api.anthropic.com`
+- clones request headers and injects `X-Api-Key` from `ANTHROPIC_API_KEY`
+- lets the in-VM script use a placeholder API key value
 
 ## Run
 
 From the repository root:
 
 ```bash
+export ANTHROPIC_API_KEY=sk-ant-...
 uv run examples/python/network_interception/main.py
 ```
 
@@ -26,10 +26,8 @@ export MATCHLOCK_BIN=/path/to/matchlock
 
 ## What To Expect
 
-The command output should include:
+The output should be identical to the basic Anthropic example:
 
-- response body `{"msg":"from-callback"}`
-- header `X-Intercepted: callback`
-- final line: `OK: callback hook intercepted and mutated the response`
-
-The script raises an error if those expectations are not met.
+- `Python 3.12.x` version line
+- A streamed explanation of TCP from Claude
+- A final log line with exit code and duration

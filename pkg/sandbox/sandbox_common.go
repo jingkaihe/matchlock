@@ -1,14 +1,19 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"strings"
 	"time"
 
+	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
+	"github.com/jingkaihe/matchlock/pkg/vsock"
 )
 
 func buildVFSProviders(config *api.Config) map[string]vfs.Provider {
@@ -80,6 +85,58 @@ func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, ca
 	}
 
 	return machine.Exec(ctx, command, opts)
+}
+
+func readFileTo(ctx context.Context, machine vm.Machine, path string, w io.Writer) (int64, error) {
+	dialer, ok := machine.(vm.VsockDialer)
+	if !ok {
+		data, err := machine.ReadFile(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		return io.Copy(w, bytes.NewReader(data))
+	}
+
+	conn, err := dialer.DialVsock(vsock.ServicePortExec)
+	if err != nil {
+		return 0, err
+	}
+
+	counting := &countingWriter{w: w}
+	var stderr bytes.Buffer
+	quotedPath := shellSingleQuote(path)
+	cmd := "if [ ! -f " + quotedPath + " ]; then echo 'read_file only supports regular files' >&2; exit 1; fi; cat < " + quotedPath
+	result, err := vsock.ExecPipe(ctx, conn, cmd, &api.ExecOptions{
+		Stdout: counting,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return counting.n, err
+	}
+	if result.ExitCode != 0 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return counting.n, errx.With(vsock.ErrFileRemote, ": %s", msg)
+		}
+		return counting.n, errx.With(vsock.ErrFileRemote, ": exit code %d", result.ExitCode)
+	}
+
+	return counting.n, nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func flushGuestDisks(machine vm.Machine) {

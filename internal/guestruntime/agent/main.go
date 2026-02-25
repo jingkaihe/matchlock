@@ -29,6 +29,7 @@ import (
 
 const (
 	cancelGracePeriod = 5 * time.Second
+	maxReadFileBytes  = 16 * 1024 * 1024
 
 	AF_VSOCK        = 40
 	VMADDR_CID_HOST = 2
@@ -879,9 +880,34 @@ func handleReadFile(fd int, data []byte) {
 		return
 	}
 
-	content, err := os.ReadFile(req.Path)
+	file, err := os.Open(req.Path)
 	if err != nil {
 		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+	if !info.Mode().IsRegular() {
+		sendFileResponse(fd, &FileResponse{Error: fmt.Sprintf("read_file only supports regular files: %s", req.Path)})
+		return
+	}
+	if info.Size() > maxReadFileBytes {
+		sendFileResponse(fd, &FileResponse{Error: fmt.Sprintf("read_file exceeds %d bytes: %s", maxReadFileBytes, req.Path)})
+		return
+	}
+
+	content, err := io.ReadAll(io.LimitReader(file, maxReadFileBytes+1))
+	if err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+	if int64(len(content)) > maxReadFileBytes {
+		sendFileResponse(fd, &FileResponse{Error: fmt.Sprintf("read_file exceeds %d bytes: %s", maxReadFileBytes, req.Path)})
 		return
 	}
 

@@ -497,12 +497,7 @@ func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 }
 
 func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
-	data, err := s.machine.ReadFile(ctx, path)
-	if err != nil {
-		return 0, err
-	}
-	n, err := w.Write(data)
-	return int64(n), err
+	return readFileTo(ctx, s.machine, path, w)
 }
 
 func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {

@@ -1,46 +1,66 @@
 import { Client, type NetworkHookRequest, type NetworkHookResult, Sandbox } from "matchlock-sdk";
 
-function afterHook(req: NetworkHookRequest): NetworkHookResult | null {
-  // This callback runs only when host/path/phase prefilters match.
-  if (req.statusCode !== 200) {
-    return null;
-  }
+const SCRIPT = `# /// script
+# requires-python = ">=3.12"
+# dependencies = ["anthropic"]
+# ///
+import anthropic
 
+client = anthropic.Anthropic(api_key="placeholder")
+with client.messages.stream(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=1000,
+    messages=[{"role": "user", "content": "Explain TCP to me"}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+print()
+`;
+
+function injectAnthropicAPIKey(req: NetworkHookRequest, apiKey: string): NetworkHookResult {
+  const headers: Record<string, string[]> = { ...(req.requestHeaders ?? {}) };
+  headers["X-Api-Key"] = [apiKey];
   return {
     action: "mutate",
-    response: {
-      headers: { "X-Intercepted": ["callback"] },
-      setBody: Buffer.from('{"msg":"from-callback"}'),
-    },
+    request: { headers },
   };
 }
 
-function assertExpectedOutput(output: string): void {
-  const lowered = output.toLowerCase();
-  if (!output.includes('{"msg":"from-callback"}')) {
-    throw new Error("expected callback to replace response body");
+function ensureSuccess(
+  step: string,
+  result: { exitCode: number; stdout: string; stderr: string },
+): void {
+  if (result.exitCode === 0) {
+    return;
   }
-  if (lowered.includes("x-upstream: 1")) {
-    throw new Error('expected header "X-Upstream" to be removed');
-  }
-  if (!lowered.includes("x-intercepted: callback")) {
-    throw new Error('expected header "X-Intercepted: callback"');
-  }
+  throw new Error(
+    `${step} failed (exit=${result.exitCode})\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
 }
 
 async function main(): Promise<void> {
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? "";
   const client = new Client();
 
-  const sandbox = new Sandbox("alpine:latest")
-    .allowHost("httpbin.org")
+  const sandbox = new Sandbox("python:3.12-alpine")
+    .withWorkspace("/workspace")
+    .mountMemory("/workspace")
+    .allowHost(
+      "dl-cdn.alpinelinux.org",
+      "files.pythonhosted.org",
+      "pypi.org",
+      "astral.sh",
+      "github.com",
+      "objects.githubusercontent.com",
+      "api.anthropic.com",
+    )
     .withNetworkInterception({
       rules: [
         {
-          name: "dynamic-response-callback",
-          phase: "after",
-          hosts: ["httpbin.org"],
-          path: "/response-headers",
-          hook: async (request) => afterHook(request),
+          name: "inject-anthropic-api-key",
+          phase: "before",
+          hosts: ["api.anthropic.com"],
+          hook: async (request) => injectAnthropicAPIKey(request, apiKey),
         },
       ],
     });
@@ -49,14 +69,20 @@ async function main(): Promise<void> {
     const vmId = await client.launch(sandbox);
     console.log(`sandbox ready vm=${vmId}`);
 
-    const result = await client.exec(
-      'sh -c \'wget -S -O - "http://httpbin.org/response-headers?X-Upstream=1&body=foo" 2>&1\'',
-    );
-    const output = `${result.stdout}${result.stderr}`;
-    process.stdout.write(output);
+    const version = await client.exec("python3 --version");
+    process.stdout.write(version.stdout);
 
-    assertExpectedOutput(output);
-    console.log("OK: callback hook intercepted and mutated the response");
+    const install = await client.exec("pip install --quiet uv");
+    ensureSuccess("pip install --quiet uv", install);
+
+    await client.writeFile("/workspace/ask.py", SCRIPT);
+
+    const stream = await client.execStream("uv run /workspace/ask.py", {
+      stdout: process.stdout,
+      stderr: process.stderr,
+    });
+    process.stdout.write("\n");
+    console.log(`done exit_code=${stream.exitCode} duration_ms=${stream.durationMs}`);
   } finally {
     await client.close();
     await client.remove();
