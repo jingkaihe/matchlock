@@ -17,6 +17,7 @@ require (
 	golang.org/x/sys v0.40.0
 	golang.org/x/term v0.39.0
 	gvisor.dev/gvisor v0.0.0-20260202191832-0bd9aedd142c
+	modernc.org/sqlite v1.45.0
 )
 
 require (
@@ -63,5 +64,4 @@ require (
 	modernc.org/libc v1.67.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.45.0 // indirect
 )
