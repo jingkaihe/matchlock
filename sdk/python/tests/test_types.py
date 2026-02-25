@@ -8,6 +8,18 @@ from matchlock.types import (
     FileInfo,
     MatchlockError,
     MountConfig,
+    NetworkBodyTransform,
+    NetworkHookRequest,
+    NetworkHookRequestMutation,
+    NetworkHookResponseMutation,
+    NetworkHookResult,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
+    NETWORK_HOOK_ACTION_ALLOW,
+    NETWORK_HOOK_ACTION_BLOCK,
+    NETWORK_HOOK_ACTION_MUTATE,
+    NETWORK_HOOK_PHASE_AFTER,
+    NETWORK_HOOK_PHASE_BEFORE,
     RPCError,
     Secret,
     VFSActionRequest,
@@ -89,8 +101,10 @@ class TestCreateOptions:
         assert opts.block_private_ips is False
         assert opts.block_private_ips_set is False
         assert opts.no_network is False
+        assert opts.force_interception is False
         assert opts.mounts == {}
         assert opts.env == {}
+        assert opts.network_interception is None
         assert opts.vfs_interception is None
         assert opts.secrets == []
         assert opts.workspace == ""
@@ -241,6 +255,141 @@ class TestVFSInterceptionConfig:
         assert c.to_dict() == {"emit_events": True}
 
 
+class TestNetworkBodyTransform:
+    def test_to_dict_minimal(self):
+        t = NetworkBodyTransform(find="foo")
+        assert t.to_dict() == {"find": "foo"}
+
+    def test_to_dict_full(self):
+        t = NetworkBodyTransform(find="foo", replace="bar")
+        assert t.to_dict() == {"find": "foo", "replace": "bar"}
+
+
+class TestNetworkHookRule:
+    def test_to_dict_minimal(self):
+        r = NetworkHookRule(action="allow")
+        assert r.to_dict() == {"action": "allow"}
+
+    def test_to_dict_full(self):
+        r = NetworkHookRule(
+            name="rule-1",
+            phase=NETWORK_HOOK_PHASE_AFTER,
+            hosts=["api.example.com"],
+            methods=["POST"],
+            path="/v1/*",
+            action=NETWORK_HOOK_ACTION_MUTATE,
+            set_headers={"X-Test": "1"},
+            delete_headers=["X-Remove"],
+            set_query={"trace": "abc"},
+            delete_query=["drop"],
+            rewrite_path="/v2/messages",
+            set_response_headers={"X-Intercepted": "1"},
+            delete_response_headers=["Server"],
+            body_replacements=[NetworkBodyTransform(find="foo", replace="bar")],
+            timeout_ms=1200,
+        )
+        assert r.to_dict() == {
+            "name": "rule-1",
+            "phase": "after",
+            "hosts": ["api.example.com"],
+            "methods": ["POST"],
+            "path": "/v1/*",
+            "action": "mutate",
+            "set_headers": {"X-Test": "1"},
+            "delete_headers": ["X-Remove"],
+            "set_query": {"trace": "abc"},
+            "delete_query": ["drop"],
+            "rewrite_path": "/v2/messages",
+            "set_response_headers": {"X-Intercepted": "1"},
+            "delete_response_headers": ["Server"],
+            "body_replacements": [{"find": "foo", "replace": "bar"}],
+            "timeout_ms": 1200,
+        }
+
+    def test_to_dict_ignores_hook(self):
+        r = NetworkHookRule(
+            phase="after",
+            action="allow",
+            hosts=["api.example.com"],
+            hook=lambda req: None,
+        )
+        assert r.to_dict() == {
+            "phase": "after",
+            "action": "allow",
+            "hosts": ["api.example.com"],
+        }
+
+
+class TestNetworkInterceptionConfig:
+    def test_to_dict_empty(self):
+        cfg = NetworkInterceptionConfig()
+        assert cfg.to_dict() == {}
+
+    def test_to_dict_with_rules(self):
+        cfg = NetworkInterceptionConfig(
+            rules=[
+                NetworkHookRule(
+                    phase=NETWORK_HOOK_PHASE_BEFORE,
+                    action=NETWORK_HOOK_ACTION_BLOCK,
+                    hosts=["bad.example.com"],
+                )
+            ]
+        )
+        assert cfg.to_dict() == {
+            "rules": [
+                {
+                    "phase": "before",
+                    "action": "block",
+                    "hosts": ["bad.example.com"],
+                }
+            ]
+        }
+
+
+class TestNetworkHookCallbackTypes:
+    def test_request_fields(self):
+        req = NetworkHookRequest(
+            phase="after",
+            host="api.example.com",
+            method="GET",
+            path="/v1",
+            query={"q": "1"},
+            request_headers={"X-Test": ["1"]},
+            status_code=200,
+            response_headers={"Content-Type": ["application/json"]},
+            is_sse=False,
+        )
+        assert req.phase == "after"
+        assert req.host == "api.example.com"
+        assert req.method == "GET"
+        assert req.path == "/v1"
+        assert req.query == {"q": "1"}
+        assert req.request_headers == {"X-Test": ["1"]}
+        assert req.status_code == 200
+        assert req.response_headers == {"Content-Type": ["application/json"]}
+        assert req.is_sse is False
+
+    def test_result_fields(self):
+        result = NetworkHookResult(
+            action="mutate",
+            request=NetworkHookRequestMutation(
+                headers={"X-Test": ["1"]},
+                query={"trace": "abc"},
+                path="/v2",
+            ),
+            response=NetworkHookResponseMutation(
+                headers={"X-Intercepted": ["true"]},
+                body_replacements=[NetworkBodyTransform(find="foo", replace="bar")],
+                set_body=b"payload",
+            ),
+        )
+        assert result.action == "mutate"
+        assert result.request is not None
+        assert result.request.path == "/v2"
+        assert result.response is not None
+        assert result.response.set_body == b"payload"
+
+
 class TestVFSHookConstants:
     def test_phase_constants(self):
         assert VFS_HOOK_PHASE_BEFORE == "before"
@@ -253,6 +402,17 @@ class TestVFSHookConstants:
     def test_action_constants(self):
         assert VFS_HOOK_ACTION_ALLOW == "allow"
         assert VFS_HOOK_ACTION_BLOCK == "block"
+
+
+class TestNetworkHookConstants:
+    def test_phase_constants(self):
+        assert NETWORK_HOOK_PHASE_BEFORE == "before"
+        assert NETWORK_HOOK_PHASE_AFTER == "after"
+
+    def test_action_constants(self):
+        assert NETWORK_HOOK_ACTION_ALLOW == "allow"
+        assert NETWORK_HOOK_ACTION_BLOCK == "block"
+        assert NETWORK_HOOK_ACTION_MUTATE == "mutate"
 
 
 class TestVFSMutateRequest:

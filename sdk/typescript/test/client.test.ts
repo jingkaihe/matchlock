@@ -88,6 +88,140 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("sends create payload with network interception", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest")
+        .withNetworkInterception({
+          rules: [
+            {
+              phase: "after",
+              action: "mutate",
+              hosts: ["api.example.com"],
+              path: "/v1/*",
+              setResponseHeaders: { "X-Intercepted": "true" },
+              bodyReplacements: [{ find: "foo", replace: "bar" }],
+              timeoutMs: 1500,
+            },
+          ],
+        })
+        .options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.network).toEqual({
+      allowed_hosts: [],
+      block_private_ips: true,
+      intercept: true,
+      interception: {
+        rules: [
+          {
+            phase: "after",
+            action: "mutate",
+            hosts: ["api.example.com"],
+            path: "/v1/*",
+            set_response_headers: { "X-Intercepted": "true" },
+            body_replacements: [{ find: "foo", replace: "bar" }],
+            timeout_ms: 1500,
+          },
+        ],
+      },
+    });
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-hooks" } });
+    await expect(createPromise).resolves.toBe("vm-net-hooks");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("sends create payload with forced interception only", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest").withNetworkInterception().options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.network).toEqual({
+      allowed_hosts: [],
+      block_private_ips: true,
+      intercept: true,
+    });
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-force" } });
+    await expect(createPromise).resolves.toBe("vm-net-force");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("sends create payload with callback-based network interception rule", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest")
+        .withNetworkInterception({
+          rules: [
+            {
+              name: "callback-after",
+              phase: "after",
+              hosts: ["api.example.com"],
+              path: "/v1/*",
+              timeoutMs: 1500,
+              hook: async () => undefined,
+            },
+          ],
+        })
+        .options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    const network = request.params?.network as Record<string, unknown>;
+    expect(network.intercept).toBe(true);
+    const interception = network.interception as Record<string, unknown>;
+    expect(typeof interception.callback_socket).toBe("string");
+    expect(String(interception.callback_socket)).not.toBe("");
+    const rules = interception.rules as Array<Record<string, unknown>>;
+    expect(rules).toHaveLength(1);
+    expect(typeof rules[0].callback_id).toBe("string");
+    expect(String(rules[0].callback_id)).not.toBe("");
+
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-net-callback" },
+    });
+    await expect(createPromise).resolves.toBe("vm-net-callback");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("rejects callback network interception rule with non-allow action", async () => {
+    const client = new Client();
+    await expect(
+      client.create(
+        new Sandbox("alpine:latest")
+          .withNetworkInterception({
+            rules: [
+              {
+                name: "bad-callback",
+                phase: "after",
+                action: "block",
+                hook: async () => undefined,
+              },
+            ],
+          })
+          .options(),
+      ),
+    ).rejects.toThrow("callback hooks cannot set action");
+  });
+
   it("respects explicit block_private_ips=false", async () => {
     const fake = installFakeProcess();
     const client = new Client();
@@ -147,7 +281,9 @@ describe("Client", () => {
         noNetwork: true,
         allowedHosts: ["api.openai.com"],
       }),
-    ).rejects.toThrow("no network cannot be combined with allowed hosts or secrets");
+    ).rejects.toThrow(
+      "no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules",
+    );
   });
 
   it("keeps vmId when post-create port_forward fails", async () => {

@@ -18,7 +18,10 @@ import base64
 import fnmatch
 import json
 import os
+import shutil
+import socket
 import subprocess
+import tempfile
 import threading
 from typing import IO, Any, Callable
 
@@ -31,6 +34,11 @@ from .types import (
     FileInfo,
     VolumeInfo,
     MatchlockError,
+    NetworkHookPhase,
+    NetworkHookRequest,
+    NetworkHookResult,
+    NetworkInterceptionConfig,
+    NETWORK_HOOK_ACTION_ALLOW,
     RPCError,
     VFSActionRequest,
     VFSHookEvent,
@@ -108,6 +116,22 @@ class _LocalVFSActionHook:
         self.hook = hook
 
 
+class _LocalNetworkHook:
+    __slots__ = ("name", "phase", "timeout_ms", "hook")
+
+    def __init__(
+        self,
+        name: str,
+        phase: str,
+        timeout_ms: int,
+        hook: Callable[[NetworkHookRequest], NetworkHookResult | None],
+    ) -> None:
+        self.name = name
+        self.phase = phase
+        self.timeout_ms = timeout_ms
+        self.hook = hook
+
+
 class Client:
     """Client for interacting with Matchlock sandboxes via JSON-RPC.
 
@@ -138,6 +162,12 @@ class Client:
         self._vfs_action_hooks: list[_LocalVFSActionHook] = []
         self._vfs_hook_active = False
         self._vfs_hook_lock = threading.Lock()
+
+        self._network_hook_lock = threading.Lock()
+        self._network_hooks: dict[str, _LocalNetworkHook] = {}
+        self._network_hook_socket = ""
+        self._network_hook_listener: socket.socket | None = None
+        self._network_hook_temp_dir = ""
 
     def __enter__(self) -> "Client":
         self.start()
@@ -183,6 +213,7 @@ class Client:
         self._closed = True
         self._last_vm_id = self._vm_id
         self._set_local_vfs_hooks([], [], [])
+        self._stop_network_hook_server()
 
         if self._process is None or self._process.poll() is not None:
             return
@@ -333,6 +364,7 @@ class Client:
                         p.error = err
                         p.event.set()
                     self._pending.clear()
+                self._stop_network_hook_server()
                 return
 
             try:
@@ -681,6 +713,247 @@ class Client:
             wire_out = None
         return wire_out, local, local_mutate, local_action
 
+    def _compile_network_hooks(
+        self, cfg: NetworkInterceptionConfig | None
+    ) -> tuple[dict[str, Any] | None, dict[str, _LocalNetworkHook]]:
+        if cfg is None:
+            return None, {}
+
+        wire_rules: list[dict[str, Any]] = []
+        local: dict[str, _LocalNetworkHook] = {}
+        for i, rule in enumerate(cfg.rules):
+            wire_rule = rule.to_dict()
+            if rule.hook is not None:
+                action = (rule.action or "").strip().lower()
+                if action not in ("", NETWORK_HOOK_ACTION_ALLOW):
+                    raise MatchlockError(
+                        f"invalid network hook {rule.name!r}: callback hooks cannot set "
+                        f"action={rule.action!r}"
+                    )
+                callback_id = f"network_hook_{i + 1}"
+                timeout_ms = rule.timeout_ms if rule.timeout_ms > 0 else 0
+                local[callback_id] = _LocalNetworkHook(
+                    name=rule.name,
+                    phase=(rule.phase or "").strip().lower(),
+                    timeout_ms=timeout_ms,
+                    hook=rule.hook,
+                )
+                wire_rule["callback_id"] = callback_id
+            wire_rules.append(wire_rule)
+
+        if not wire_rules:
+            return None, local
+        return {"rules": wire_rules}, local
+
+    def _start_network_hook_server(self, hooks: dict[str, _LocalNetworkHook]) -> str:
+        temp_dir = tempfile.mkdtemp(prefix="matchlock-network-hook-")
+        socket_path = os.path.join(temp_dir, "hook.sock")
+
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(socket_path)
+            listener.listen()
+        except Exception:
+            listener.close()
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            raise
+
+        with self._network_hook_lock:
+            self._network_hooks = dict(hooks)
+            self._network_hook_socket = socket_path
+            self._network_hook_listener = listener
+            self._network_hook_temp_dir = temp_dir
+
+        t = threading.Thread(
+            target=self._network_hook_accept_loop, args=(listener,), daemon=True
+        )
+        t.start()
+        return socket_path
+
+    def _stop_network_hook_server(self) -> None:
+        with self._network_hook_lock:
+            listener = self._network_hook_listener
+            temp_dir = self._network_hook_temp_dir
+            self._network_hooks = {}
+            self._network_hook_socket = ""
+            self._network_hook_listener = None
+            self._network_hook_temp_dir = ""
+
+        if listener is not None:
+            try:
+                listener.close()
+            except Exception:
+                pass
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def _network_hook_accept_loop(self, listener: socket.socket) -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            t = threading.Thread(
+                target=self._serve_network_hook_conn, args=(conn,), daemon=True
+            )
+            t.start()
+
+    def _serve_network_hook_conn(self, conn: socket.socket) -> None:
+        with conn:
+            try:
+                reader = conn.makefile("r", encoding="utf-8")
+                line = reader.readline()
+            except Exception as e:
+                self._write_network_hook_response(conn, {"error": str(e)})
+                return
+
+            if not line:
+                return
+
+            try:
+                payload = json.loads(line)
+                if not isinstance(payload, dict):
+                    raise ValueError("network hook callback request must be an object")
+            except Exception as e:
+                self._write_network_hook_response(conn, {"error": str(e)})
+                return
+
+            callback_id = str(payload.get("callback_id", "")).strip()
+            phase_raw = str(payload.get("phase", "")).strip().lower()
+            phase: NetworkHookPhase
+            if phase_raw == "before":
+                phase = "before"
+            elif phase_raw == "after":
+                phase = "after"
+            else:
+                phase = ""
+
+            with self._network_hook_lock:
+                hook = self._network_hooks.get(callback_id)
+            if hook is None:
+                self._write_network_hook_response(
+                    conn, {"error": "network hook callback not found"}
+                )
+                return
+            if hook.phase and hook.phase != phase:
+                self._write_network_hook_response(
+                    conn, {"error": "network hook phase mismatch"}
+                )
+                return
+
+            req = NetworkHookRequest(
+                phase=phase,
+                host=str(payload.get("host", "")),
+                method=str(payload.get("method", "")),
+                path=str(payload.get("path", "")),
+                query=self._to_string_map(payload.get("query")),
+                request_headers=self._to_string_slice_map(
+                    payload.get("request_headers")
+                ),
+                status_code=int(payload.get("status_code") or 0),
+                response_headers=self._to_string_slice_map(
+                    payload.get("response_headers")
+                ),
+                is_sse=bool(payload.get("is_sse")),
+            )
+
+            try:
+                result = hook.hook(req)
+                wire_resp = self._network_hook_result_to_wire(result)
+            except Exception as e:
+                self._write_network_hook_response(conn, {"error": str(e)})
+                return
+
+            self._write_network_hook_response(conn, wire_resp)
+
+    def _network_hook_result_to_wire(
+        self, result: NetworkHookResult | None
+    ) -> dict[str, Any]:
+        resp: dict[str, Any] = {}
+        if result is None:
+            return resp
+        if not isinstance(result, NetworkHookResult):
+            raise MatchlockError(
+                "invalid network hook result: expected NetworkHookResult or None"
+            )
+
+        action = str(result.action or "").strip()
+        if action:
+            resp["action"] = action
+
+        if result.request is not None:
+            request: dict[str, Any] = {}
+            if result.request.headers is not None:
+                request["headers"] = self._clone_string_slice_map(
+                    result.request.headers
+                )
+            if result.request.query is not None:
+                request["query"] = self._clone_string_map(result.request.query)
+            if result.request.path:
+                request["path"] = result.request.path
+            if request:
+                resp["request"] = request
+
+        if result.response is not None:
+            response: dict[str, Any] = {}
+            if result.response.headers is not None:
+                response["headers"] = self._clone_string_slice_map(
+                    result.response.headers
+                )
+            if result.response.body_replacements:
+                response["body_replacements"] = [
+                    x.to_dict() for x in result.response.body_replacements
+                ]
+            if result.response.set_body is not None:
+                body = result.response.set_body
+                if isinstance(body, str):
+                    body = body.encode("utf-8")
+                if not isinstance(body, bytes):
+                    raise MatchlockError(
+                        "invalid network hook response set_body type: expected bytes|str|None"
+                    )
+                response["set_body_base64"] = base64.b64encode(body).decode("ascii")
+            if response:
+                resp["response"] = response
+
+        return resp
+
+    def _write_network_hook_response(
+        self, conn: socket.socket, payload: dict[str, Any]
+    ) -> None:
+        try:
+            data = json.dumps(payload) + "\n"
+            conn.sendall(data.encode("utf-8"))
+        except Exception:
+            pass
+
+    def _to_string_map(self, value: Any) -> dict[str, str] | None:
+        if not isinstance(value, dict):
+            return None
+        out: dict[str, str] = {}
+        for k, v in value.items():
+            out[str(k)] = str(v)
+        return out
+
+    def _to_string_slice_map(self, value: Any) -> dict[str, list[str]] | None:
+        if not isinstance(value, dict):
+            return None
+        out: dict[str, list[str]] = {}
+        for k, v in value.items():
+            if isinstance(v, list):
+                out[str(k)] = [str(x) for x in v]
+            else:
+                out[str(k)] = [str(v)]
+        return out
+
+    def _clone_string_map(self, value: dict[str, str]) -> dict[str, str]:
+        return {str(k): str(v) for k, v in value.items()}
+
+    def _clone_string_slice_map(
+        self, value: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        return {str(k): [str(x) for x in v] for k, v in value.items()}
+
     # ── RPC transport ────────────────────────────────────────────────
 
     def _next_id(self) -> int:
@@ -773,9 +1046,15 @@ class Client:
             raise MatchlockError("image is required (e.g., alpine:latest)")
         if opts.network_mtu < 0:
             raise MatchlockError("network mtu must be > 0")
-        if opts.no_network and (opts.allowed_hosts or opts.secrets):
+        if opts.no_network and (
+            opts.allowed_hosts
+            or opts.secrets
+            or opts.force_interception
+            or opts.network_interception is not None
+        ):
             raise MatchlockError(
-                "no network cannot be combined with allowed hosts or secrets"
+                "no network cannot be combined with allowed hosts, secrets, "
+                "forced interception, or network interception rules"
             )
 
         (
@@ -784,6 +1063,17 @@ class Client:
             local_mutate_hooks,
             local_action_hooks,
         ) = self._compile_vfs_hooks(opts.vfs_interception)
+        wire_network, local_network_hooks = self._compile_network_hooks(
+            opts.network_interception
+        )
+        self._stop_network_hook_server()
+        started_network_hook_server = False
+        if local_network_hooks:
+            callback_socket = self._start_network_hook_server(local_network_hooks)
+            if wire_network is None:
+                wire_network = {}
+            wire_network["callback_socket"] = callback_socket
+            started_network_hook_server = True
         self._set_local_vfs_hooks([], [], [])
 
         params: dict[str, Any] = {"image": opts.image}
@@ -800,7 +1090,7 @@ class Client:
         if resources:
             params["resources"] = resources
 
-        network = self._build_create_network_params(opts)
+        network = self._build_create_network_params(opts, wire_network)
         if network is not None:
             params["network"] = network
 
@@ -820,13 +1110,22 @@ class Client:
         if opts.image_config is not None:
             params["image_config"] = opts.image_config.to_dict()
 
-        result = self._send_request("create", params)
+        try:
+            result = self._send_request("create", params)
+        except Exception:
+            if started_network_hook_server:
+                self._stop_network_hook_server()
+            raise
+        if not isinstance(result, dict) or "id" not in result:
+            if started_network_hook_server:
+                self._stop_network_hook_server()
+            raise MatchlockError("invalid create response: missing id")
         self._vm_id = result["id"]
         self._set_local_vfs_hooks(local_hooks, local_mutate_hooks, local_action_hooks)
         return self._vm_id
 
     def _build_create_network_params(
-        self, opts: CreateOptions
+        self, opts: CreateOptions, wire_interception: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         has_allowed_hosts = bool(opts.allowed_hosts)
         has_secrets = bool(opts.secrets)
@@ -834,6 +1133,8 @@ class Client:
         has_hostname = bool(opts.hostname)
         has_mtu = opts.network_mtu > 0
         has_no_network = opts.no_network
+        has_force_interception = opts.force_interception
+        has_network_interception = wire_interception is not None
 
         block_private_ips, has_block_private_override = (
             self._resolve_create_block_private_ips(opts)
@@ -847,6 +1148,8 @@ class Client:
             or has_mtu
             or has_no_network
             or has_block_private_override
+            or has_force_interception
+            or has_network_interception
         )
         if not include_network:
             return None
@@ -870,6 +1173,10 @@ class Client:
             "allowed_hosts": opts.allowed_hosts,
             "block_private_ips": block_private_ips,
         }
+        if has_force_interception or has_network_interception:
+            network["intercept"] = True
+        if has_network_interception:
+            network["interception"] = wire_interception
         if has_secrets:
             network["secrets"] = {
                 s.name: {"value": s.value, "hosts": s.hosts} for s in opts.secrets

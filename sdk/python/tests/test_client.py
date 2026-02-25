@@ -27,6 +27,9 @@ from matchlock.types import (
     FileInfo,
     MatchlockError,
     MountConfig,
+    NetworkBodyTransform,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
     RPCError,
     VolumeInfo,
     VFS_HOOK_ACTION_ALLOW,
@@ -166,6 +169,7 @@ class TestClientCreate:
             with pytest.raises(MatchlockError, match="image is required"):
                 client.create(CreateOptions())
         finally:
+            client._stop_network_hook_server()
             fake.close_stdout()
 
     def test_create_success(self):
@@ -332,6 +336,172 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_sends_force_network_interception(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-force"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                force_interception=True,
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-force"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            assert "interception" not in req["params"]["network"]
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_sends_network_interception_rules(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-rules"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_interception=NetworkInterceptionConfig(
+                    rules=[
+                        NetworkHookRule(
+                            phase="after",
+                            action="mutate",
+                            hosts=["api.example.com"],
+                            path="/v1/*",
+                            body_replacements=[
+                                NetworkBodyTransform(find="foo", replace="bar")
+                            ],
+                        )
+                    ]
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-rules"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            assert req["params"]["network"]["interception"] == {
+                "rules": [
+                    {
+                        "phase": "after",
+                        "action": "mutate",
+                        "hosts": ["api.example.com"],
+                        "path": "/v1/*",
+                        "body_replacements": [{"find": "foo", "replace": "bar"}],
+                    }
+                ]
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_sends_network_interception_callback_rule(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-callback"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_interception=NetworkInterceptionConfig(
+                    rules=[
+                        NetworkHookRule(
+                            name="callback-after",
+                            phase="after",
+                            hosts=["api.example.com"],
+                            path="/v1/*",
+                            timeout_ms=1500,
+                            hook=lambda req: None,
+                        )
+                    ]
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-callback"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            interception = req["params"]["network"]["interception"]
+            assert isinstance(interception["callback_socket"], str)
+            assert interception["callback_socket"].strip() != ""
+            assert len(interception["rules"]) == 1
+            rule = interception["rules"][0]
+            assert isinstance(rule["callback_id"], str)
+            assert rule["callback_id"].strip() != ""
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_network_callback_with_action_block(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="callback hooks cannot set action",
+            ):
+                client.create(
+                    CreateOptions(
+                        image="img",
+                        network_interception=NetworkInterceptionConfig(
+                            rules=[
+                                NetworkHookRule(
+                                    name="bad-callback",
+                                    phase="after",
+                                    action="block",
+                                    hook=lambda req: None,
+                                )
+                            ]
+                        ),
+                    )
+                )
+        finally:
+            fake.close_stdout()
+
     def test_create_respects_explicit_disable_block_private_ips(self):
         client, fake = make_client_with_fake()
         try:
@@ -433,13 +603,34 @@ class TestClientCreate:
         try:
             with pytest.raises(
                 MatchlockError,
-                match="no network cannot be combined with allowed hosts or secrets",
+                match="no network cannot be combined with allowed hosts, secrets, "
+                "forced interception, or network interception rules",
             ):
                 client.create(
                     CreateOptions(
                         image="img",
                         no_network=True,
                         allowed_hosts=["api.openai.com"],
+                    )
+                )
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_no_network_with_interception_rules(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="no network cannot be combined with allowed hosts, secrets, "
+                "forced interception, or network interception rules",
+            ):
+                client.create(
+                    CreateOptions(
+                        image="img",
+                        no_network=True,
+                        network_interception=NetworkInterceptionConfig(
+                            rules=[NetworkHookRule(action="block", hosts=["bad.example.com"])]
+                        ),
                     )
                 )
         finally:

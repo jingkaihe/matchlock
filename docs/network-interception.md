@@ -86,13 +86,13 @@ Defaults:
 
 If mutation fields are present and `action` is `allow`, the rule is treated as mutate.
 
-## SDK Callback Hooks (Go)
+## SDK Callback Hooks
 
-Go SDK rules can attach a `Hook` callback for dynamic mutation.
+SDK rules can attach a local callback for dynamic mutation.
 
 - Static filters (`phase`, `hosts`, `methods`, `path`) are evaluated first.
 - Only matching traffic invokes the callback.
-- Callback hooks are Go SDK-local and run in the SDK process (not inside the VM).
+- Callback hooks are SDK-local and run in the SDK process (not inside the VM).
 - For callback rules, keep `action` empty or `allow`; return the effective action from the callback.
 - `timeout_ms` bounds callback execution time.
 - Callback can return dynamic action/mutations:
@@ -177,7 +177,8 @@ sandbox := sdk.New("alpine:latest").
 ## Current Scope
 
 - Static and callback-based hook-rule APIs are available in the Go SDK and wire API.
-- Python and TypeScript SDK builders currently expose allow-list/secret controls but not typed network hook-rule builders.
+- Python and TypeScript SDK builders now support typed static network hook-rule builders.
+- Callback hook execution (SDK-local hook functions) is available in Go, Python, and TypeScript SDKs.
 
 See runnable examples:
 - [`examples/go/network_interception/main.go`](../examples/go/network_interception/main.go)

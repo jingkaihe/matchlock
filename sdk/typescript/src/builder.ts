@@ -2,6 +2,7 @@ import type {
   CreateOptions,
   ImageConfig,
   MountConfig,
+  NetworkInterceptionConfig,
   Secret,
   VFSInterceptionConfig,
 } from "./types";
@@ -25,6 +26,30 @@ export function cloneCreateOptions(opts: CreateOptions): CreateOptions {
           emitEvents: opts.vfsInterception.emitEvents,
           rules: opts.vfsInterception.rules
             ? opts.vfsInterception.rules.map((r) => ({ ...r, ops: r.ops ? [...r.ops] : undefined }))
+            : undefined,
+        }
+      : undefined,
+    networkInterception: opts.networkInterception
+      ? {
+          rules: opts.networkInterception.rules
+            ? opts.networkInterception.rules.map((r) => ({
+                ...r,
+                hosts: r.hosts ? [...r.hosts] : undefined,
+                methods: r.methods ? [...r.methods] : undefined,
+                setHeaders: r.setHeaders ? { ...r.setHeaders } : undefined,
+                deleteHeaders: r.deleteHeaders ? [...r.deleteHeaders] : undefined,
+                setQuery: r.setQuery ? { ...r.setQuery } : undefined,
+                deleteQuery: r.deleteQuery ? [...r.deleteQuery] : undefined,
+                setResponseHeaders: r.setResponseHeaders
+                  ? { ...r.setResponseHeaders }
+                  : undefined,
+                deleteResponseHeaders: r.deleteResponseHeaders
+                  ? [...r.deleteResponseHeaders]
+                  : undefined,
+                bodyReplacements: r.bodyReplacements
+                  ? r.bodyReplacements.map((x) => ({ ...x }))
+                  : undefined,
+              }))
             : undefined,
         }
       : undefined,
@@ -87,6 +112,12 @@ export class Sandbox {
 
   withVFSInterception(config: VFSInterceptionConfig): Sandbox {
     this.opts.vfsInterception = config;
+    return this;
+  }
+
+  withNetworkInterception(config?: NetworkInterceptionConfig): Sandbox {
+    this.opts.forceInterception = true;
+    this.opts.networkInterception = config;
     return this;
   }
 

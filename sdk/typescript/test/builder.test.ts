@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { Sandbox, VFS_HOOK_ACTION_BLOCK, VFS_HOOK_OP_CREATE, VFS_HOOK_PHASE_BEFORE } from "../src";
+import {
+  NETWORK_HOOK_ACTION_MUTATE,
+  NETWORK_HOOK_PHASE_AFTER,
+  Sandbox,
+  VFS_HOOK_ACTION_BLOCK,
+  VFS_HOOK_OP_CREATE,
+  VFS_HOOK_PHASE_BEFORE,
+} from "../src";
 
 describe("Sandbox builder", () => {
   it("sets image on construction", () => {
@@ -60,6 +67,29 @@ describe("Sandbox builder", () => {
   it("supports no-network option", () => {
     const opts = new Sandbox("img").withNoNetwork().options();
     expect(opts.noNetwork).toBe(true);
+  });
+
+  it("builds network interception options", () => {
+    const opts = new Sandbox("img")
+      .withNetworkInterception({
+        rules: [
+          {
+            phase: NETWORK_HOOK_PHASE_AFTER,
+            hosts: ["api.example.com"],
+            action: NETWORK_HOOK_ACTION_MUTATE,
+            bodyReplacements: [{ find: "foo", replace: "bar" }],
+          },
+        ],
+      })
+      .options();
+
+    expect(opts.forceInterception).toBe(true);
+    expect(opts.networkInterception?.rules?.[0]).toEqual({
+      phase: "after",
+      hosts: ["api.example.com"],
+      action: "mutate",
+      bodyReplacements: [{ find: "foo", replace: "bar" }],
+    });
   });
 
   it("builds mount and env config", () => {

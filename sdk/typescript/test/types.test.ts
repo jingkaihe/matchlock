@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   defaultConfig,
   MatchlockError,
+  NETWORK_HOOK_ACTION_ALLOW,
+  NETWORK_HOOK_ACTION_BLOCK,
+  NETWORK_HOOK_ACTION_MUTATE,
+  NETWORK_HOOK_PHASE_AFTER,
+  NETWORK_HOOK_PHASE_BEFORE,
   RPCError,
   VFS_HOOK_ACTION_ALLOW,
   VFS_HOOK_ACTION_BLOCK,
@@ -19,6 +24,14 @@ describe("types and errors", () => {
     expect(VFS_HOOK_OP_WRITE).toBe("write");
     expect(VFS_HOOK_ACTION_ALLOW).toBe("allow");
     expect(VFS_HOOK_ACTION_BLOCK).toBe("block");
+  });
+
+  it("exports network hook constants", () => {
+    expect(NETWORK_HOOK_PHASE_BEFORE).toBe("before");
+    expect(NETWORK_HOOK_PHASE_AFTER).toBe("after");
+    expect(NETWORK_HOOK_ACTION_ALLOW).toBe("allow");
+    expect(NETWORK_HOOK_ACTION_BLOCK).toBe("block");
+    expect(NETWORK_HOOK_ACTION_MUTATE).toBe("mutate");
   });
 
   it("implements rpc error helpers", () => {

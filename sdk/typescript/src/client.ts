@@ -1,12 +1,17 @@
 import { once } from "node:events";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { isIP } from "node:net";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, isIP } from "node:net";
+import type { Server, Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { minimatch } from "minimatch";
 import { cloneCreateOptions, Sandbox } from "./builder";
 import { MatchlockError, RPCError } from "./errors";
 import {
+  NETWORK_HOOK_ACTION_ALLOW,
   VFS_HOOK_ACTION_ALLOW,
   VFS_HOOK_ACTION_BLOCK,
   VFS_HOOK_OP_READ,
@@ -27,6 +32,10 @@ import {
   type PortForward,
   type PortForwardBinding,
   type RequestOptions,
+  type NetworkInterceptionConfig,
+  type NetworkHookFunc,
+  type NetworkHookRequest,
+  type NetworkHookResult,
   type StreamWriter,
   type VFSActionRequest,
   type VFSHookAction,
@@ -93,6 +102,14 @@ interface CompiledVFSActionHook {
   callback: (request: VFSActionRequest) => Promise<VFSHookAction>;
 }
 
+interface CompiledNetworkHook {
+  id: string;
+  name: string;
+  phase: string;
+  timeoutMs: number;
+  callback: NetworkHookFunc;
+}
+
 interface WireVFSHookRule {
   name?: string;
   phase?: string;
@@ -105,6 +122,35 @@ interface WireVFSHookRule {
 interface WireVFSInterceptionConfig {
   emit_events?: boolean;
   rules?: WireVFSHookRule[];
+}
+
+interface WireNetworkBodyTransform {
+  find: string;
+  replace?: string;
+}
+
+interface WireNetworkHookRule {
+  name?: string;
+  phase?: string;
+  hosts?: string[];
+  methods?: string[];
+  path?: string;
+  action?: string;
+  callback_id?: string;
+  set_headers?: Record<string, string>;
+  delete_headers?: string[];
+  set_query?: Record<string, string>;
+  delete_query?: string[];
+  rewrite_path?: string;
+  set_response_headers?: Record<string, string>;
+  delete_response_headers?: string[];
+  body_replacements?: WireNetworkBodyTransform[];
+  timeout_ms?: number;
+}
+
+interface WireNetworkInterceptionConfig {
+  callback_socket?: string;
+  rules?: WireNetworkHookRule[];
 }
 
 const DEFAULT_CPUS = 1;
@@ -146,6 +192,74 @@ function toBuffer(content: BinaryLike): Buffer {
 
 function lowerSet(values: string[] | undefined): Set<string> {
   return new Set((values ?? []).map((value) => value.toLowerCase()));
+}
+
+function buildWireNetworkInterception(
+  config: NetworkInterceptionConfig | undefined,
+): WireNetworkInterceptionConfig | undefined {
+  if (!config) {
+    return undefined;
+  }
+
+  const wire: WireNetworkInterceptionConfig = {};
+  if ((config.rules?.length ?? 0) > 0) {
+    wire.rules = (config.rules ?? []).map((rule) => {
+      const out: WireNetworkHookRule = {};
+      if (rule.name) {
+        out.name = rule.name;
+      }
+      if (rule.phase) {
+        out.phase = rule.phase;
+      }
+      if ((rule.hosts?.length ?? 0) > 0) {
+        out.hosts = [...(rule.hosts ?? [])];
+      }
+      if ((rule.methods?.length ?? 0) > 0) {
+        out.methods = [...(rule.methods ?? [])];
+      }
+      if (rule.path) {
+        out.path = rule.path;
+      }
+      if (rule.action) {
+        out.action = rule.action;
+      }
+      if (rule.setHeaders && Object.keys(rule.setHeaders).length > 0) {
+        out.set_headers = { ...rule.setHeaders };
+      }
+      if ((rule.deleteHeaders?.length ?? 0) > 0) {
+        out.delete_headers = [...(rule.deleteHeaders ?? [])];
+      }
+      if (rule.setQuery && Object.keys(rule.setQuery).length > 0) {
+        out.set_query = { ...rule.setQuery };
+      }
+      if ((rule.deleteQuery?.length ?? 0) > 0) {
+        out.delete_query = [...(rule.deleteQuery ?? [])];
+      }
+      if (rule.rewritePath) {
+        out.rewrite_path = rule.rewritePath;
+      }
+      if (
+        rule.setResponseHeaders &&
+        Object.keys(rule.setResponseHeaders).length > 0
+      ) {
+        out.set_response_headers = { ...rule.setResponseHeaders };
+      }
+      if ((rule.deleteResponseHeaders?.length ?? 0) > 0) {
+        out.delete_response_headers = [...(rule.deleteResponseHeaders ?? [])];
+      }
+      if ((rule.bodyReplacements?.length ?? 0) > 0) {
+        out.body_replacements = (rule.bodyReplacements ?? []).map((x) => ({
+          find: x.find,
+          replace: x.replace,
+        }));
+      }
+      if ((rule.timeoutMs ?? 0) > 0) {
+        out.timeout_ms = rule.timeoutMs;
+      }
+      return out;
+    });
+  }
+  return wire;
 }
 
 function asObject(value: JSONValue | undefined): JSONObject {
@@ -190,6 +304,10 @@ export class Client {
   private vfsMutateHooks: CompiledVFSMutateHook[] = [];
   private vfsActionHooks: CompiledVFSActionHook[] = [];
   private vfsHookActive = false;
+  private networkHooks = new Map<string, CompiledNetworkHook>();
+  private networkHookServer: Server | undefined;
+  private networkHookSocketPath = "";
+  private networkHookTempDir = "";
 
   constructor(config: Config = {}) {
     this.config = defaultConfig(config);
@@ -243,6 +361,7 @@ export class Client {
     this.closing = true;
     this.lastVMID = this.vmIDValue;
     this.setLocalVFSHooks([], [], []);
+    await this.stopNetworkHookServer();
 
     try {
       if (!this.isRunning()) {
@@ -395,10 +514,13 @@ export class Client {
     }
     if (
       options.noNetwork &&
-      ((options.allowedHosts?.length ?? 0) > 0 || (options.secrets?.length ?? 0) > 0)
+      ((options.allowedHosts?.length ?? 0) > 0 ||
+        (options.secrets?.length ?? 0) > 0 ||
+        options.forceInterception === true ||
+        options.networkInterception !== undefined)
     ) {
       throw new MatchlockError(
-        "no network cannot be combined with allowed hosts or secrets",
+        "no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules",
       );
     }
     for (const mapping of options.addHosts ?? []) {
@@ -407,6 +529,19 @@ export class Client {
 
     const [wireVFS, localHooks, localMutateHooks, localActionHooks] =
       this.compileVFSHooks(options.vfsInterception);
+    let [wireNetworkInterception, localNetworkHooks] = this.compileNetworkHooks(
+      options.networkInterception,
+    );
+    await this.stopNetworkHookServer();
+    let startedNetworkHookServer = false;
+    if (localNetworkHooks.size > 0) {
+      const callbackSocket = await this.startNetworkHookServer(localNetworkHooks);
+      if (!wireNetworkInterception) {
+        wireNetworkInterception = {};
+      }
+      wireNetworkInterception.callback_socket = callbackSocket;
+      startedNetworkHookServer = true;
+    }
 
     const resources = {
       cpus: options.cpus || DEFAULT_CPUS,
@@ -424,7 +559,7 @@ export class Client {
       params.privileged = true;
     }
 
-    const network = this.buildCreateNetworkParams(options);
+    const network = this.buildCreateNetworkParams(options, wireNetworkInterception);
     if (network) {
       params.network = network;
     }
@@ -484,9 +619,20 @@ export class Client {
       params.image_config = imageConfig;
     }
 
-    const result = asObject(await this.sendRequest("create", params));
+    let result: JSONObject;
+    try {
+      result = asObject(await this.sendRequest("create", params));
+    } catch (error) {
+      if (startedNetworkHookServer) {
+        await this.stopNetworkHookServer();
+      }
+      throw error;
+    }
     const id = asString(result.id);
     if (!id) {
+      if (startedNetworkHookServer) {
+        await this.stopNetworkHookServer();
+      }
       throw new MatchlockError("invalid create response: missing id");
     }
 
@@ -516,7 +662,10 @@ export class Client {
     return { value: false, hasOverride: false };
   }
 
-  private buildCreateNetworkParams(opts: CreateOptions): JSONObject | undefined {
+  private buildCreateNetworkParams(
+    opts: CreateOptions,
+    wireInterception: WireNetworkInterceptionConfig | undefined,
+  ): JSONObject | undefined {
     const hasAllowedHosts = (opts.allowedHosts?.length ?? 0) > 0;
     const hasAddHosts = (opts.addHosts?.length ?? 0) > 0;
     const hasSecrets = (opts.secrets?.length ?? 0) > 0;
@@ -524,6 +673,8 @@ export class Client {
     const hasHostname = (opts.hostname?.length ?? 0) > 0;
     const hasMTU = (opts.networkMtu ?? 0) > 0;
     const hasNoNetwork = opts.noNetwork === true;
+    const hasForceInterception = opts.forceInterception === true;
+    const hasNetworkInterception = wireInterception !== undefined;
 
     const blockPrivate = this.resolveCreateBlockPrivateIPs(opts);
 
@@ -535,7 +686,9 @@ export class Client {
       hasHostname ||
       hasMTU ||
       hasNoNetwork ||
-      blockPrivate.hasOverride;
+      blockPrivate.hasOverride ||
+      hasForceInterception ||
+      hasNetworkInterception;
 
     if (!includeNetwork) {
       return undefined;
@@ -564,6 +717,12 @@ export class Client {
       allowed_hosts: opts.allowedHosts ?? [],
       block_private_ips: blockPrivate.hasOverride ? blockPrivate.value : true,
     };
+    if (hasForceInterception || hasNetworkInterception) {
+      network.intercept = true;
+    }
+    if (hasNetworkInterception) {
+      network.interception = wireInterception as unknown as JSONValue;
+    }
 
     if (hasAddHosts) {
       network.add_hosts = (opts.addHosts ?? []).map((mapping) => ({
@@ -1357,6 +1516,277 @@ export class Client {
     return [wire, localHooks, localMutateHooks, localActionHooks];
   }
 
+  private compileNetworkHooks(cfg: NetworkInterceptionConfig | undefined): [
+    WireNetworkInterceptionConfig | undefined,
+    Map<string, CompiledNetworkHook>,
+  ] {
+    if (!cfg) {
+      return [undefined, new Map()];
+    }
+
+    const wire = buildWireNetworkInterception(cfg);
+    const local = new Map<string, CompiledNetworkHook>();
+    for (const [index, rule] of (cfg.rules ?? []).entries()) {
+      if (!rule.hook) {
+        continue;
+      }
+
+      const action = String(rule.action ?? "").trim().toLowerCase();
+      if (action && action !== NETWORK_HOOK_ACTION_ALLOW) {
+        throw new MatchlockError(
+          `invalid network hook ${JSON.stringify(rule.name ?? "")}: callback hooks cannot set action=${JSON.stringify(rule.action)}`,
+        );
+      }
+
+      const callbackID = `network_hook_${index + 1}`;
+      local.set(callbackID, {
+        id: callbackID,
+        name: rule.name ?? "",
+        phase: String(rule.phase ?? "").trim().toLowerCase(),
+        timeoutMs: rule.timeoutMs ?? 0,
+        callback: rule.hook,
+      });
+      if (wire?.rules?.[index]) {
+        wire.rules[index].callback_id = callbackID;
+      }
+    }
+
+    return [wire, local];
+  }
+
+  private async startNetworkHookServer(
+    hooks: Map<string, CompiledNetworkHook>,
+  ): Promise<string> {
+    const tempDir = await mkdtemp(join(tmpdir(), "matchlock-network-hook-"));
+    const socketPath = join(tempDir, "hook.sock");
+
+    const hooksCopy = new Map(hooks);
+    const server = createServer((socket) => {
+      this.serveNetworkHookSocket(socket, hooksCopy);
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+    } catch (error) {
+      server.close();
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+
+    this.networkHooks = hooksCopy;
+    this.networkHookServer = server;
+    this.networkHookSocketPath = socketPath;
+    this.networkHookTempDir = tempDir;
+    return socketPath;
+  }
+
+  private async stopNetworkHookServer(): Promise<void> {
+    const server = this.networkHookServer;
+    const tempDir = this.networkHookTempDir;
+
+    this.networkHooks = new Map();
+    this.networkHookServer = undefined;
+    this.networkHookSocketPath = "";
+    this.networkHookTempDir = "";
+
+    if (server) {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    }
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private serveNetworkHookSocket(
+    socket: Socket,
+    hooks: Map<string, CompiledNetworkHook>,
+  ): void {
+    let buffer = "";
+    const onData = (chunk: Buffer | string): void => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) {
+        return;
+      }
+      socket.off("data", onData);
+      const line = buffer.slice(0, newline).trim();
+      void this.handleNetworkHookSocketLine(socket, line, hooks);
+    };
+
+    socket.on("data", onData);
+    socket.on("error", () => {
+      socket.off("data", onData);
+    });
+    socket.on("close", () => {
+      socket.off("data", onData);
+    });
+  }
+
+  private async handleNetworkHookSocketLine(
+    socket: Socket,
+    line: string,
+    hooks: Map<string, CompiledNetworkHook>,
+  ): Promise<void> {
+    const write = (payload: JSONObject): void => {
+      if (socket.destroyed) {
+        return;
+      }
+      socket.end(`${JSON.stringify(payload)}\n`);
+    };
+
+    let payload: JSONObject;
+    try {
+      payload = asObject(JSON.parse(line) as JSONValue);
+    } catch (error) {
+      write({ error: toError(error).message });
+      return;
+    }
+
+    const callbackID = asString(payload.callback_id).trim();
+    const hook = hooks.get(callbackID);
+    if (!hook) {
+      write({ error: "network hook callback not found" });
+      return;
+    }
+
+    const phase = asString(payload.phase).trim().toLowerCase();
+    if (hook.phase && hook.phase !== phase) {
+      write({ error: "network hook phase mismatch" });
+      return;
+    }
+
+    const request: NetworkHookRequest = {
+      phase: phase as NetworkHookRequest["phase"],
+      host: asString(payload.host),
+      method: asString(payload.method),
+      path: asString(payload.path),
+      query: this.toStringMap(payload.query),
+      requestHeaders: this.toStringSliceMap(payload.request_headers),
+      statusCode: asNumber(payload.status_code),
+      responseHeaders: this.toStringSliceMap(payload.response_headers),
+      isSSE: Boolean(payload.is_sse),
+    };
+
+    try {
+      const result = await this.invokeNetworkHook(hook, request);
+      write(this.networkHookResultToWire(result));
+    } catch (error) {
+      write({ error: toError(error).message });
+    }
+  }
+
+  private async invokeNetworkHook(
+    hook: CompiledNetworkHook,
+    request: NetworkHookRequest,
+  ): Promise<NetworkHookResult | null | undefined> {
+    if (hook.timeoutMs <= 0) {
+      return hook.callback(request);
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve(hook.callback(request)),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("network hook callback timed out"));
+          }, hook.timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private networkHookResultToWire(
+    result: NetworkHookResult | null | undefined,
+  ): JSONObject {
+    const out: JSONObject = {};
+    if (!result) {
+      return out;
+    }
+
+    if (result.action) {
+      out.action = result.action;
+    }
+    if (result.request) {
+      const req: JSONObject = {};
+      if (result.request.headers !== undefined) {
+        req.headers = result.request.headers as unknown as JSONValue;
+      }
+      if (result.request.query !== undefined) {
+        req.query = result.request.query as unknown as JSONValue;
+      }
+      if (result.request.path) {
+        req.path = result.request.path;
+      }
+      if (Object.keys(req).length > 0) {
+        out.request = req;
+      }
+    }
+    if (result.response) {
+      const resp: JSONObject = {};
+      if (result.response.headers !== undefined) {
+        resp.headers = result.response.headers as unknown as JSONValue;
+      }
+      if ((result.response.bodyReplacements?.length ?? 0) > 0) {
+        resp.body_replacements = result.response.bodyReplacements?.map((x) => ({
+          find: x.find,
+          replace: x.replace,
+        })) as unknown as JSONValue;
+      }
+      if (
+        result.response.setBody !== undefined &&
+        result.response.setBody !== null
+      ) {
+        resp.set_body_base64 = toBuffer(result.response.setBody).toString("base64");
+      }
+      if (Object.keys(resp).length > 0) {
+        out.response = resp;
+      }
+    }
+
+    return out;
+  }
+
+  private toStringMap(value: JSONValue | undefined): Record<string, string> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const out: Record<string, string> = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = String(item ?? "");
+    }
+    return out;
+  }
+
+  private toStringSliceMap(
+    value: JSONValue | undefined,
+  ): Record<string, string[]> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return undefined;
+    }
+    const out: Record<string, string[]> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (Array.isArray(item)) {
+        out[key] = item.map((x) => String(x ?? ""));
+      } else {
+        out[key] = [String(item ?? "")];
+      }
+    }
+    return out;
+  }
+
   private validateLocalAfterRule(rule: VFSHookRule, label: string): void {
     const action = String(rule.action ?? "").trim().toLowerCase();
     if (action && action !== VFS_HOOK_ACTION_ALLOW) {
@@ -1483,6 +1913,7 @@ export class Client {
   private handleProcessClosed(error?: Error): void {
     const pending = [...this.pending.values()];
     this.pending.clear();
+    void this.stopNetworkHookServer();
 
     const message = error
       ? `Matchlock process closed unexpectedly: ${error.message}`
