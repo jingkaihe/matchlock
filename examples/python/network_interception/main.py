@@ -51,7 +51,9 @@ def main() -> None:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     def before_hook(req: NetworkHookRequest) -> NetworkHookResult:
-        headers = {key: list(values) for key, values in (req.request_headers or {}).items()}
+        headers = {
+            key: list(values) for key, values in (req.request_headers or {}).items()
+        }
         headers["X-Api-Key"] = [api_key]
         return NetworkHookResult(
             action="mutate",
@@ -60,8 +62,6 @@ def main() -> None:
 
     sandbox = (
         Sandbox("python:3.12-alpine")
-        .with_workspace("/workspace")
-        .mount_memory("/workspace")
         .allow_host(
             "dl-cdn.alpinelinux.org",
             "files.pythonhosted.org",
@@ -96,15 +96,17 @@ def main() -> None:
 
             client.exec("pip install --quiet uv")
 
-            client.write_file("/workspace/ask.py", SCRIPT)
+            client.write_file("/ask.py", SCRIPT)
 
             result = client.exec_stream(
-                "uv run /workspace/ask.py",
+                "uv run /ask.py",
                 stdout=sys.stdout,
                 stderr=sys.stderr,
             )
             print()
-            log.info("done exit_code=%d duration_ms=%d", result.exit_code, result.duration_ms)
+            log.info(
+                "done exit_code=%d duration_ms=%d", result.exit_code, result.duration_ms
+            )
     finally:
         try:
             client.remove()
