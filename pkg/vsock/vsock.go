@@ -240,6 +240,10 @@ const (
 	MsgTypeExecStream  uint8 = 11 // Streaming batch: stdout/stderr sent as chunks, then ExecResult
 	MsgTypeExecPipe    uint8 = 12 // Pipe mode: like ExecStream but also accepts MsgTypeStdin, sends MsgTypeExit
 	MsgTypePortForward uint8 = 13 // Request guest-agent to proxy raw TCP to an in-guest address
+	MsgTypeWriteFile   uint8 = 14 // Write a file inside the guest filesystem
+	MsgTypeReadFile    uint8 = 15 // Read a file from the guest filesystem
+	MsgTypeListFiles   uint8 = 16 // List files in a guest directory
+	MsgTypeFileResult  uint8 = 17 // Response for file operations
 )
 
 // ExecRequest is sent from host to guest to execute a command
@@ -282,6 +286,38 @@ type ExecResponse struct {
 	Stdout   []byte `json:"stdout,omitempty"`
 	Stderr   []byte `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
+}
+
+// WriteFileRequest is sent from host to guest to write a file.
+type WriteFileRequest struct {
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
+	Mode    uint32 `json:"mode"`
+}
+
+// ReadFileRequest is sent from host to guest to read a file.
+type ReadFileRequest struct {
+	Path string `json:"path"`
+}
+
+// ListFilesRequest is sent from host to guest to list a directory.
+type ListFilesRequest struct {
+	Path string `json:"path"`
+}
+
+// FileResponse is the guest's reply to a file operation.
+type FileResponse struct {
+	Content []byte     `json:"content,omitempty"`
+	Files   []FileInfo `json:"files,omitempty"`
+	Error   string     `json:"error,omitempty"`
+}
+
+// FileInfo holds file metadata returned by list_files.
+type FileInfo struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	Mode  uint32 `json:"mode"`
+	IsDir bool   `json:"is_dir"`
 }
 
 // WriteMessage writes a length-prefixed message to the connection

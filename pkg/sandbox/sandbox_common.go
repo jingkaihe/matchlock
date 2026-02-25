@@ -2,8 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"io"
-	"os"
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -82,67 +80,6 @@ func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, ca
 	}
 
 	return machine.Exec(ctx, command, opts)
-}
-
-func writeFile(vfsRoot vfs.Provider, path string, content []byte, mode uint32) error {
-	if mode == 0 {
-		mode = 0644
-	}
-	h, err := vfsRoot.Create(path, os.FileMode(mode))
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	_, err = h.Write(content)
-	return err
-}
-
-func readFile(vfsRoot vfs.Provider, path string) ([]byte, error) {
-	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer h.Close()
-
-	info, err := vfsRoot.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-
-	content := make([]byte, info.Size())
-	_, err = h.Read(content)
-	if err != nil {
-		return nil, err
-	}
-	return content, nil
-}
-
-func readFileTo(vfsRoot vfs.Provider, path string, w io.Writer) (int64, error) {
-	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
-	if err != nil {
-		return 0, err
-	}
-	defer h.Close()
-	return io.Copy(w, h)
-}
-
-func listFiles(vfsRoot vfs.Provider, path string) ([]api.FileInfo, error) {
-	entries, err := vfsRoot.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]api.FileInfo, len(entries))
-	for i, e := range entries {
-		info, _ := e.Info()
-		result[i] = api.FileInfo{
-			Name:  e.Name(),
-			Size:  info.Size(),
-			Mode:  uint32(info.Mode()),
-			IsDir: e.IsDir(),
-		}
-	}
-	return result, nil
 }
 
 func flushGuestDisks(machine vm.Machine) {

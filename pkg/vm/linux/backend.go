@@ -480,6 +480,30 @@ func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecO
 	return m.execVsock(ctx, command, opts)
 }
 
+func (m *LinuxMachine) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.WriteFileVsock(conn, path, content, mode)
+}
+
+func (m *LinuxMachine) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ReadFileVsock(conn, path)
+}
+
+func (m *LinuxMachine) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ListFilesVsock(conn, path)
+}
+
 // execVsock executes a command via vsock.
 // When opts.Stdout/Stderr are set, uses streaming mode (MsgTypeExecStream) and
 // forwards output chunks to the writers in real-time.

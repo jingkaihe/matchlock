@@ -184,24 +184,41 @@ import sys
 from matchlock import Client, Sandbox
 
 sandbox = (
-    Sandbox("alpine:latest")
-    .allow_host("dl-cdn.alpinelinux.org", "api.anthropic.com")
+    Sandbox("python:3.12-alpine")
+    .allow_host(
+        "dl-cdn.alpinelinux.org",
+        "files.pythonhosted.org", "pypi.org",
+        "astral.sh", "github.com", "objects.githubusercontent.com",
+        "api.anthropic.com",
+    )
     .add_secret(
         "ANTHROPIC_API_KEY", os.environ["ANTHROPIC_API_KEY"], "api.anthropic.com"
     )
 )
 
-curl_cmd = """curl -s --no-buffer https://api.anthropic.com/v1/messages \
-  -H "content-type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
-       "messages":[{"role":"user","content":"Explain TCP/IP."}]}'"""
+SCRIPT = """\
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["anthropic"]
+# ///
+import anthropic, os
+
+client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+with client.messages.stream(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Explain TCP/IP."}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+print()
+"""
 
 with Client() as client:
     client.launch(sandbox)
-    client.exec("apk add --no-cache curl")
-    client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
+    client.exec("pip install --quiet uv")
+    client.write_file("/workspace/ask.py", SCRIPT)
+    client.exec_stream("uv run /workspace/ask.py", stdout=sys.stdout, stderr=sys.stderr)
 
 client.remove()
 ```
@@ -215,15 +232,43 @@ npm install matchlock-sdk
 ```ts
 import { Client, Sandbox } from "matchlock-sdk";
 
-const sandbox = new Sandbox("alpine:latest")
-  .allowHost("dl-cdn.alpinelinux.org", "api.anthropic.com")
-  .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
+const SCRIPT = `import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+const stream = anthropic.messages
+  .stream({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Explain TCP/IP." }],
+  })
+  .on("text", (text) => {
+    process.stdout.write(text);
+  });
+
+await stream.finalMessage();
+process.stdout.write("\\n");
+`;
 
 const client = new Client();
 try {
+  const sandbox = new Sandbox("node:22-alpine")
+    .allowHost("registry.npmjs.org", "*.npmjs.org", "api.anthropic.com")
+    .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
+
   await client.launch(sandbox);
-  const result = await client.exec("echo hello from typescript");
-  console.log(result.stdout);
+  await client.exec(
+    "npm init -y >/dev/null 2>&1 && npm install --quiet --no-bin-links @anthropic-ai/sdk",
+    { workingDir: "/workspace" },
+  );
+  await client.writeFile("/workspace/ask.mjs", SCRIPT);
+  await client.execStream("node ask.mjs", {
+    workingDir: "/workspace",
+    stdout: process.stdout,
+    stderr: process.stderr,
+  });
 } finally {
   await client.close();
   await client.remove();

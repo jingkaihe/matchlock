@@ -59,6 +59,9 @@ type Machine interface {
 	Stop(ctx context.Context) error
 	Wait(ctx context.Context) error
 	Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	WriteFile(ctx context.Context, path string, content []byte, mode uint32) error
+	ReadFile(ctx context.Context, path string) ([]byte, error)
+	ListFiles(ctx context.Context, path string) ([]api.FileInfo, error)
 	NetworkFD() (int, error)
 	VsockFD() (int, error)
 	PID() int

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -49,6 +50,10 @@ const (
 	MsgTypeExecStream  uint8 = 11
 	MsgTypeExecPipe    uint8 = 12
 	MsgTypePortForward uint8 = 13
+	MsgTypeWriteFile   uint8 = 14
+	MsgTypeReadFile    uint8 = 15
+	MsgTypeListFiles   uint8 = 16
+	MsgTypeFileResult  uint8 = 17
 )
 
 type sockaddrVM struct {
@@ -88,6 +93,33 @@ type ExecResponse struct {
 type PortForwardRequest struct {
 	Host string `json:"host,omitempty"`
 	Port uint16 `json:"port"`
+}
+
+type WriteFileRequest struct {
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
+	Mode    uint32 `json:"mode"`
+}
+
+type ReadFileRequest struct {
+	Path string `json:"path"`
+}
+
+type ListFilesRequest struct {
+	Path string `json:"path"`
+}
+
+type FileResponse struct {
+	Content []byte     `json:"content,omitempty"`
+	Files   []FileInfo `json:"files,omitempty"`
+	Error   string     `json:"error,omitempty"`
+}
+
+type FileInfo struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	Mode  uint32 `json:"mode"`
+	IsDir bool   `json:"is_dir"`
 }
 
 func Run() {
@@ -221,6 +253,15 @@ func handleExec(fd int) {
 		handlePortForward(fd, data)
 	case MsgTypeExecTTY:
 		handleExecTTY(fd, data)
+	case MsgTypeWriteFile:
+		handleWriteFile(fd, data)
+		syscall.Close(fd)
+	case MsgTypeReadFile:
+		handleReadFile(fd, data)
+		syscall.Close(fd)
+	case MsgTypeListFiles:
+		handleListFile(fd, data)
+		syscall.Close(fd)
 	default:
 		syscall.Close(fd)
 	}
@@ -795,6 +836,86 @@ func sendExecResponse(fd int, resp *ExecResponse) {
 
 	syscall.Write(fd, header)
 	syscall.Write(fd, data)
+}
+
+func sendFileResponse(fd int, resp *FileResponse) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	sendMessage(fd, MsgTypeFileResult, data)
+}
+
+func handleWriteFile(fd int, data []byte) {
+	var req WriteFileRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	mode := os.FileMode(req.Mode)
+	if mode == 0 {
+		mode = 0644
+	}
+
+	dir := filepath.Dir(req.Path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	if err := os.WriteFile(req.Path, req.Content, mode); err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	sendFileResponse(fd, &FileResponse{})
+}
+
+func handleReadFile(fd int, data []byte) {
+	var req ReadFileRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	content, err := os.ReadFile(req.Path)
+	if err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	sendFileResponse(fd, &FileResponse{Content: content})
+}
+
+func handleListFile(fd int, data []byte) {
+	var req ListFilesRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	entries, err := os.ReadDir(req.Path)
+	if err != nil {
+		sendFileResponse(fd, &FileResponse{Error: err.Error()})
+		return
+	}
+
+	files := make([]FileInfo, 0, len(entries))
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, FileInfo{
+			Name:  e.Name(),
+			Size:  info.Size(),
+			Mode:  uint32(info.Mode()),
+			IsDir: e.IsDir(),
+		})
+	}
+
+	sendFileResponse(fd, &FileResponse{Files: files})
 }
 
 func listenVsock(port uint32) (int, error) {
