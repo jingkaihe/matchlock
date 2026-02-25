@@ -22,7 +22,11 @@ import {
   type BinaryLike,
   type Config,
   type CreateOptions,
+  type ExecInteractiveOptions,
+  type ExecInteractiveResult,
   type ExecOptions,
+  type ExecPipeOptions,
+  type ExecPipeResult,
   type ExecResult,
   type ExecStreamOptions,
   type ExecStreamResult,
@@ -36,7 +40,9 @@ import {
   type NetworkHookFunc,
   type NetworkHookRequest,
   type NetworkHookResult,
+  type StreamReader,
   type StreamWriter,
+  type TTYSize,
   type VFSActionRequest,
   type VFSHookAction,
   type VFSHookEvent,
@@ -835,6 +841,151 @@ export class Client {
     };
   }
 
+  async execPipe(
+    command: string,
+    options: ExecPipeOptions = {},
+  ): Promise<ExecPipeResult> {
+    return this.execPipeWithDir(
+      command,
+      options.workingDir ?? "",
+      options.stdin,
+      options.stdout,
+      options.stderr,
+      options,
+    );
+  }
+
+  async execPipeWithDir(
+    command: string,
+    workingDir = "",
+    stdin?: StreamReader,
+    stdout?: StreamWriter,
+    stderr?: StreamWriter,
+    options: RequestOptions = {},
+  ): Promise<ExecPipeResult> {
+    const params: JSONObject = { command };
+    if (workingDir) {
+      params.working_dir = workingDir;
+    }
+
+    const done = { value: false };
+    const ready = this.createReadySignal();
+    const inputPump = this.pumpExecInput(
+      stdin,
+      ready.promise,
+      done,
+      "exec_pipe.stdin",
+      "exec_pipe.stdin_eof",
+    );
+
+    const onNotification = (method: string, payload: JSONObject): void => {
+      if (method === "exec_pipe.ready") {
+        const reqID = asNumber(payload.id, -1);
+        if (reqID >= 0) {
+          ready.markReady(reqID);
+        }
+        return;
+      }
+
+      const data = asString(payload.data);
+      if (!data) {
+        return;
+      }
+      const decoded = this.decodeBase64(data);
+      if (!decoded) {
+        return;
+      }
+
+      if (method === "exec_pipe.stdout") {
+        this.writeStreamChunk(stdout, decoded);
+      } else if (method === "exec_pipe.stderr") {
+        this.writeStreamChunk(stderr, decoded);
+      }
+    };
+
+    try {
+      const result = asObject(
+        await this.sendRequest("exec_pipe", params, options, onNotification),
+      );
+      return {
+        exitCode: asNumber(result.exit_code),
+        durationMs: asNumber(result.duration_ms),
+      };
+    } finally {
+      done.value = true;
+      ready.markReady(undefined);
+      await inputPump.catch(() => undefined);
+    }
+  }
+
+  async execInteractive(
+    command: string,
+    options: ExecInteractiveOptions = {},
+  ): Promise<ExecInteractiveResult> {
+    const rows = (options.rows ?? 24) > 0 ? options.rows ?? 24 : 24;
+    const cols = (options.cols ?? 80) > 0 ? options.cols ?? 80 : 80;
+
+    const params: JSONObject = {
+      command,
+      rows,
+      cols,
+    };
+    if (options.workingDir) {
+      params.working_dir = options.workingDir;
+    }
+
+    const done = { value: false };
+    const ready = this.createReadySignal();
+    const inputPump = this.pumpExecInput(
+      options.stdin,
+      ready.promise,
+      done,
+      "exec_tty.stdin",
+      "exec_tty.stdin_eof",
+    );
+    const resizePump = this.pumpTTYResize(options.resize, ready.promise, done);
+
+    const onNotification = (method: string, payload: JSONObject): void => {
+      if (method === "exec_tty.ready") {
+        const reqID = asNumber(payload.id, -1);
+        if (reqID >= 0) {
+          ready.markReady(reqID);
+        }
+        return;
+      }
+      if (method !== "exec_tty.stdout") {
+        return;
+      }
+
+      const data = asString(payload.data);
+      if (!data) {
+        return;
+      }
+      const decoded = this.decodeBase64(data);
+      if (!decoded) {
+        return;
+      }
+      this.writeStreamChunk(options.stdout, decoded);
+    };
+
+    try {
+      const result = asObject(
+        await this.sendRequest("exec_tty", params, options, onNotification),
+      );
+      return {
+        exitCode: asNumber(result.exit_code),
+        durationMs: asNumber(result.duration_ms),
+      };
+    } finally {
+      done.value = true;
+      ready.markReady(undefined);
+      await Promise.all([
+        inputPump.catch(() => undefined),
+        resizePump.catch(() => undefined),
+      ]);
+    }
+  }
+
   async writeFile(
     path: string,
     content: BinaryLike,
@@ -1095,6 +1246,159 @@ export class Client {
     });
   }
 
+  private createReadySignal(): {
+    promise: Promise<number | undefined>;
+    markReady: (reqID: number | undefined) => void;
+  } {
+    let resolved = false;
+    let resolveFn: (reqID: number | undefined) => void = () => {};
+    const promise = new Promise<number | undefined>((resolve) => {
+      resolveFn = resolve;
+    });
+    return {
+      promise,
+      markReady: (reqID: number | undefined): void => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolveFn(reqID);
+      },
+    };
+  }
+
+  private decodeBase64(data: string): Buffer | undefined {
+    try {
+      return Buffer.from(data, "base64");
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async sendFireAndForget(
+    method: string,
+    params?: JSONObject,
+  ): Promise<void> {
+    const request: JSONRPCRequest = {
+      jsonrpc: "2.0",
+      method,
+      id: ++this.requestID,
+    };
+    if (params && Object.keys(params).length > 0) {
+      request.params = params;
+    }
+    await this.enqueueWrite(`${JSON.stringify(request)}\n`);
+  }
+
+  private isAsyncIterable<T>(value: unknown): value is AsyncIterable<T> {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    return typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function";
+  }
+
+  private isIterable<T>(value: unknown): value is Iterable<T> {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    return typeof (value as Iterable<T>)[Symbol.iterator] === "function";
+  }
+
+  private toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {
+    if (this.isAsyncIterable<T>(value)) {
+      return value;
+    }
+    return (async function* toAsync(): AsyncGenerator<T> {
+      for (const item of value) {
+        yield item;
+      }
+    })();
+  }
+
+  private async pumpExecInput(
+    stdin: StreamReader | undefined,
+    readyPromise: Promise<number | undefined>,
+    done: { value: boolean },
+    chunkMethod: string,
+    eofMethod: string,
+  ): Promise<void> {
+    const reqID = await readyPromise;
+    if (done.value || reqID === undefined) {
+      return;
+    }
+
+    if (!stdin) {
+      await this.sendFireAndForget(eofMethod, { id: reqID }).catch(() => undefined);
+      return;
+    }
+
+    try {
+      const chunks = this.isAsyncIterable<BinaryLike>(stdin) || this.isIterable<BinaryLike>(stdin)
+        ? this.toAsyncIterable<BinaryLike>(stdin)
+        : undefined;
+      if (!chunks) {
+        return;
+      }
+      for await (const chunk of chunks) {
+        if (done.value) {
+          return;
+        }
+        let encoded = "";
+        try {
+          encoded = toBuffer(chunk).toString("base64");
+        } catch {
+          continue;
+        }
+        if (!encoded) {
+          continue;
+        }
+        await this.sendFireAndForget(chunkMethod, {
+          id: reqID,
+          data: encoded,
+        }).catch(() => undefined);
+      }
+    } finally {
+      if (!done.value) {
+        await this.sendFireAndForget(eofMethod, { id: reqID }).catch(() => undefined);
+      }
+    }
+  }
+
+  private async pumpTTYResize(
+    resize: AsyncIterable<TTYSize> | Iterable<TTYSize> | undefined,
+    readyPromise: Promise<number | undefined>,
+    done: { value: boolean },
+  ): Promise<void> {
+    if (!resize) {
+      return;
+    }
+
+    const reqID = await readyPromise;
+    if (done.value || reqID === undefined) {
+      return;
+    }
+
+    const sizes = this.toAsyncIterable<TTYSize>(resize);
+    for await (const size of sizes) {
+      if (done.value) {
+        return;
+      }
+      if (!Array.isArray(size) || size.length < 2) {
+        continue;
+      }
+      const rows = Math.trunc(Number(size[0]));
+      const cols = Math.trunc(Number(size[1]));
+      if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows <= 0 || cols <= 0) {
+        continue;
+      }
+      await this.sendFireAndForget("exec_tty.resize", {
+        id: reqID,
+        rows,
+        cols,
+      }).catch(() => undefined);
+    }
+  }
+
   private async enqueueWrite(line: string): Promise<void> {
     this.writeLock = this.writeLock
       .catch(() => {
@@ -1166,7 +1470,15 @@ export class Client {
     const method = msg.method;
     const params = msg.params ?? {};
 
-    if (method === "exec_stream.stdout" || method === "exec_stream.stderr") {
+    if (
+      method === "exec_stream.stdout" ||
+      method === "exec_stream.stderr" ||
+      method === "exec_pipe.ready" ||
+      method === "exec_pipe.stdout" ||
+      method === "exec_pipe.stderr" ||
+      method === "exec_tty.ready" ||
+      method === "exec_tty.stdout"
+    ) {
       const reqID = asNumber(params.id, -1);
       if (reqID < 0) {
         return;

@@ -499,6 +499,28 @@ class ExecStreamResult:
 
 
 @dataclass
+class ExecPipeResult:
+    """Result of pipe-mode command execution."""
+
+    exit_code: int
+    """The command's exit code."""
+
+    duration_ms: int
+    """Execution time in milliseconds."""
+
+
+@dataclass
+class ExecInteractiveResult:
+    """Result of interactive TTY command execution."""
+
+    exit_code: int
+    """The command's exit code."""
+
+    duration_ms: int
+    """Execution time in milliseconds."""
+
+
+@dataclass
 class FileInfo:
     """File metadata."""
 

@@ -256,6 +256,16 @@ export interface ExecStreamResult {
   durationMs: number;
 }
 
+export interface ExecPipeResult {
+  exitCode: number;
+  durationMs: number;
+}
+
+export interface ExecInteractiveResult {
+  exitCode: number;
+  durationMs: number;
+}
+
 export interface FileInfo {
   name: string;
   size: number;
@@ -272,6 +282,12 @@ export interface VolumeInfo {
 export type StreamWriter =
   | NodeJS.WritableStream
   | ((chunk: Buffer) => void | Promise<void>);
+export type StreamReader =
+  | NodeJS.ReadableStream
+  | AsyncIterable<BinaryLike>
+  | Iterable<BinaryLike>;
+
+export type TTYSize = [number, number];
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -285,4 +301,18 @@ export interface ExecOptions extends RequestOptions {
 export interface ExecStreamOptions extends ExecOptions {
   stdout?: StreamWriter;
   stderr?: StreamWriter;
+}
+
+export interface ExecPipeOptions extends ExecOptions {
+  stdin?: StreamReader;
+  stdout?: StreamWriter;
+  stderr?: StreamWriter;
+}
+
+export interface ExecInteractiveOptions extends ExecOptions {
+  stdin?: StreamReader;
+  stdout?: StreamWriter;
+  rows?: number;
+  cols?: number;
+  resize?: AsyncIterable<TTYSize> | Iterable<TTYSize>;
 }

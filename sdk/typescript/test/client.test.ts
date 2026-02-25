@@ -403,6 +403,115 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("supports execPipe with stdin/stdout/stderr streaming", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    let out = "";
+    let err = "";
+    const pipePromise = client.execPipe("cat", {
+      stdin: [Buffer.from("hello stdin\n")],
+      stdout: (chunk) => {
+        out += chunk.toString("utf8");
+      },
+      stderr: (chunk) => {
+        err += chunk.toString("utf8");
+      },
+    });
+
+    const req = await fake.waitForRequest("exec_pipe");
+    fake.pushNotification("exec_pipe.ready", { id: req.id });
+
+    const stdinReq = await fake.waitForRequest("exec_pipe.stdin");
+    expect((stdinReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect(
+      Buffer.from(
+        String((stdinReq.params as Record<string, unknown>).data),
+        "base64",
+      ).toString("utf8"),
+    ).toBe("hello stdin\n");
+
+    const eofReq = await fake.waitForRequest("exec_pipe.stdin_eof");
+    expect((eofReq.params as Record<string, unknown>).id).toBe(req.id);
+
+    fake.pushNotification("exec_pipe.stdout", {
+      id: req.id,
+      data: Buffer.from("line\n").toString("base64"),
+    });
+    fake.pushNotification("exec_pipe.stderr", {
+      id: req.id,
+      data: Buffer.from("warn\n").toString("base64"),
+    });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 64 },
+    });
+
+    await expect(pipePromise).resolves.toEqual({ exitCode: 0, durationMs: 64 });
+    expect(out).toBe("line\n");
+    expect(err).toBe("warn\n");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("supports execInteractive with stdin, stdout, and resize", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    let out = "";
+    const interactivePromise = client.execInteractive("sh", {
+      stdin: [Buffer.from("exit\n")],
+      stdout: (chunk) => {
+        out += chunk.toString("utf8");
+      },
+      rows: 30,
+      cols: 100,
+      resize: [[40, 120]],
+    });
+
+    const req = await fake.waitForRequest("exec_tty");
+    expect(req.params).toEqual({ command: "sh", rows: 30, cols: 100 });
+    fake.pushNotification("exec_tty.ready", { id: req.id });
+
+    const stdinReq = await fake.waitForRequest("exec_tty.stdin");
+    expect((stdinReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect(
+      Buffer.from(
+        String((stdinReq.params as Record<string, unknown>).data),
+        "base64",
+      ).toString("utf8"),
+    ).toBe("exit\n");
+
+    const resizeReq = await fake.waitForRequest("exec_tty.resize");
+    expect((resizeReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect((resizeReq.params as Record<string, unknown>).rows).toBe(40);
+    expect((resizeReq.params as Record<string, unknown>).cols).toBe(120);
+
+    const eofReq = await fake.waitForRequest("exec_tty.stdin_eof");
+    expect((eofReq.params as Record<string, unknown>).id).toBe(req.id);
+
+    fake.pushNotification("exec_tty.stdout", {
+      id: req.id,
+      data: Buffer.from("/workspace # ").toString("base64"),
+    });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 101 },
+    });
+
+    await expect(interactivePromise).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 101,
+    });
+    expect(out).toBe("/workspace # ");
+
+    fake.close();
+    await client.close();
+  });
+
   it("applies mutate hooks for write_file", async () => {
     const fake = installFakeProcess();
     const client = new Client();

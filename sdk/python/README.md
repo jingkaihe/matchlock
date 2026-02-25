@@ -331,6 +331,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.create(opts)` | Create a VM from `CreateOptions` — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
 | `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
+| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="")` | Bidirectional pipe-mode exec (no PTY), returns `ExecPipeResult` |
+| `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None)` | Interactive PTY exec, returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
@@ -346,6 +348,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
+| `ExecPipeResult` | `exit_code: int`, `duration_ms: int` |
+| `ExecInteractiveResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |
 | `MountConfig` | `type: str`, `host_path: str`, `readonly: bool` |
 | `Secret` | `name: str`, `value: str`, `hosts: list[str]` |

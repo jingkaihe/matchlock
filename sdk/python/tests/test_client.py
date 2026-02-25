@@ -22,6 +22,8 @@ from matchlock.client import (
 from matchlock.types import (
     Config,
     CreateOptions,
+    ExecInteractiveResult,
+    ExecPipeResult,
     ExecResult,
     ExecStreamResult,
     FileInfo,
@@ -1295,6 +1297,154 @@ class TestClientExecStream:
             t.start()
             result = client.exec_stream("cmd")
             assert result.exit_code == 0
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestClientExecPipe:
+    def test_exec_pipe_streams_and_pipes_stdin(self):
+        client, fake = make_client_with_fake()
+        try:
+            out_b64 = base64.b64encode(b"hello from pipe\n").decode()
+            err_b64 = base64.b64encode(b"warning\n").decode()
+            stdin_buf = io.StringIO("hello stdin\n")
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.ready",
+                        "params": {"id": 1},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stdout",
+                        "params": {"id": 1, "data": out_b64},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stderr",
+                        "params": {"id": 1, "data": err_b64},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 88},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            result = client.exec_pipe(
+                "cat",
+                stdin=stdin_buf,
+                stdout=stdout_buf,
+                stderr=stderr_buf,
+            )
+
+            assert isinstance(result, ExecPipeResult)
+            assert result.exit_code == 0
+            assert result.duration_ms == 88
+            assert stdout_buf.getvalue() == "hello from pipe\n"
+            assert stderr_buf.getvalue() == "warning\n"
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            methods = [req["method"] for req in reqs]
+            assert methods[0] == "exec_pipe"
+            assert "exec_pipe.stdin" in methods
+            assert "exec_pipe.stdin_eof" in methods
+
+            stdin_req = next(req for req in reqs if req["method"] == "exec_pipe.stdin")
+            assert stdin_req["params"]["id"] == 1
+            stdin_data = base64.b64decode(stdin_req["params"]["data"]).decode()
+            assert stdin_data == "hello stdin\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestClientExecInteractive:
+    def test_exec_interactive_streams_and_sends_resize(self):
+        client, fake = make_client_with_fake()
+        try:
+            out_b64 = base64.b64encode(b"/workspace # ").decode()
+            stdin_buf = io.StringIO("exit\n")
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_tty.ready",
+                        "params": {"id": 1},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_tty.stdout",
+                        "params": {"id": 1, "data": out_b64},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 120},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.StringIO()
+            result = client.exec_interactive(
+                "sh",
+                stdin=stdin_buf,
+                stdout=stdout_buf,
+                rows=30,
+                cols=100,
+                resize=[(40, 120)],
+            )
+
+            assert isinstance(result, ExecInteractiveResult)
+            assert result.exit_code == 0
+            assert result.duration_ms == 120
+            assert stdout_buf.getvalue() == "/workspace # "
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            methods = [req["method"] for req in reqs]
+            assert methods[0] == "exec_tty"
+            assert "exec_tty.stdin" in methods
+            assert "exec_tty.stdin_eof" in methods
+            assert "exec_tty.resize" in methods
+
+            exec_req = reqs[0]
+            assert exec_req["params"]["rows"] == 30
+            assert exec_req["params"]["cols"] == 100
+
+            resize_req = next(req for req in reqs if req["method"] == "exec_tty.resize")
+            assert resize_req["params"]["id"] == 1
+            assert resize_req["params"]["rows"] == 40
+            assert resize_req["params"]["cols"] == 120
             t.join(timeout=2)
         finally:
             fake.close_stdout()

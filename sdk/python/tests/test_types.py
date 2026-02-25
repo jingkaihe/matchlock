@@ -3,6 +3,8 @@
 from matchlock.types import (
     Config,
     CreateOptions,
+    ExecInteractiveResult,
+    ExecPipeResult,
     ExecResult,
     ExecStreamResult,
     FileInfo,
@@ -147,6 +149,20 @@ class TestExecStreamResult:
         r = ExecStreamResult(exit_code=0, duration_ms=100)
         assert r.exit_code == 0
         assert r.duration_ms == 100
+
+
+class TestExecPipeResult:
+    def test_fields(self):
+        r = ExecPipeResult(exit_code=0, duration_ms=25)
+        assert r.exit_code == 0
+        assert r.duration_ms == 25
+
+
+class TestExecInteractiveResult:
+    def test_fields(self):
+        r = ExecInteractiveResult(exit_code=0, duration_ms=33)
+        assert r.exit_code == 0
+        assert r.duration_ms == 33
 
 
 class TestVFSHookRule:

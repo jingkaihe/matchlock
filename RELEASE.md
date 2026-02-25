@@ -4,6 +4,7 @@
 
 * `matchlock volume cp <src> <dest>`
 * Added Go SDK `exec_pipe` and `exec_tty` support (stdin piping + interactive PTY shell), plus a new interactive terminal example at `examples/go/exec_modes`.
+* Added Python and TypeScript SDK support for `exec_pipe` and interactive `exec_tty` execution modes.
 
 ## 0.1.25
 
