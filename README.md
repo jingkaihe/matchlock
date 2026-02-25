@@ -236,8 +236,12 @@ See full examples in:
 - [`examples/go/network_interception/README.md`](examples/go/network_interception/README.md)
 - [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
 - [`examples/python/basic/main.py`](examples/python/basic/main.py)
+- [`examples/python/network_interception/main.py`](examples/python/network_interception/main.py)
+- [`examples/python/network_interception/README.md`](examples/python/network_interception/README.md)
 - [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
 - [`examples/typescript/basic/main.ts`](examples/typescript/basic/main.ts)
+- [`examples/typescript/network_interception/main.ts`](examples/typescript/network_interception/main.ts)
+- [`examples/typescript/network_interception/README.md`](examples/typescript/network_interception/README.md)
 
 ## Architecture
 

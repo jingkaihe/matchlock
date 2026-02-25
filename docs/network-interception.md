@@ -182,3 +182,5 @@ sandbox := sdk.New("alpine:latest").
 
 See runnable examples:
 - [`examples/go/network_interception/main.go`](../examples/go/network_interception/main.go)
+- [`examples/python/network_interception/main.py`](../examples/python/network_interception/main.py)
+- [`examples/typescript/network_interception/main.ts`](../examples/typescript/network_interception/main.ts)

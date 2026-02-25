@@ -28,9 +28,6 @@ func main() {
 
 func run() error {
 	cfg := sdk.DefaultConfig()
-	if os.Getenv("MATCHLOCK_BIN") == "" {
-		cfg.BinaryPath = "./bin/matchlock"
-	}
 
 	client, err := sdk.NewClient(cfg)
 	if err != nil {

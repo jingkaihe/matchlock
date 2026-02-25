@@ -1,8 +1,8 @@
-# Go SDK Network Interception Example
+# TypeScript SDK Network Interception Example
 
-This is a single, minimal example of **callback-based** response interception with the Go SDK.
+This mirrors the Go interception demo with a **callback-based** `after` hook.
 
-It shows one `after` hook callback that:
+It shows one callback that:
 
 - runs only for `host=httpbin.org` and `path=/response-headers`
 - removes response header `X-Upstream`
@@ -14,7 +14,9 @@ It shows one `after` hook callback that:
 From the repository root:
 
 ```bash
-go run ./examples/go/network_interception
+cd examples/typescript/network_interception
+npm install
+npm run start
 ```
 
 The example uses `matchlock` from `PATH` by default.
@@ -32,4 +34,4 @@ The command output should include:
 - header `X-Intercepted: callback`
 - final line: `OK: callback hook intercepted and mutated the response`
 
-The program exits with an error if those expectations are not met.
+The script exits with an error if those expectations are not met.
