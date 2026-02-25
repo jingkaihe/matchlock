@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
@@ -138,6 +140,89 @@ func removeNamedVolume(name string) error {
 			return errx.With(ErrVolumeNotFound, ": %s", name)
 		}
 		return errx.Wrap(ErrRemoveVolume, err)
+	}
+
+	return nil
+}
+
+func copyNamedVolume(srcName, destName string) error {
+	srcName = strings.TrimSpace(srcName)
+	destName = strings.TrimSpace(destName)
+
+	if srcName == destName {
+		return errx.With(ErrCopyVolume, ": source and destination must be different")
+	}
+
+	srcPath, err := findNamedVolume(srcName)
+	if err != nil {
+		return err
+	}
+
+	destPath, err := volumePathForName(destName)
+	if err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(destPath); err == nil {
+		return errx.With(ErrVolumeExists, ": %s", destName)
+	} else if !os.IsNotExist(err) {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+
+	if err := copyRegularFileWithMetadata(srcPath, destPath); err != nil {
+		_ = os.Remove(destPath)
+		return err
+	}
+
+	return nil
+}
+
+func copyRegularFileWithMetadata(srcPath, destPath string) error {
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errx.With(ErrVolumeNotFound, ": %s", filepath.Base(srcPath))
+		}
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+
+	if !info.Mode().IsRegular() {
+		return errx.With(ErrCopyVolume, ": source must be a regular file: %s", srcPath)
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+	defer src.Close()
+
+	fileMode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	dst, err := os.OpenFile(destPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, fileMode.Perm())
+	if err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+	if err := dst.Close(); err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+
+	srcStat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errx.With(ErrCopyVolume, ": source ownership metadata unavailable: %s", srcPath)
+	}
+	if err := os.Chown(destPath, int(srcStat.Uid), int(srcStat.Gid)); err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+	if err := os.Chmod(destPath, fileMode); err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
+	}
+
+	if err := os.Chtimes(destPath, info.ModTime(), info.ModTime()); err != nil {
+		return errx.Wrap(ErrCopyVolume, err)
 	}
 
 	return nil

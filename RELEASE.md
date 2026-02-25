@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unrelease
+
+* `matchlock volume cp <src> <dest>`
+
 ## 0.1.25
 
 * File operations over SDK rpc now no longer relies on vfs.
