@@ -179,6 +179,17 @@ func (h *Handler) Run(ctx context.Context) error {
 			continue
 		}
 
+		// Keep stdin and stdin EOF notifications in transport order.
+		// These methods share per-request channels and can race if handled
+		// in separate goroutines.
+		if isExecInputMethod(req.Method) {
+			resp := h.handleRequest(ctx, &req)
+			if resp != nil {
+				h.sendResponse(resp)
+			}
+			continue
+		}
+
 		h.wg.Add(1)
 		go func(r Request) {
 			defer h.wg.Done()
@@ -215,6 +226,15 @@ func (h *Handler) Run(ctx context.Context) error {
 
 	h.wg.Wait()
 	return scanner.Err()
+}
+
+func isExecInputMethod(method string) bool {
+	switch method {
+	case "exec_pipe.stdin", "exec_pipe.stdin_eof", "exec_tty.stdin", "exec_tty.stdin_eof":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {

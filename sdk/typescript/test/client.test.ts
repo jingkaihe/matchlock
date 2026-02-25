@@ -24,6 +24,24 @@ function installFakeProcess(): FakeProcess {
   return fake;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 250): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 describe("Client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -507,6 +525,64 @@ describe("Client", () => {
       durationMs: 101,
     });
     expect(out).toBe("/workspace # ");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("does not hang execPipe when stdin iterable does not terminate", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    async function* blockedInput(): AsyncGenerator<Buffer> {
+      await new Promise<void>(() => {});
+    }
+
+    const pipePromise = client.execPipe("cat", {
+      stdin: blockedInput(),
+    });
+
+    const req = await fake.waitForRequest("exec_pipe");
+    fake.pushNotification("exec_pipe.ready", { id: req.id });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 8 },
+    });
+
+    await expect(withTimeout(pipePromise)).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 8,
+    });
+
+    fake.close();
+    await client.close();
+  });
+
+  it("does not hang execInteractive when resize iterable does not terminate", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    async function* blockedResize(): AsyncGenerator<[number, number]> {
+      await new Promise<void>(() => {});
+    }
+
+    const interactivePromise = client.execInteractive("sh", {
+      resize: blockedResize(),
+    });
+
+    const req = await fake.waitForRequest("exec_tty");
+    fake.pushNotification("exec_tty.ready", { id: req.id });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 13 },
+    });
+
+    await expect(withTimeout(interactivePromise)).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 13,
+    });
 
     fake.close();
     await client.close();

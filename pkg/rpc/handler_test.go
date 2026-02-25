@@ -171,6 +171,31 @@ func (t *testRPC) close() {
 	<-t.done
 }
 
+func TestIsExecInputMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		method string
+		want   bool
+	}{
+		{method: "exec_pipe.stdin", want: true},
+		{method: "exec_pipe.stdin_eof", want: true},
+		{method: "exec_tty.stdin", want: true},
+		{method: "exec_tty.stdin_eof", want: true},
+		{method: "exec_tty.resize", want: false},
+		{method: "exec_pipe", want: false},
+		{method: "cancel", want: false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, isExecInputMethod(tc.method))
+		})
+	}
+}
+
 func TestHandlerConcurrentExec(t *testing.T) {
 	var mu sync.Mutex
 	running := 0

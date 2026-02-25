@@ -868,12 +868,12 @@ export class Client {
       params.working_dir = workingDir;
     }
 
-    const done = { value: false };
+    const stop = this.createStopSignal();
     const ready = this.createReadySignal();
     const inputPump = this.pumpExecInput(
       stdin,
       ready.promise,
-      done,
+      stop,
       "exec_pipe.stdin",
       "exec_pipe.stdin_eof",
     );
@@ -912,7 +912,7 @@ export class Client {
         durationMs: asNumber(result.duration_ms),
       };
     } finally {
-      done.value = true;
+      stop.stop();
       ready.markReady(undefined);
       await inputPump.catch(() => undefined);
     }
@@ -934,16 +934,16 @@ export class Client {
       params.working_dir = options.workingDir;
     }
 
-    const done = { value: false };
+    const stop = this.createStopSignal();
     const ready = this.createReadySignal();
     const inputPump = this.pumpExecInput(
       options.stdin,
       ready.promise,
-      done,
+      stop,
       "exec_tty.stdin",
       "exec_tty.stdin_eof",
     );
-    const resizePump = this.pumpTTYResize(options.resize, ready.promise, done);
+    const resizePump = this.pumpTTYResize(options.resize, ready.promise, stop);
 
     const onNotification = (method: string, payload: JSONObject): void => {
       if (method === "exec_tty.ready") {
@@ -977,7 +977,7 @@ export class Client {
         durationMs: asNumber(result.duration_ms),
       };
     } finally {
-      done.value = true;
+      stop.stop();
       ready.markReady(undefined);
       await Promise.all([
         inputPump.catch(() => undefined),
@@ -1267,6 +1267,29 @@ export class Client {
     };
   }
 
+  private createStopSignal(): {
+    promise: Promise<void>;
+    isStopped: () => boolean;
+    stop: () => void;
+  } {
+    let stopped = false;
+    let resolveFn: () => void = () => {};
+    const promise = new Promise<void>((resolve) => {
+      resolveFn = resolve;
+    });
+    return {
+      promise,
+      isStopped: (): boolean => stopped,
+      stop: (): void => {
+        if (stopped) {
+          return;
+        }
+        stopped = true;
+        resolveFn();
+      },
+    };
+  }
+
   private decodeBase64(data: string): Buffer | undefined {
     try {
       return Buffer.from(data, "base64");
@@ -1318,12 +1341,15 @@ export class Client {
   private async pumpExecInput(
     stdin: StreamReader | undefined,
     readyPromise: Promise<number | undefined>,
-    done: { value: boolean },
+    stop: { promise: Promise<void>; isStopped: () => boolean },
     chunkMethod: string,
     eofMethod: string,
   ): Promise<void> {
-    const reqID = await readyPromise;
-    if (done.value || reqID === undefined) {
+    const reqID = await Promise.race([
+      readyPromise,
+      stop.promise.then(() => undefined),
+    ]);
+    if (stop.isStopped() || reqID === undefined) {
       return;
     }
 
@@ -1332,6 +1358,7 @@ export class Client {
       return;
     }
 
+    let shouldSendEOF = true;
     try {
       const chunks = this.isAsyncIterable<BinaryLike>(stdin) || this.isIterable<BinaryLike>(stdin)
         ? this.toAsyncIterable<BinaryLike>(stdin)
@@ -1339,26 +1366,41 @@ export class Client {
       if (!chunks) {
         return;
       }
-      for await (const chunk of chunks) {
-        if (done.value) {
-          return;
+      const iterator = chunks[Symbol.asyncIterator]();
+      try {
+        for (;;) {
+          const next = await this.nextAsyncItem(iterator, stop.promise);
+          if (!next) {
+            shouldSendEOF = false;
+            return;
+          }
+          if (next.done) {
+            return;
+          }
+          if (stop.isStopped()) {
+            shouldSendEOF = false;
+            return;
+          }
+          const chunk = next.value;
+          let encoded = "";
+          try {
+            encoded = toBuffer(chunk).toString("base64");
+          } catch {
+            continue;
+          }
+          if (!encoded) {
+            continue;
+          }
+          await this.sendFireAndForget(chunkMethod, {
+            id: reqID,
+            data: encoded,
+          }).catch(() => undefined);
         }
-        let encoded = "";
-        try {
-          encoded = toBuffer(chunk).toString("base64");
-        } catch {
-          continue;
-        }
-        if (!encoded) {
-          continue;
-        }
-        await this.sendFireAndForget(chunkMethod, {
-          id: reqID,
-          data: encoded,
-        }).catch(() => undefined);
+      } finally {
+        this.closeAsyncIterator(iterator);
       }
     } finally {
-      if (!done.value) {
+      if (shouldSendEOF && !stop.isStopped()) {
         await this.sendFireAndForget(eofMethod, { id: reqID }).catch(() => undefined);
       }
     }
@@ -1367,36 +1409,70 @@ export class Client {
   private async pumpTTYResize(
     resize: AsyncIterable<TTYSize> | Iterable<TTYSize> | undefined,
     readyPromise: Promise<number | undefined>,
-    done: { value: boolean },
+    stop: { promise: Promise<void>; isStopped: () => boolean },
   ): Promise<void> {
     if (!resize) {
       return;
     }
 
-    const reqID = await readyPromise;
-    if (done.value || reqID === undefined) {
+    const reqID = await Promise.race([
+      readyPromise,
+      stop.promise.then(() => undefined),
+    ]);
+    if (stop.isStopped() || reqID === undefined) {
       return;
     }
 
     const sizes = this.toAsyncIterable<TTYSize>(resize);
-    for await (const size of sizes) {
-      if (done.value) {
-        return;
+    const iterator = sizes[Symbol.asyncIterator]();
+    try {
+      for (;;) {
+        const next = await this.nextAsyncItem(iterator, stop.promise);
+        if (!next || next.done || stop.isStopped()) {
+          return;
+        }
+        const size = next.value;
+        if (!Array.isArray(size) || size.length < 2) {
+          continue;
+        }
+        const rows = Math.trunc(Number(size[0]));
+        const cols = Math.trunc(Number(size[1]));
+        if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows <= 0 || cols <= 0) {
+          continue;
+        }
+        await this.sendFireAndForget("exec_tty.resize", {
+          id: reqID,
+          rows,
+          cols,
+        }).catch(() => undefined);
       }
-      if (!Array.isArray(size) || size.length < 2) {
-        continue;
-      }
-      const rows = Math.trunc(Number(size[0]));
-      const cols = Math.trunc(Number(size[1]));
-      if (!Number.isFinite(rows) || !Number.isFinite(cols) || rows <= 0 || cols <= 0) {
-        continue;
-      }
-      await this.sendFireAndForget("exec_tty.resize", {
-        id: reqID,
-        rows,
-        cols,
-      }).catch(() => undefined);
+    } finally {
+      this.closeAsyncIterator(iterator);
     }
+  }
+
+  private async nextAsyncItem<T>(
+    iterator: AsyncIterator<T>,
+    stopPromise: Promise<void>,
+  ): Promise<IteratorResult<T> | undefined> {
+    const nextPromise = iterator.next();
+    const result = await Promise.race([
+      nextPromise.then((next) => ({ kind: "next" as const, next })),
+      stopPromise.then(() => ({ kind: "stopped" as const })),
+    ]);
+    if (result.kind === "stopped") {
+      void nextPromise.catch(() => undefined);
+      return undefined;
+    }
+    return result.next;
+  }
+
+  private closeAsyncIterator<T>(iterator: AsyncIterator<T>): void {
+    const close = iterator.return;
+    if (typeof close !== "function") {
+      return;
+    }
+    void Promise.resolve(close.call(iterator)).catch(() => undefined);
   }
 
   private async enqueueWrite(line: string): Promise<void> {
