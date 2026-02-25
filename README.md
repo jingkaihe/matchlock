@@ -72,7 +72,7 @@ docker save myapp:latest | matchlock image import myapp:latest  # Import from ta
 
 ## SDK
 
-Matchlock also ships with Go and Python SDKs for embedding sandboxes directly in your application. Allows you to programmatically launch VMs, exec commands, stream output and write files.
+Matchlock ships Go, Python, and TypeScript SDKs for embedding sandboxes directly in your application. You can launch VMs, execute commands, stream output, and manage files programmatically.
 
 **Go**
 
@@ -88,18 +88,29 @@ import (
 )
 
 func main() {
-	client, _ := sdk.NewClient(sdk.DefaultConfig())
-	defer client.Close()
+	ctx := context.Background()
+
+	client, err := sdk.NewClient(sdk.DefaultConfig())
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close(0)
+	defer client.Remove()
 
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("dl-cdn.alpinelinux.org", "api.anthropic.com").
 		AddSecret("ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY"), "api.anthropic.com")
-
-	client.Launch(sandbox)
-	client.Exec("apk add --no-cache curl")
-
+	if _, err := client.Launch(sandbox); err != nil {
+		panic(err)
+	}
+	if _, err := client.Exec(ctx, "apk add --no-cache curl"); err != nil {
+		panic(err)
+	}
 	// The VM only ever sees a placeholder - the real key never enters the sandbox
-	result, _ := client.Exec("echo $ANTHROPIC_API_KEY")
+	result, err := client.Exec(ctx, "echo $ANTHROPIC_API_KEY")
+	if err != nil {
+		panic(err)
+	}
 	fmt.Print(result.Stdout) // prints "SANDBOX_SECRET_a1b2c3d4..."
 
 	curlCmd := `curl -s --no-buffer https://api.anthropic.com/v1/messages \
@@ -108,7 +119,9 @@ func main() {
   -H "anthropic-version: 2023-06-01" \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
        "messages":[{"role":"user","content":"Explain TCP to me"}]}'`
-	client.ExecStream(curlCmd, os.Stdout, os.Stderr)
+	if _, err := client.ExecStream(ctx, curlCmd, os.Stdout, os.Stderr); err != nil {
+		panic(err)
+	}
 }
 ```
 
@@ -168,7 +181,7 @@ uv add matchlock
 import os
 import sys
 
-from matchlock import Client, Config, Sandbox
+from matchlock import Client, Sandbox
 
 sandbox = (
     Sandbox("alpine:latest")
@@ -185,10 +198,12 @@ curl_cmd = """curl -s --no-buffer https://api.anthropic.com/v1/messages \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
        "messages":[{"role":"user","content":"Explain TCP/IP."}]}'"""
 
-with Client(Config()) as client:
+with Client() as client:
     client.launch(sandbox)
     client.exec("apk add --no-cache curl")
     client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
+
+client.remove()
 ```
 
 **TypeScript**
@@ -205,10 +220,14 @@ const sandbox = new Sandbox("alpine:latest")
   .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
 
 const client = new Client();
-await client.launch(sandbox);
-const result = await client.exec("echo hello from typescript");
-console.log(result.stdout);
-await client.close();
+try {
+  await client.launch(sandbox);
+  const result = await client.exec("echo hello from typescript");
+  console.log(result.stdout);
+} finally {
+  await client.close();
+  await client.remove();
+}
 ```
 
 See full examples in:

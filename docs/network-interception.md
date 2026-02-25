@@ -22,6 +22,7 @@ Notes:
 - `--network-intercept` forces interception even with an empty allow-list.
 - `--no-network` cannot be combined with allow-list, secrets, or interception.
 - Hook rules are currently configured through the Go SDK (or wire API), not via dedicated CLI rule flags.
+- In the Go SDK, use `sdk.New(...).WithNetworkInterception(...)` plus context-aware client methods (`Launch`, `AllowListAdd`, `AllowListDelete`).
 
 ## Runtime Allow-List Mutation
 
@@ -48,8 +49,9 @@ defer client.Remove()
 vm := sdk.New("alpine:latest").WithNetworkInterception()
 _, _ = client.Launch(vm)
 
-added, _ := client.AllowListAdd(context.Background(), "api.openai.com,api.anthropic.com")
-removed, _ := client.AllowListDelete(context.Background(), "api.openai.com")
+ctx := context.Background()
+added, _ := client.AllowListAdd(ctx, "api.openai.com", "api.anthropic.com")
+removed, _ := client.AllowListDelete(ctx, "api.openai.com")
 
 _ = added
 _ = removed
@@ -77,6 +79,11 @@ Matcher semantics:
 - `methods`: HTTP methods, empty means all methods
 - `path`: URL path glob, empty means all paths
 
+Defaults:
+
+- omitted `phase` defaults to `before`
+- omitted `action` defaults to `allow`
+
 If mutation fields are present and `action` is `allow`, the rule is treated as mutate.
 
 ## SDK Callback Hooks (Go)
@@ -85,13 +92,14 @@ Go SDK rules can attach a `Hook` callback for dynamic mutation.
 
 - Static filters (`phase`, `hosts`, `methods`, `path`) are evaluated first.
 - Only matching traffic invokes the callback.
+- Callback hooks are Go SDK-local and run in the SDK process (not inside the VM).
+- For callback rules, keep `action` empty or `allow`; return the effective action from the callback.
+- `timeout_ms` bounds callback execution time.
 - Callback can return dynamic action/mutations:
   - request edits (`Request.Headers`, `Request.Query`, `Request.Path`)
   - response edits (`Response.Headers`, `Response.BodyReplacements`)
   - full response body replacement (`Response.SetBody`)
 - For callback object fields, `Headers`/`Query` are full replacements when set (non-nil).
-
-The callback runs in the SDK process.
 
 ## Traffic Scope
 
@@ -168,7 +176,7 @@ sandbox := sdk.New("alpine:latest").
 
 ## Current Scope
 
-- Hook-rule APIs are available in the Go SDK and wire API.
+- Static and callback-based hook-rule APIs are available in the Go SDK and wire API.
 - Python and TypeScript SDK builders currently expose allow-list/secret controls but not typed network hook-rule builders.
 
 See runnable examples:
