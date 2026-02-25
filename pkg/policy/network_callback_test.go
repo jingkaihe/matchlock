@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -65,7 +66,14 @@ func TestUnixNetworkHookInvoker_RespectsContextDeadline(t *testing.T) {
 func startTestNetworkHookServer(t *testing.T, handle func(conn net.Conn) error) (string, <-chan error) {
 	t.Helper()
 
-	socketPath := filepath.Join(t.TempDir(), "network-hook.sock")
+	// Keep the Unix socket path short; macOS rejects long socket paths.
+	tempDir, err := os.MkdirTemp("", "mlnh-*")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(tempDir)
+	})
+
+	socketPath := filepath.Join(tempDir, "s.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 
