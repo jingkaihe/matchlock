@@ -79,15 +79,17 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts    []string          `json:"allowed_hosts,omitempty"`
-	AddHosts        []HostIPMapping   `json:"add_hosts,omitempty"`
-	BlockPrivateIPs bool              `json:"block_private_ips,omitempty"`
-	NoNetwork       bool              `json:"no_network,omitempty"`
-	Secrets         map[string]Secret `json:"secrets,omitempty"`
-	PolicyScript    string            `json:"policy_script,omitempty"`
-	DNSServers      []string          `json:"dns_servers,omitempty"`
-	Hostname        string            `json:"hostname,omitempty"`
-	MTU             int               `json:"mtu,omitempty"`
+	AllowedHosts    []string                   `json:"allowed_hosts,omitempty"`
+	AddHosts        []HostIPMapping            `json:"add_hosts,omitempty"`
+	BlockPrivateIPs bool                       `json:"block_private_ips,omitempty"`
+	NoNetwork       bool                       `json:"no_network,omitempty"`
+	Intercept       bool                       `json:"intercept,omitempty"`
+	Interception    *NetworkInterceptionConfig `json:"interception,omitempty"`
+	Secrets         map[string]Secret          `json:"secrets,omitempty"`
+	PolicyScript    string                     `json:"policy_script,omitempty"`
+	DNSServers      []string                   `json:"dns_servers,omitempty"`
+	Hostname        string                     `json:"hostname,omitempty"`
+	MTU             int                        `json:"mtu,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.
@@ -116,6 +118,12 @@ func (n *NetworkConfig) Validate() error {
 	}
 	if len(n.Secrets) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
+	}
+	if n.Intercept {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.intercept")
+	}
+	if n.Interception != nil {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.interception")
 	}
 	return nil
 }

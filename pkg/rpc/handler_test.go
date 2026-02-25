@@ -20,8 +20,11 @@ import (
 )
 
 type mockVM struct {
-	id       string
-	execFunc func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	id                     string
+	execFunc               func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	addAllowedHostsFunc    func(ctx context.Context, hosts []string) ([]string, error)
+	removeAllowedHostsFunc func(ctx context.Context, hosts []string) ([]string, error)
+	allowedHostsFunc       func(ctx context.Context) ([]string, error)
 }
 
 func (m *mockVM) ID() string                                                { return m.id }
@@ -31,8 +34,26 @@ func (m *mockVM) Stop(context.Context) error                                { re
 func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error   { return nil }
 func (m *mockVM) ReadFile(context.Context, string) ([]byte, error)          { return nil, nil }
 func (m *mockVM) ListFiles(context.Context, string) ([]api.FileInfo, error) { return nil, nil }
-func (m *mockVM) Events() <-chan api.Event                                  { return make(chan api.Event) }
-func (m *mockVM) Close(context.Context) error                               { return nil }
+func (m *mockVM) AddAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if m.addAllowedHostsFunc != nil {
+		return m.addAllowedHostsFunc(ctx, hosts)
+	}
+	return nil, nil
+}
+func (m *mockVM) RemoveAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if m.removeAllowedHostsFunc != nil {
+		return m.removeAllowedHostsFunc(ctx, hosts)
+	}
+	return nil, nil
+}
+func (m *mockVM) AllowedHosts(ctx context.Context) ([]string, error) {
+	if m.allowedHostsFunc != nil {
+		return m.allowedHostsFunc(ctx)
+	}
+	return nil, nil
+}
+func (m *mockVM) Events() <-chan api.Event    { return make(chan api.Event) }
+func (m *mockVM) Close(context.Context) error { return nil }
 
 func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if m.execFunc != nil {
@@ -474,4 +495,104 @@ func TestHandlerPortForwardSerializesReplacement(t *testing.T) {
 	require.Nil(t, msgB.Error)
 	assert.ElementsMatch(t, []uint64{2, 3}, []uint64{*msgA.ID, *msgB.ID})
 	assert.False(t, secondStartedEarly, "second port_forward started before first replacement completed")
+}
+
+func TestHandlerAllowListAddDelete(t *testing.T) {
+	allowedHosts := []string{"api.openai.com"}
+
+	vm := &mockVM{
+		id: "vm-test",
+		addAllowedHostsFunc: func(ctx context.Context, hosts []string) ([]string, error) {
+			seen := make(map[string]struct{}, len(allowedHosts))
+			for _, host := range allowedHosts {
+				seen[host] = struct{}{}
+			}
+			added := make([]string, 0, len(hosts))
+			for _, host := range hosts {
+				if _, ok := seen[host]; ok {
+					continue
+				}
+				allowedHosts = append(allowedHosts, host)
+				seen[host] = struct{}{}
+				added = append(added, host)
+			}
+			return added, nil
+		},
+		removeAllowedHostsFunc: func(ctx context.Context, hosts []string) ([]string, error) {
+			toRemove := make(map[string]struct{}, len(hosts))
+			for _, host := range hosts {
+				toRemove[host] = struct{}{}
+			}
+			next := make([]string, 0, len(allowedHosts))
+			removed := make([]string, 0, len(hosts))
+			removedSet := make(map[string]struct{})
+			for _, host := range allowedHosts {
+				if _, ok := toRemove[host]; ok {
+					if _, seen := removedSet[host]; !seen {
+						removed = append(removed, host)
+						removedSet[host] = struct{}{}
+					}
+					continue
+				}
+				next = append(next, host)
+			}
+			allowedHosts = next
+			return removed, nil
+		},
+		allowedHostsFunc: func(ctx context.Context) ([]string, error) {
+			out := make([]string, len(allowedHosts))
+			copy(out, allowedHosts)
+			return out, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	rpc.send("allow_list_add", 2, map[string]interface{}{
+		"hosts": []string{"api.anthropic.com", "api.openai.com"},
+	})
+	msg = rpc.read()
+	require.Nil(t, msg.Error, "allow_list_add failed")
+	var addResult struct {
+		Added        []string `json:"added"`
+		AllowedHosts []string `json:"allowed_hosts"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Result, &addResult))
+	assert.Equal(t, []string{"api.anthropic.com"}, addResult.Added)
+	assert.Equal(t, []string{"api.openai.com", "api.anthropic.com"}, addResult.AllowedHosts)
+
+	rpc.send("allow_list_delete", 3, map[string]interface{}{
+		"hosts": []string{"api.openai.com"},
+	})
+	msg = rpc.read()
+	require.Nil(t, msg.Error, "allow_list_delete failed")
+	var delResult struct {
+		Removed      []string `json:"removed"`
+		AllowedHosts []string `json:"allowed_hosts"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Result, &delResult))
+	assert.Equal(t, []string{"api.openai.com"}, delResult.Removed)
+	assert.Equal(t, []string{"api.anthropic.com"}, delResult.AllowedHosts)
+}
+
+func TestHandlerAllowListAddRequiresHosts(t *testing.T) {
+	vm := &mockVM{id: "vm-test"}
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	_ = rpc.read()
+
+	rpc.send("allow_list_add", 2, map[string]interface{}{
+		"hosts": []string{},
+	})
+	msg := rpc.read()
+	require.NotNil(t, msg.Error)
+	assert.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	assert.Contains(t, msg.Error.Message, "hosts is required")
 }

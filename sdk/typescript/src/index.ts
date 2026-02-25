@@ -3,6 +3,11 @@ export { Sandbox, createSandbox } from "./builder";
 export { MatchlockError, RPCError } from "./errors";
 
 export {
+  NETWORK_HOOK_ACTION_ALLOW,
+  NETWORK_HOOK_ACTION_BLOCK,
+  NETWORK_HOOK_ACTION_MUTATE,
+  NETWORK_HOOK_PHASE_AFTER,
+  NETWORK_HOOK_PHASE_BEFORE,
   VFS_HOOK_ACTION_ALLOW,
   VFS_HOOK_ACTION_BLOCK,
   VFS_HOOK_OP_STAT,
@@ -38,6 +43,16 @@ export type {
   HostIPMapping,
   ImageConfig,
   MountConfig,
+  NetworkBodyTransform,
+  NetworkHookFunc,
+  NetworkHookRequest,
+  NetworkHookRequestMutation,
+  NetworkHookResponseMutation,
+  NetworkHookResult,
+  NetworkHookAction,
+  NetworkHookPhase,
+  NetworkHookRule,
+  NetworkInterceptionConfig,
   PortForward,
   PortForwardBinding,
   RequestOptions,

@@ -2,9 +2,14 @@ import type { Client } from "./client";
 
 export const VFS_HOOK_PHASE_BEFORE = "before";
 export const VFS_HOOK_PHASE_AFTER = "after";
+export const NETWORK_HOOK_PHASE_BEFORE = "before";
+export const NETWORK_HOOK_PHASE_AFTER = "after";
 
 export const VFS_HOOK_ACTION_ALLOW = "allow";
 export const VFS_HOOK_ACTION_BLOCK = "block";
+export const NETWORK_HOOK_ACTION_ALLOW = "allow";
+export const NETWORK_HOOK_ACTION_BLOCK = "block";
+export const NETWORK_HOOK_ACTION_MUTATE = "mutate";
 
 export const VFS_HOOK_OP_STAT = "stat";
 export const VFS_HOOK_OP_READDIR = "readdir";
@@ -44,6 +49,8 @@ export type VFSHookOp =
   | "truncate";
 
 export type VFSHookAction = "allow" | "block" | (string & {});
+export type NetworkHookPhase = "" | "before" | "after";
+export type NetworkHookAction = "allow" | "block" | "mutate";
 
 export interface Config {
   binaryPath?: string;
@@ -144,6 +151,72 @@ export interface VFSInterceptionConfig {
   rules?: VFSHookRule[];
 }
 
+export interface NetworkBodyTransform {
+  find: string;
+  replace?: string;
+}
+
+export interface NetworkHookRequest {
+  phase: NetworkHookPhase;
+  host: string;
+  method: string;
+  path: string;
+  query?: Record<string, string>;
+  requestHeaders?: Record<string, string[]>;
+  statusCode: number;
+  responseHeaders?: Record<string, string[]>;
+  isSSE: boolean;
+}
+
+export interface NetworkHookRequestMutation {
+  headers?: Record<string, string[]>;
+  query?: Record<string, string>;
+  path?: string;
+}
+
+export interface NetworkHookResponseMutation {
+  headers?: Record<string, string[]>;
+  bodyReplacements?: NetworkBodyTransform[];
+  setBody?: BinaryLike | null;
+}
+
+export interface NetworkHookResult {
+  action?: NetworkHookAction;
+  request?: NetworkHookRequestMutation;
+  response?: NetworkHookResponseMutation;
+}
+
+export type NetworkHookFunc = (
+  request: NetworkHookRequest,
+) =>
+  | NetworkHookResult
+  | null
+  | undefined
+  | Promise<NetworkHookResult | null | undefined>;
+
+export interface NetworkHookRule {
+  name?: string;
+  phase?: NetworkHookPhase;
+  hosts?: string[];
+  methods?: string[];
+  path?: string;
+  action?: NetworkHookAction;
+  setHeaders?: Record<string, string>;
+  deleteHeaders?: string[];
+  setQuery?: Record<string, string>;
+  deleteQuery?: string[];
+  rewritePath?: string;
+  setResponseHeaders?: Record<string, string>;
+  deleteResponseHeaders?: string[];
+  bodyReplacements?: NetworkBodyTransform[];
+  timeoutMs?: number;
+  hook?: NetworkHookFunc;
+}
+
+export interface NetworkInterceptionConfig {
+  rules?: NetworkHookRule[];
+}
+
 export interface CreateOptions {
   image?: string;
   privileged?: boolean;
@@ -156,6 +229,8 @@ export interface CreateOptions {
   blockPrivateIPs?: boolean;
   blockPrivateIPsSet?: boolean;
   noNetwork?: boolean;
+  forceInterception?: boolean;
+  networkInterception?: NetworkInterceptionConfig;
   mounts?: Record<string, MountConfig>;
   env?: Record<string, string>;
   secrets?: Secret[];

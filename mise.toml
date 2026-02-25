@@ -372,8 +372,12 @@ if [ ${#ARTIFACTS[@]} -eq 0 ]; then
   exit 1
 fi
 
+NOTES_FILE="$(mktemp)"
+trap 'rm -f "$NOTES_FILE"' EXIT
+bash ./scripts/extract-release-notes.sh > "$NOTES_FILE"
+
 echo "Uploading ${#ARTIFACTS[@]} artifacts..."
-gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${ARTIFACTS[@]}"
+gh release create "v$VERSION" --title "v$VERSION" --notes-file "$NOTES_FILE" "${ARTIFACTS[@]}"
 echo "GitHub release v$VERSION created successfully!"
 """
 

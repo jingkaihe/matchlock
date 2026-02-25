@@ -91,6 +91,8 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
+			i.emitBlockedEvent(modifiedReq, host, err.Error())
+			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			resp.Body.Close()
 			pc.conn.Close()
 			return
@@ -193,6 +195,8 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
 		if err != nil {
+			i.emitBlockedEvent(modifiedReq, serverName, err.Error())
+			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
 			resp.Body.Close()
 			return
 		}

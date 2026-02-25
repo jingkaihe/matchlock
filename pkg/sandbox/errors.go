@@ -62,4 +62,6 @@ var (
 	ErrPortForwardCopy       = errors.New("proxy port-forward stream")
 	ErrNoVsockDialer         = errors.New("vm backend does not support vsock dial")
 	ErrVFSDisabled           = errors.New("vfs is disabled")
+	ErrAllowListUnavailable  = errors.New("allow-list updates unavailable")
+	ErrAllowListHosts        = errors.New("invalid allow-list hosts")
 )

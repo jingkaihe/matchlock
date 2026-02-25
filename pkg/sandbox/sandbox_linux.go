@@ -147,7 +147,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	// Create CAPool early and inject cert into writable upper before VM creation
-	needsProxy := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := !noNetwork && config.Network != nil && (config.Network.Intercept || config.Network.Interception != nil || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error
@@ -432,6 +432,33 @@ func (s *Sandbox) Machine() vm.Machine { return s.machine }
 func (s *Sandbox) Policy() *policy.Engine { return s.policy }
 
 func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
+
+func (s *Sandbox) AddAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	if len(hosts) == 0 {
+		return nil, errx.With(ErrAllowListHosts, ": no hosts provided")
+	}
+	return s.policy.AddAllowedHosts(hosts...), nil
+}
+
+func (s *Sandbox) RemoveAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	if len(hosts) == 0 {
+		return nil, errx.With(ErrAllowListHosts, ": no hosts provided")
+	}
+	return s.policy.RemoveAllowedHosts(hosts...), nil
+}
+
+func (s *Sandbox) AllowedHosts(ctx context.Context) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	return s.policy.AllowedHosts(), nil
+}
 
 // Start starts the sandbox VM.
 func (s *Sandbox) Start(ctx context.Context) error {

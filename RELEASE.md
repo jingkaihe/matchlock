@@ -1,8 +1,9 @@
 # Release Notes
 
-## Unreleased
+## 0.1.24
 
 * Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+* Added Go SDK callback-based network interception hooks.
 * Reduced `MemoryProvider` directory bookkeeping overhead by using a single `dirs` mode map, preventing `dirs`/`dirModes` desyncs in VFS ([#67](https://github.com/jingkaihe/matchlock/pull/67) by [@comunidadio](https://github.com/comunidadio)).
 * Made workspace/VFS opt-in for `run`: no workspace is mounted by default, and `guest-fused` starts only when a workspace is explicitly configured with VFS mounts.
 * Tightened VFS startup validation to fail fast on invalid configurations (for example, `vfs.workspace` without mounts, mounts without `vfs.workspace`, or mount paths outside workspace).

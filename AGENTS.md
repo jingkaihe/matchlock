@@ -127,6 +127,8 @@ if err != nil {
 - `write_file`
 - `read_file`
 - `list_files`
+- `allow_list_add`
+- `allow_list_delete`
 - `port_forward`
 - `cancel`
 - `close`

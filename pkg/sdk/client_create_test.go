@@ -2,9 +2,11 @@ package sdk
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -392,12 +394,229 @@ func TestCreateSendsNoNetwork(t *testing.T) {
 	assert.False(t, hasBlockPrivate)
 }
 
+func TestCreateSendsForceInterception(t *testing.T) {
+	var capturedNetwork map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						capturedNetwork = network
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-intercept"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{
+		Image:             "alpine:latest",
+		ForceInterception: true,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-intercept", vmID)
+	require.NotNil(t, capturedNetwork)
+	assert.Equal(t, true, capturedNetwork["intercept"])
+	assert.Equal(t, true, capturedNetwork["block_private_ips"])
+}
+
+func TestCreateSendsNetworkInterceptionRules(t *testing.T) {
+	var capturedNetwork map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						capturedNetwork = network
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-intercept-rules"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		NetworkInterception: &NetworkInterceptionConfig{
+			Rules: []NetworkHookRule{
+				{
+					Phase:                 NetworkHookPhaseAfter,
+					Action:                NetworkHookActionMutate,
+					Hosts:                 []string{"api.openai.com"},
+					SetResponseHeaders:    map[string]string{"X-Test": "ok"},
+					BodyReplacements:      []NetworkBodyTransform{{Find: "foo", Replace: "bar"}},
+					DeleteResponseHeaders: []string{"Server"},
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-intercept-rules", vmID)
+	require.NotNil(t, capturedNetwork)
+	assert.Equal(t, true, capturedNetwork["intercept"])
+	interception, ok := capturedNetwork["interception"].(map[string]interface{})
+	require.True(t, ok)
+	rules, ok := interception["rules"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, rules, 1)
+}
+
+func TestCreateSendsNetworkInterceptionCallbackRule(t *testing.T) {
+	var capturedNetwork map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						capturedNetwork = network
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-intercept-callback"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		NetworkInterception: &NetworkInterceptionConfig{
+			Rules: []NetworkHookRule{
+				{
+					Name:      "callback-after",
+					Phase:     NetworkHookPhaseAfter,
+					Hosts:     []string{"api.openai.com"},
+					Path:      "/v1/*",
+					Hook:      func(ctx context.Context, req NetworkHookRequest) (*NetworkHookResult, error) { return nil, nil },
+					TimeoutMS: 1500,
+				},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-intercept-callback", vmID)
+	require.NotNil(t, capturedNetwork)
+	assert.Equal(t, true, capturedNetwork["intercept"])
+
+	interception, ok := capturedNetwork["interception"].(map[string]interface{})
+	require.True(t, ok)
+	callbackSocket, ok := interception["callback_socket"].(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, strings.TrimSpace(callbackSocket))
+
+	rules, ok := interception["rules"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, rules, 1)
+	rule, ok := rules[0].(map[string]interface{})
+	require.True(t, ok)
+	callbackID, ok := rule["callback_id"].(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, strings.TrimSpace(callbackID))
+}
+
+func TestCreateRejectsNetworkCallbackWithActionBlock(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		NetworkInterception: &NetworkInterceptionConfig{
+			Rules: []NetworkHookRule{
+				{
+					Name:   "bad-callback",
+					Phase:  NetworkHookPhaseAfter,
+					Action: NetworkHookActionBlock,
+					Hook:   func(ctx context.Context, req NetworkHookRequest) (*NetworkHookResult, error) { return nil, nil },
+				},
+			},
+		},
+	})
+	require.ErrorIs(t, err, ErrInvalidNetworkHook)
+	assert.Empty(t, vmID)
+}
+
 func TestCreateRejectsNoNetworkWithAllowedHosts(t *testing.T) {
 	client := &Client{}
 	vmID, err := client.Create(CreateOptions{
 		Image:        "alpine:latest",
 		NoNetwork:    true,
 		AllowedHosts: []string{"api.openai.com"},
+	})
+	require.ErrorIs(t, err, ErrNoNetworkConflict)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsNoNetworkWithForceInterception(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image:             "alpine:latest",
+		NoNetwork:         true,
+		ForceInterception: true,
+	})
+	require.ErrorIs(t, err, ErrNoNetworkConflict)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsNoNetworkWithNetworkInterceptionRules(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image:     "alpine:latest",
+		NoNetwork: true,
+		NetworkInterception: &NetworkInterceptionConfig{
+			Rules: []NetworkHookRule{
+				{
+					Phase:  NetworkHookPhaseBefore,
+					Action: NetworkHookActionBlock,
+				},
+			},
+		},
 	})
 	require.ErrorIs(t, err, ErrNoNetworkConflict)
 	assert.Empty(t, vmID)

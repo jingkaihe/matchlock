@@ -150,6 +150,70 @@ For fully offline sandboxes (no guest NIC / no egress), use:
 - Builder: `.with_no_network()`
 - Direct options: `CreateOptions(no_network=True)`
 
+### Network Interception Rules
+
+Use typed network hook rules for host-side request/response mutation:
+
+```python
+from matchlock import (
+    NetworkBodyTransform,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
+    Sandbox,
+)
+
+sandbox = Sandbox("alpine:latest").with_network_interception(
+    NetworkInterceptionConfig(
+        rules=[
+            NetworkHookRule(
+                phase="after",
+                hosts=["api.example.com"],
+                action="mutate",
+                set_response_headers={"X-Intercepted": "true"},
+                body_replacements=[NetworkBodyTransform(find="foo", replace="bar")],
+            )
+        ]
+    )
+)
+```
+
+Callback-based interception:
+
+```python
+from matchlock import (
+    NetworkHookRequest,
+    NetworkHookResult,
+    NetworkHookResponseMutation,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
+    Sandbox,
+)
+
+def after_hook(req: NetworkHookRequest) -> NetworkHookResult | None:
+    if req.status_code != 200:
+        return None
+    return NetworkHookResult(
+        action="mutate",
+        response=NetworkHookResponseMutation(
+            headers={"X-Intercepted": ["callback"]},
+            set_body=b'{"msg":"from-callback"}',
+        ),
+    )
+
+sandbox = Sandbox("alpine:latest").with_network_interception(
+    NetworkInterceptionConfig(
+        rules=[
+            NetworkHookRule(
+                phase="after",
+                hosts=["api.example.com"],
+                hook=after_hook,
+                timeout_ms=1500,
+            )
+        ]
+    )
+)
+```
+
 ### Filesystem Mounts
 
 Mount host directories or use in-memory/snapshot filesystems:
@@ -247,6 +311,7 @@ Fluent builder for sandbox configuration.
 | `.unset_block_private_ips()` | Reset private IP behavior to SDK default semantics |
 | `.with_network_mtu(mtu)` | Override guest network stack/interface MTU |
 | `.with_no_network()` | Disable guest network egress entirely |
+| `.with_network_interception(config=None)` | Force interception and optionally apply typed network hook rules |
 | `.add_secret(name, value, *hosts)` | Inject a secret for specific hosts |
 | `.mount(guest_path, config)` | Add a VFS mount with custom `MountConfig` |
 | `.mount_host_dir(guest, host)` | Mount a host directory (read-write) |
@@ -278,7 +343,7 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
+| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |

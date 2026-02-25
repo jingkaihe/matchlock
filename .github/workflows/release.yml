@@ -84,13 +84,16 @@ jobs:
       - name: Create GitHub Release
         run: |
           chmod +x bin/*
+          NOTES_FILE="$(mktemp)"
+          bash ./scripts/extract-release-notes.sh > "$NOTES_FILE"
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --generate-notes \
+            --notes-file "$NOTES_FILE" \
             bin/matchlock-linux-amd64 \
             bin/matchlock-linux-arm64 \
             bin/matchlock-darwin-arm64 \
             bin/guest-init-linux-amd64 \
             bin/guest-init-linux-arm64
+          rm -f "$NOTES_FILE"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
