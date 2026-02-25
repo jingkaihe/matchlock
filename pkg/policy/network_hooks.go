@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -27,7 +28,8 @@ type compiledNetworkRule struct {
 	phase  string
 	action string
 
-	callbackID string
+	callbackID      string
+	callbackTimeout time.Duration
 
 	hosts   []string
 	methods map[string]struct{}
@@ -74,6 +76,9 @@ func compileNetworkRules(cfg *api.NetworkInterceptionConfig) []compiledNetworkRu
 			setResponseHeaders:    normalizeHeaderSet(rule.SetResponseHeaders),
 			deleteResponseHeaders: normalizeHeaderDelete(rule.DeleteResponseHeaders),
 			bodyReplacements:      normalizeBodyReplacements(rule.BodyReplacements),
+		}
+		if rule.TimeoutMS > 0 {
+			cr.callbackTimeout = time.Duration(rule.TimeoutMS) * time.Millisecond
 		}
 
 		for _, host := range rule.Hosts {
@@ -306,9 +311,12 @@ func normalizeCallbackResponseMutation(in *api.NetworkHookResponseMutation) *api
 	out := &api.NetworkHookResponseMutation{
 		Headers:          normalizeHeaderValues(in.Headers),
 		BodyReplacements: normalizeBodyReplacements(in.BodyReplacements),
-		SetBodyBase64:    strings.TrimSpace(in.SetBodyBase64),
 	}
-	if out.Headers == nil && len(out.BodyReplacements) == 0 && out.SetBodyBase64 == "" {
+	if in.SetBodyBase64 != nil {
+		setBodyBase64 := *in.SetBodyBase64
+		out.SetBodyBase64 = &setBodyBase64
+	}
+	if out.Headers == nil && len(out.BodyReplacements) == 0 && out.SetBodyBase64 == nil {
 		return nil
 	}
 	return out
@@ -376,7 +384,13 @@ func (e *Engine) applyBeforeNetworkRules(req *http.Request, host string) error {
 			Query:          requestQuery(req),
 			RequestHeaders: cloneHeaders(req.Header),
 		}
-		cbResp, err := e.networkHook.Invoke(context.Background(), cbReq)
+		ctx := context.Background()
+		cancel := func() {}
+		if rule.callbackTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, rule.callbackTimeout)
+		}
+		cbResp, err := e.networkHook.Invoke(ctx, cbReq)
+		cancel()
 		if err != nil || cbResp == nil {
 			continue
 		}
@@ -434,7 +448,13 @@ func (e *Engine) applyAfterNetworkRules(resp *http.Response, req *http.Request, 
 			ResponseHeaders: cloneHeaders(resp.Header),
 			IsSSE:           isSSEContentType(resp.Header.Get("Content-Type")),
 		}
-		cbResp, err := e.networkHook.Invoke(context.Background(), cbReq)
+		ctx := context.Background()
+		cancel := func() {}
+		if rule.callbackTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, rule.callbackTimeout)
+		}
+		cbResp, err := e.networkHook.Invoke(ctx, cbReq)
+		cancel()
 		if err != nil || cbResp == nil {
 			continue
 		}
@@ -622,12 +642,11 @@ func toHTTPHeader(in map[string][]string) http.Header {
 	return out
 }
 
-func decodeBase64Body(data string) ([]byte, bool) {
-	data = strings.TrimSpace(data)
-	if data == "" {
+func decodeBase64Body(data *string) ([]byte, bool) {
+	if data == nil {
 		return nil, false
 	}
-	body, err := base64.StdEncoding.DecodeString(data)
+	body, err := base64.StdEncoding.DecodeString(*data)
 	if err != nil {
 		return nil, false
 	}

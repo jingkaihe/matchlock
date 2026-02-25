@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/stretchr/testify/assert"
@@ -234,7 +235,10 @@ func TestEngine_OnResponse_NetworkHookCallbackSetBody(t *testing.T) {
 						"Content-Type":  []string{"application/json"},
 						"X-Intercepted": []string{"true"},
 					},
-					SetBodyBase64: base64.StdEncoding.EncodeToString([]byte(`{"msg":"callback-body"}`)),
+					SetBodyBase64: func() *string {
+						encoded := base64.StdEncoding.EncodeToString([]byte(`{"msg":"callback-body"}`))
+						return &encoded
+					}(),
 				},
 			}, nil
 		},
@@ -255,4 +259,79 @@ func TestEngine_OnResponse_NetworkHookCallbackSetBody(t *testing.T) {
 	body, readErr := io.ReadAll(got.Body)
 	require.NoError(t, readErr)
 	assert.Equal(t, `{"msg":"callback-body"}`, string(body))
+}
+
+func TestEngine_OnResponse_NetworkHookCallbackSetEmptyBody(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		Interception: &api.NetworkInterceptionConfig{
+			Rules: []api.NetworkHookRule{
+				{
+					Phase:      "after",
+					Hosts:      []string{"api.example.com"},
+					CallbackID: "cb_after",
+				},
+			},
+		},
+	})
+	engine.SetNetworkHookInvoker(&stubNetworkHookInvoker{
+		invoke: func(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error) {
+			require.Equal(t, "cb_after", req.CallbackID)
+			empty := ""
+			return &api.NetworkHookCallbackResponse{
+				Action: "mutate",
+				Response: &api.NetworkHookResponseMutation{
+					SetBodyBase64: &empty,
+				},
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/v1", nil)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Body:          io.NopCloser(strings.NewReader(`{"msg":"upstream"}`)),
+		ContentLength: int64(len(`{"msg":"upstream"}`)),
+	}
+
+	got, err := engine.OnResponse(resp, req, "api.example.com")
+	require.NoError(t, err)
+	body, readErr := io.ReadAll(got.Body)
+	require.NoError(t, readErr)
+	assert.Equal(t, "", string(body))
+	assert.Equal(t, int64(0), got.ContentLength)
+	assert.Equal(t, "0", got.Header.Get("Content-Length"))
+}
+
+func TestEngine_OnRequest_NetworkHookCallbackUsesRuleTimeout(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		Interception: &api.NetworkInterceptionConfig{
+			Rules: []api.NetworkHookRule{
+				{
+					Phase:      "before",
+					Hosts:      []string{"api.example.com"},
+					CallbackID: "cb_before",
+					TimeoutMS:  2000,
+				},
+			},
+		},
+	})
+
+	called := false
+	engine.SetNetworkHookInvoker(&stubNetworkHookInvoker{
+		invoke: func(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error) {
+			called = true
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok)
+			remaining := time.Until(deadline)
+			assert.GreaterOrEqual(t, remaining, 1500*time.Millisecond)
+			assert.LessOrEqual(t, remaining, 2*time.Second)
+			return &api.NetworkHookCallbackResponse{Action: "allow"}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/v1", nil)
+	_, err := engine.OnRequest(req, "api.example.com")
+	require.NoError(t, err)
+	assert.True(t, called)
 }

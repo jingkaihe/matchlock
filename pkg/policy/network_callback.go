@@ -6,12 +6,9 @@ import (
 	"errors"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
-
-const networkHookIOTimeout = 2 * time.Second
 
 type networkHookInvoker interface {
 	Invoke(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error)
@@ -43,18 +40,16 @@ func (u *unixNetworkHookInvoker) Invoke(ctx context.Context, req *api.NetworkHoo
 		ctx = context.Background()
 	}
 
-	dialer := net.Dialer{Timeout: networkHookIOTimeout}
+	dialer := net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "unix", u.socketPath)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(networkHookIOTimeout)
-	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
-		deadline = dl
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
-	_ = conn.SetDeadline(deadline)
 
 	enc := json.NewEncoder(conn)
 	if err := enc.Encode(req); err != nil {

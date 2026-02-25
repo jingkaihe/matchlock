@@ -199,7 +199,8 @@ func serveNetworkHookConn(conn net.Conn, hooks map[string]compiledNetworkHook) {
 				}
 			}
 			if result.Response.SetBody != nil {
-				resp.Response.SetBodyBase64 = base64.StdEncoding.EncodeToString(result.Response.SetBody)
+				encoded := base64.StdEncoding.EncodeToString(result.Response.SetBody)
+				resp.Response.SetBodyBase64 = &encoded
 			}
 		}
 	}

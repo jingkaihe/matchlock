@@ -65,9 +65,9 @@ type NetworkHookCallbackRequest struct {
 // SDK-local callback.
 type NetworkHookRequestMutation struct {
 	// Headers replaces the full outbound request header map when non-nil.
-	Headers map[string][]string `json:"headers,omitempty"`
+	Headers map[string][]string `json:"headers"`
 	// Query replaces the full outbound query map when non-nil.
-	Query map[string]string `json:"query,omitempty"`
+	Query map[string]string `json:"query"`
 	// Path rewrites the outbound request path when non-empty.
 	Path string `json:"path,omitempty"`
 }
@@ -76,10 +76,10 @@ type NetworkHookRequestMutation struct {
 // SDK-local callback.
 type NetworkHookResponseMutation struct {
 	// Headers replaces the full inbound response header map when non-nil.
-	Headers          map[string][]string    `json:"headers,omitempty"`
+	Headers          map[string][]string    `json:"headers"`
 	BodyReplacements []NetworkBodyTransform `json:"body_replacements,omitempty"`
-	// SetBodyBase64 replaces the entire response body when set.
-	SetBodyBase64 string `json:"set_body_base64,omitempty"`
+	// SetBodyBase64 replaces the entire response body when non-nil.
+	SetBodyBase64 *string `json:"set_body_base64,omitempty"`
 }
 
 // NetworkHookCallbackResponse is returned by an SDK-local callback server.
