@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +13,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type stubNetworkHookInvoker struct {
+	invoke func(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error)
+}
+
+func (s *stubNetworkHookInvoker) Invoke(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error) {
+	if s == nil || s.invoke == nil {
+		return nil, nil
+	}
+	return s.invoke(ctx, req)
+}
 
 func TestEngine_OnRequest_NetworkHookBlock(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
@@ -153,4 +166,93 @@ func TestEngine_OnResponse_SSEBodyReplacement(t *testing.T) {
 	body, readErr := io.ReadAll(got.Body)
 	require.NoError(t, readErr)
 	assert.Equal(t, "id:1\n"+"data: bar first\n"+"event: message\n"+"data: second bar\n\n", string(body))
+}
+
+func TestEngine_OnRequest_NetworkHookCallbackMutate(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		Interception: &api.NetworkInterceptionConfig{
+			Rules: []api.NetworkHookRule{
+				{
+					Phase:      "before",
+					Hosts:      []string{"api.example.com"},
+					Path:       "/v1/*",
+					CallbackID: "cb_before",
+				},
+			},
+		},
+	})
+	engine.SetNetworkHookInvoker(&stubNetworkHookInvoker{
+		invoke: func(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error) {
+			require.Equal(t, "cb_before", req.CallbackID)
+			require.Equal(t, "before", req.Phase)
+			require.Equal(t, "api.example.com", req.Host)
+			return &api.NetworkHookCallbackResponse{
+				Action: "mutate",
+				Request: &api.NetworkHookRequestMutation{
+					Headers: map[string][]string{
+						"X-From-Callback": []string{"1"},
+					},
+					Query: map[string]string{"trace": "cb"},
+					Path:  "/v2/messages",
+				},
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/v1/messages?drop=1", strings.NewReader(""))
+	req.Header.Set("X-Remove", "1")
+	got, err := engine.OnRequest(req, "api.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "1", got.Header.Get("X-From-Callback"))
+	assert.Equal(t, "", got.Header.Get("X-Remove"))
+	assert.Equal(t, "/v2/messages", got.URL.Path)
+	assert.Equal(t, "cb", got.URL.Query().Get("trace"))
+	assert.Equal(t, "", got.URL.Query().Get("drop"))
+}
+
+func TestEngine_OnResponse_NetworkHookCallbackSetBody(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		Interception: &api.NetworkInterceptionConfig{
+			Rules: []api.NetworkHookRule{
+				{
+					Phase:      "after",
+					Hosts:      []string{"api.example.com"},
+					CallbackID: "cb_after",
+				},
+			},
+		},
+	})
+	engine.SetNetworkHookInvoker(&stubNetworkHookInvoker{
+		invoke: func(ctx context.Context, req *api.NetworkHookCallbackRequest) (*api.NetworkHookCallbackResponse, error) {
+			require.Equal(t, "cb_after", req.CallbackID)
+			require.Equal(t, "after", req.Phase)
+			require.Equal(t, http.StatusOK, req.StatusCode)
+			return &api.NetworkHookCallbackResponse{
+				Action: "mutate",
+				Response: &api.NetworkHookResponseMutation{
+					Headers: map[string][]string{
+						"Content-Type":  []string{"application/json"},
+						"X-Intercepted": []string{"true"},
+					},
+					SetBodyBase64: base64.StdEncoding.EncodeToString([]byte(`{"msg":"callback-body"}`)),
+				},
+			}, nil
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "http://api.example.com/v1", nil)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        http.Header{"Content-Type": []string{"application/json"}, "Server": []string{"upstream"}},
+		Body:          io.NopCloser(strings.NewReader(`{"msg":"upstream"}`)),
+		ContentLength: int64(len(`{"msg":"upstream"}`)),
+	}
+
+	got, err := engine.OnResponse(resp, req, "api.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "true", got.Header.Get("X-Intercepted"))
+	assert.Equal(t, "", got.Header.Get("Server"))
+	body, readErr := io.ReadAll(got.Body)
+	require.NoError(t, readErr)
+	assert.Equal(t, `{"msg":"callback-body"}`, string(body))
 }

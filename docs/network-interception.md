@@ -79,6 +79,20 @@ Matcher semantics:
 
 If mutation fields are present and `action` is `allow`, the rule is treated as mutate.
 
+## SDK Callback Hooks (Go)
+
+Go SDK rules can attach a `Hook` callback for dynamic mutation.
+
+- Static filters (`phase`, `hosts`, `methods`, `path`) are evaluated first.
+- Only matching traffic invokes the callback.
+- Callback can return dynamic action/mutations:
+  - request edits (`Request.Headers`, `Request.Query`, `Request.Path`)
+  - response edits (`Response.Headers`, `Response.BodyReplacements`)
+  - full response body replacement (`Response.SetBody`)
+- For callback object fields, `Headers`/`Query` are full replacements when set (non-nil).
+
+The callback runs in the SDK process.
+
 ## Traffic Scope
 
 - Hook rules apply to HTTP and HTTPS traffic handled by Matchlock interception.
@@ -130,25 +144,22 @@ sandbox := sdk.New("alpine:latest").
 	WithNetworkInterception(&sdk.NetworkInterceptionConfig{
 		Rules: []sdk.NetworkHookRule{
 			{
-				Phase:         sdk.NetworkHookPhaseBefore,
-				Action:        sdk.NetworkHookActionMutate,
-				Hosts:         []string{"httpbin.org"},
-				Path:          "/anything/v1",
-				SetHeaders:    map[string]string{"X-Hook": "set"},
-				DeleteHeaders: []string{"X-Remove"},
-				SetQuery:      map[string]string{"trace": "hooked"},
-				DeleteQuery:   []string{"drop"},
-				RewritePath:   "/anything/v2",
-			},
-			{
-				Phase:                 sdk.NetworkHookPhaseAfter,
-				Action:                sdk.NetworkHookActionMutate,
-				Hosts:                 []string{"httpbin.org"},
-				Path:                  "/response-headers",
-				SetResponseHeaders:    map[string]string{"X-Intercepted": "true"},
-				DeleteResponseHeaders: []string{"X-Upstream"},
-				BodyReplacements: []sdk.NetworkBodyTransform{
-					{Find: "foo", Replace: "bar"},
+				Phase: sdk.NetworkHookPhaseAfter,
+				Hosts: []string{"httpbin.org"},
+				Path:  "/response-headers",
+				Hook: func(ctx context.Context, req sdk.NetworkHookRequest) (*sdk.NetworkHookResult, error) {
+					if req.StatusCode != 200 {
+						return nil, nil
+					}
+					return &sdk.NetworkHookResult{
+						Action: sdk.NetworkHookActionMutate,
+						Response: &sdk.NetworkHookResponseMutation{
+							Headers: map[string][]string{
+								"X-Intercepted": []string{"callback"},
+							},
+							SetBody: []byte(`{"msg":"from-callback"}`),
+						},
+					}, nil
 				},
 			},
 		},

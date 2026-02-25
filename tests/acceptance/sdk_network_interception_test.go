@@ -106,3 +106,43 @@ func TestSDKNetworkInterceptionMutatesSSEDataLines(t *testing.T) {
 	assert.Contains(t, combined, `data: {"sid":1`)
 	assert.NotContains(t, combined, `data: {"id":0`)
 }
+
+func TestSDKNetworkInterceptionCallbackMutatesResponse(t *testing.T) {
+	t.Parallel()
+
+	client := launchAlpineWithNetwork(t, sdk.New("alpine:latest").
+		AllowHost("httpbin.org").
+		WithNetworkInterception(&sdk.NetworkInterceptionConfig{
+			Rules: []sdk.NetworkHookRule{
+				{
+					Phase: sdk.NetworkHookPhaseAfter,
+					Hosts: []string{"httpbin.org"},
+					Path:  "/response-headers",
+					Hook: func(ctx context.Context, req sdk.NetworkHookRequest) (*sdk.NetworkHookResult, error) {
+						if req.StatusCode != 200 {
+							return nil, nil
+						}
+						return &sdk.NetworkHookResult{
+							Action: sdk.NetworkHookActionMutate,
+							Response: &sdk.NetworkHookResponseMutation{
+								Headers: map[string][]string{
+									"X-Intercepted": []string{"callback"},
+								},
+								SetBody: []byte(`{"msg":"from-callback"}`),
+							},
+						}, nil
+					},
+				},
+			},
+		}),
+	)
+
+	result, err := client.Exec(context.Background(), `sh -c 'wget -S -O - "http://httpbin.org/response-headers?X-Upstream=1&body=foo" 2>&1'`)
+	require.NoError(t, err, "Exec")
+
+	combined := result.Stdout + result.Stderr
+	combinedLower := strings.ToLower(combined)
+	assert.Contains(t, combinedLower, "x-intercepted: callback")
+	assert.NotContains(t, combinedLower, "x-upstream: 1")
+	assert.Contains(t, combined, `{"msg":"from-callback"}`)
+}

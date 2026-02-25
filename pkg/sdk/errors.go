@@ -20,15 +20,16 @@ var (
 
 // Create / VM errors
 var (
-	ErrImageRequired     = errors.New("image is required (e.g., alpine:latest)")
-	ErrInvalidNetworkMTU = errors.New("network mtu must be > 0")
-	ErrNoNetworkConflict = errors.New("no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules")
-	ErrInvalidAddHost    = errors.New("invalid add-host mapping")
-	ErrParseCreateResult = errors.New("parse create result")
-	ErrInvalidVFSHook    = errors.New("invalid vfs hook")
-	ErrVFSHookBlocked    = errors.New("vfs hook blocked operation")
-	ErrParsePortForwards = errors.New("parse port-forward spec")
-	ErrParsePortBindings = errors.New("parse port-forward result")
+	ErrImageRequired      = errors.New("image is required (e.g., alpine:latest)")
+	ErrInvalidNetworkMTU  = errors.New("network mtu must be > 0")
+	ErrNoNetworkConflict  = errors.New("no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules")
+	ErrInvalidAddHost     = errors.New("invalid add-host mapping")
+	ErrInvalidNetworkHook = errors.New("invalid network hook")
+	ErrParseCreateResult  = errors.New("parse create result")
+	ErrInvalidVFSHook     = errors.New("invalid vfs hook")
+	ErrVFSHookBlocked     = errors.New("vfs hook blocked operation")
+	ErrParsePortForwards  = errors.New("parse port-forward spec")
+	ErrParsePortBindings  = errors.New("parse port-forward result")
 )
 
 // Exec errors

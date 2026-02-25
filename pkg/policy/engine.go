@@ -16,6 +16,7 @@ type Engine struct {
 	config       *api.NetworkConfig
 	placeholders map[string]string
 	networkRules []compiledNetworkRule
+	networkHook  networkHookInvoker
 }
 
 func NewEngine(config *api.NetworkConfig) *Engine {
@@ -27,6 +28,7 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 		config:       config,
 		placeholders: make(map[string]string),
 		networkRules: compileNetworkRules(config.Interception),
+		networkHook:  newNetworkHookInvoker(config),
 	}
 
 	for name, secret := range config.Secrets {
@@ -42,6 +44,14 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 	}
 
 	return e
+}
+
+// SetNetworkHookInvoker overrides the SDK-local network hook invoker.
+// This is primarily intended for testing.
+func (e *Engine) SetNetworkHookInvoker(invoker networkHookInvoker) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.networkHook = invoker
 }
 
 func generatePlaceholder() string {

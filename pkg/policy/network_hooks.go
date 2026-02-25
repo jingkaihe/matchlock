@@ -3,6 +3,8 @@ package policy
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"path"
@@ -24,6 +26,8 @@ const (
 type compiledNetworkRule struct {
 	phase  string
 	action string
+
+	callbackID string
 
 	hosts   []string
 	methods map[string]struct{}
@@ -58,6 +62,8 @@ func compileNetworkRules(cfg *api.NetworkInterceptionConfig) []compiledNetworkRu
 			phase:  phase,
 			action: action,
 
+			callbackID: strings.TrimSpace(rule.CallbackID),
+
 			path:        strings.TrimSpace(rule.Path),
 			rewritePath: strings.TrimSpace(rule.RewritePath),
 
@@ -87,7 +93,7 @@ func compileNetworkRules(cfg *api.NetworkInterceptionConfig) []compiledNetworkRu
 		}
 
 		// Keep only effective rules.
-		if cr.action != networkHookActionBlock && !compiledRuleHasMutations(cr, phase) {
+		if cr.action != networkHookActionBlock && !compiledRuleHasMutations(cr, phase) && cr.callbackID == "" {
 			continue
 		}
 		compiled = append(compiled, cr)
@@ -242,6 +248,72 @@ func normalizeBodyReplacements(in []api.NetworkBodyTransform) []api.NetworkBodyT
 	return out
 }
 
+func normalizeHeaderValues(in map[string][]string) map[string][]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, values := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[http.CanonicalHeaderKey(key)] = append([]string(nil), values...)
+	}
+	if len(out) == 0 {
+		return map[string][]string{}
+	}
+	return out
+}
+
+func normalizeStringMapPreserveEmpty(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		out[key] = v
+	}
+	if len(out) == 0 {
+		return map[string]string{}
+	}
+	return out
+}
+
+func normalizeCallbackRequestMutation(in *api.NetworkHookRequestMutation) *api.NetworkHookRequestMutation {
+	if in == nil {
+		return nil
+	}
+	out := &api.NetworkHookRequestMutation{
+		Headers: normalizeHeaderValues(in.Headers),
+		Query:   normalizeStringMapPreserveEmpty(in.Query),
+		Path:    strings.TrimSpace(in.Path),
+	}
+	if out.Headers == nil && out.Query == nil && out.Path == "" {
+		return nil
+	}
+	return out
+}
+
+func normalizeCallbackResponseMutation(in *api.NetworkHookResponseMutation) *api.NetworkHookResponseMutation {
+	if in == nil {
+		return nil
+	}
+	out := &api.NetworkHookResponseMutation{
+		Headers:          normalizeHeaderValues(in.Headers),
+		BodyReplacements: normalizeBodyReplacements(in.BodyReplacements),
+		SetBodyBase64:    strings.TrimSpace(in.SetBodyBase64),
+	}
+	if out.Headers == nil && len(out.BodyReplacements) == 0 && out.SetBodyBase64 == "" {
+		return nil
+	}
+	return out
+}
+
 func (r compiledNetworkRule) matches(req *http.Request, host string) bool {
 	if len(r.hosts) > 0 {
 		matched := false
@@ -289,29 +361,32 @@ func (e *Engine) applyBeforeNetworkRules(req *http.Request, host string) error {
 		if rule.action == networkHookActionBlock {
 			return api.ErrBlocked
 		}
+		applyBeforeMutations(req, rule.setHeaders, rule.deleteHeaders, rule.setQuery, rule.deleteQuery, rule.rewritePath)
 
-		for k, v := range rule.setHeaders {
-			req.Header.Set(k, v)
-		}
-		for _, k := range rule.deleteHeaders {
-			req.Header.Del(k)
+		if rule.callbackID == "" || e.networkHook == nil {
+			continue
 		}
 
-		if req.URL != nil {
-			if len(rule.setQuery) > 0 || len(rule.deleteQuery) > 0 {
-				q := req.URL.Query()
-				for key, val := range rule.setQuery {
-					q.Set(key, val)
-				}
-				for _, key := range rule.deleteQuery {
-					q.Del(key)
-				}
-				req.URL.RawQuery = q.Encode()
-			}
-			if rule.rewritePath != "" {
-				req.URL.Path = rule.rewritePath
-				req.URL.RawPath = ""
-			}
+		cbReq := &api.NetworkHookCallbackRequest{
+			CallbackID:     rule.callbackID,
+			Phase:          networkHookPhaseBefore,
+			Host:           host,
+			Method:         req.Method,
+			Path:           requestPath(req),
+			Query:          requestQuery(req),
+			RequestHeaders: cloneHeaders(req.Header),
+		}
+		cbResp, err := e.networkHook.Invoke(context.Background(), cbReq)
+		if err != nil || cbResp == nil {
+			continue
+		}
+		mutation := normalizeCallbackRequestMutation(cbResp.Request)
+		hasMutations := mutation != nil
+		action := callbackActionWithMutations(cbResp.Action, hasMutations)
+		if action == networkHookActionBlock {
+			return api.ErrBlocked
+		} else if action == networkHookActionMutate || hasMutations {
+			applyCallbackRequestMutation(req, mutation)
 		}
 	}
 
@@ -324,6 +399,8 @@ func (e *Engine) applyAfterNetworkRules(resp *http.Response, req *http.Request, 
 	}
 
 	var replacements []api.NetworkBodyTransform
+	var setBody []byte
+	hasSetBody := false
 	for _, rule := range e.networkRules {
 		if rule.phase != networkHookPhaseAfter || !rule.matches(req, host) {
 			continue
@@ -340,6 +417,56 @@ func (e *Engine) applyAfterNetworkRules(resp *http.Response, req *http.Request, 
 		if len(rule.bodyReplacements) > 0 {
 			replacements = append(replacements, rule.bodyReplacements...)
 		}
+
+		if rule.callbackID == "" || e.networkHook == nil {
+			continue
+		}
+
+		cbReq := &api.NetworkHookCallbackRequest{
+			CallbackID:      rule.callbackID,
+			Phase:           networkHookPhaseAfter,
+			Host:            host,
+			Method:          requestMethod(req),
+			Path:            requestPath(req),
+			Query:           requestQuery(req),
+			RequestHeaders:  requestHeaders(req),
+			StatusCode:      resp.StatusCode,
+			ResponseHeaders: cloneHeaders(resp.Header),
+			IsSSE:           isSSEContentType(resp.Header.Get("Content-Type")),
+		}
+		cbResp, err := e.networkHook.Invoke(context.Background(), cbReq)
+		if err != nil || cbResp == nil {
+			continue
+		}
+		mutation := normalizeCallbackResponseMutation(cbResp.Response)
+		hasMutations := mutation != nil
+		action := callbackActionWithMutations(cbResp.Action, hasMutations)
+		if action == networkHookActionBlock {
+			return nil, api.ErrBlocked
+		}
+		if action != networkHookActionMutate && !hasMutations {
+			continue
+		}
+		if mutation != nil {
+			if mutation.Headers != nil {
+				resp.Header = toHTTPHeader(mutation.Headers)
+			}
+			if cbBody, ok := decodeBase64Body(mutation.SetBodyBase64); ok {
+				setBody = cbBody
+				hasSetBody = true
+			}
+			replacements = append(replacements, mutation.BodyReplacements...)
+		}
+	}
+
+	if hasSetBody {
+		setBody = applyBodyReplacements(setBody, replacements)
+		resp.Body = io.NopCloser(bytes.NewReader(setBody))
+		resp.ContentLength = int64(len(setBody))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(setBody)))
+		resp.Header.Del("Transfer-Encoding")
+		resp.TransferEncoding = nil
+		return resp, nil
 	}
 
 	if len(replacements) == 0 || resp.Body == nil {
@@ -367,6 +494,144 @@ func (e *Engine) applyAfterNetworkRules(resp *http.Response, req *http.Request, 
 	resp.Header.Del("Transfer-Encoding")
 	resp.TransferEncoding = nil
 	return resp, nil
+}
+
+func callbackActionWithMutations(action string, hasMutations bool) string {
+	normalized := normalizeNetworkHookAction(action)
+	if normalized == networkHookActionAllow && hasMutations {
+		return networkHookActionMutate
+	}
+	return normalized
+}
+
+func applyBeforeMutations(req *http.Request, setHeaders map[string]string, deleteHeaders []string, setQuery map[string]string, deleteQuery []string, rewritePath string) {
+	if req == nil {
+		return
+	}
+	for k, v := range setHeaders {
+		req.Header.Set(k, v)
+	}
+	for _, k := range deleteHeaders {
+		req.Header.Del(k)
+	}
+
+	if req.URL != nil {
+		if len(setQuery) > 0 || len(deleteQuery) > 0 {
+			q := req.URL.Query()
+			for key, val := range setQuery {
+				q.Set(key, val)
+			}
+			for _, key := range deleteQuery {
+				q.Del(key)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if rewritePath != "" {
+			req.URL.Path = rewritePath
+			req.URL.RawPath = ""
+		}
+	}
+}
+
+func applyCallbackRequestMutation(req *http.Request, mutation *api.NetworkHookRequestMutation) {
+	if req == nil || mutation == nil {
+		return
+	}
+
+	if mutation.Headers != nil {
+		req.Header = toHTTPHeader(mutation.Headers)
+	}
+
+	if req.URL != nil {
+		if mutation.Query != nil {
+			q := req.URL.Query()
+			for key := range q {
+				q.Del(key)
+			}
+			for key, val := range mutation.Query {
+				q.Set(key, val)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if mutation.Path != "" {
+			req.URL.Path = mutation.Path
+			req.URL.RawPath = ""
+		}
+	}
+}
+
+func requestMethod(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
+	return req.Method
+}
+
+func requestPath(req *http.Request) string {
+	if req == nil || req.URL == nil {
+		return ""
+	}
+	return req.URL.Path
+}
+
+func requestQuery(req *http.Request) map[string]string {
+	if req == nil || req.URL == nil {
+		return nil
+	}
+	values := req.URL.Query()
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		if len(v) == 0 {
+			out[k] = ""
+			continue
+		}
+		out[k] = v[0]
+	}
+	return out
+}
+
+func requestHeaders(req *http.Request) map[string][]string {
+	if req == nil {
+		return nil
+	}
+	return cloneHeaders(req.Header)
+}
+
+func cloneHeaders(in http.Header) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for k, values := range in {
+		out[k] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func toHTTPHeader(in map[string][]string) http.Header {
+	if in == nil {
+		return nil
+	}
+	out := make(http.Header, len(in))
+	for k, values := range in {
+		out[k] = append([]string(nil), values...)
+	}
+	return out
+}
+
+func decodeBase64Body(data string) ([]byte, bool) {
+	data = strings.TrimSpace(data)
+	if data == "" {
+		return nil, false
+	}
+	body, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return nil, false
+	}
+	return body, true
 }
 
 func isSSEContentType(contentType string) bool {
