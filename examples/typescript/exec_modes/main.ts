@@ -1,4 +1,8 @@
-import { Client, Sandbox } from "../../../sdk/typescript/src/index.js";
+import matchlockSDK from "../../../sdk/typescript/src/index";
+
+const { Client, Sandbox } =
+  matchlockSDK as typeof import("../../../sdk/typescript/src/index");
+type MatchlockClient = InstanceType<typeof Client>;
 
 function isInteractiveTTY(): boolean {
   return (
@@ -8,7 +12,7 @@ function isInteractiveTTY(): boolean {
   );
 }
 
-async function runExecStream(client: Client): Promise<void> {
+async function runExecStream(client: MatchlockClient): Promise<void> {
   console.log("== execStream ==");
   const result = await client.execStream(
     "echo stream:start; sleep 1; echo stream:end",
@@ -21,7 +25,7 @@ async function runExecStream(client: Client): Promise<void> {
   console.log(`stream exit=${result.exitCode} duration_ms=${result.durationMs}`);
 }
 
-async function runExecPipe(client: Client): Promise<void> {
+async function runExecPipe(client: MatchlockClient): Promise<void> {
   console.log("\n== execPipe ==");
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
@@ -44,7 +48,7 @@ async function runExecPipe(client: Client): Promise<void> {
   process.stdout.write(Buffer.concat(stderrChunks).toString("utf8"));
 }
 
-async function runExecInteractive(client: Client): Promise<void> {
+async function runExecInteractive(client: MatchlockClient): Promise<void> {
   console.log("\n== execInteractive ==");
   if (!isInteractiveTTY()) {
     console.log("interactive terminal skipped (requires a TTY).");

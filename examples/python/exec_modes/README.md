@@ -19,3 +19,4 @@ uv run examples/python/exec_modes/main.py
 - The interactive section requires a real POSIX TTY.
 - If you run in a non-interactive environment, the script still runs stream + pipe and skips interactive mode.
 - By default it uses `matchlock`; set `MATCHLOCK_BIN` to override.
+- If your PATH `matchlock` is an older release, point `MATCHLOCK_BIN` at your local build (for example `MATCHLOCK_BIN=./bin/matchlock uv run --with-editable ./sdk/python examples/python/exec_modes/main.py`).

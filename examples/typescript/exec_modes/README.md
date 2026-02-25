@@ -21,3 +21,4 @@ npm run start
 - The interactive section requires a TTY (`process.stdin.isTTY` and `process.stdout.isTTY`).
 - In non-interactive environments, the script still runs stream + pipe and skips interactive mode.
 - This example imports the local SDK source from `sdk/typescript/src` so it tracks unreleased APIs in this repo.
+- If your PATH `matchlock` is an older release, set `MATCHLOCK_BIN` to your local build (for example `MATCHLOCK_BIN=../../../bin/matchlock npm run start`).
