@@ -43,7 +43,7 @@ func run() error {
 	defer client.Remove()
 	defer client.Close(0)
 
-	sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
+	sandbox := sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace").WithVFSInterception(&sdk.VFSInterceptionConfig{
 		Rules: []sdk.VFSHookRule{
 			{
 				Name:   "host-block-create",

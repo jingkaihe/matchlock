@@ -66,7 +66,7 @@ def block_action_hook(req: VFSActionRequest) -> str:
 
 
 def main() -> None:
-    sandbox = Sandbox("alpine:latest").with_vfs_interception(
+    sandbox = Sandbox("alpine:latest").with_workspace("/workspace").mount_memory("/workspace").with_vfs_interception(
         VFSInterceptionConfig(
             rules=[
                 VFSHookRule(
