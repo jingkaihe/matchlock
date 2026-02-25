@@ -17,6 +17,12 @@ type request struct {
 	ID      uint64      `json:"id"`
 }
 
+type notificationRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params,omitempty"`
+}
+
 type response struct {
 	JSONRPC string          `json:"jsonrpc"`
 	Result  json.RawMessage `json:"result,omitempty"`
@@ -76,8 +82,7 @@ func (e *RPCError) IsFileError() bool {
 // pendingRequest tracks an in-flight request awaiting its response.
 type pendingRequest struct {
 	ch chan pendingResult
-	// onNotification is called for streaming notifications matching this request ID.
-	// It is only set for exec_stream requests.
+	// onNotification is called for request-scoped notifications matching this request ID.
 	onNotification func(method string, params json.RawMessage)
 }
 
@@ -98,9 +103,12 @@ func (c *Client) sendRequest(method string, params interface{}) (json.RawMessage
 // If onNotification is non-nil, it is called for each streaming notification
 // matching this request's ID before the final response arrives.
 func (c *Client) sendRequestCtx(ctx context.Context, method string, params interface{}, onNotification func(string, json.RawMessage)) (json.RawMessage, error) {
-	c.readerOnce.Do(c.startReader)
-
 	id := c.requestID.Add(1)
+	return c.sendRequestWithIDCtx(ctx, id, method, params, onNotification)
+}
+
+func (c *Client) sendRequestWithIDCtx(ctx context.Context, id uint64, method string, params interface{}, onNotification func(string, json.RawMessage)) (json.RawMessage, error) {
+	c.readerOnce.Do(c.startReader)
 
 	pending := &pendingRequest{
 		ch:             make(chan pendingResult, 1),
@@ -165,6 +173,27 @@ func (c *Client) sendCancelRequest(targetID uint64) {
 	c.writeMu.Unlock()
 }
 
+// sendNotification sends a fire-and-forget JSON-RPC notification (no response expected).
+func (c *Client) sendNotification(method string, params interface{}) error {
+	req := notificationRequest{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return errx.Wrap(ErrMarshalRequest, err)
+	}
+
+	c.writeMu.Lock()
+	_, writeErr := fmt.Fprintln(c.stdin, string(data))
+	c.writeMu.Unlock()
+	if writeErr != nil {
+		return errx.Wrap(ErrWriteRequest, writeErr)
+	}
+	return nil
+}
+
 // startReader launches the background goroutine that reads JSON-RPC responses
 // from stdout and dispatches them to the appropriate pending request.
 func (c *Client) startReader() {
@@ -216,12 +245,14 @@ func (c *Client) startReader() {
 	}()
 }
 
-// handleNotification routes JSON-RPC notifications. Stream notifications
-// (exec_stream.stdout, exec_stream.stderr) include a request ID in params
-// and are forwarded to the matching pending request's callback.
+// handleNotification routes JSON-RPC notifications. Request-scoped exec
+// notifications include a request ID in params and are forwarded to the
+// matching pending request's callback.
 func (c *Client) handleNotification(notif notification) {
 	switch notif.Method {
-	case "exec_stream.stdout", "exec_stream.stderr":
+	case "exec_stream.stdout", "exec_stream.stderr",
+		"exec_pipe.ready", "exec_pipe.stdout", "exec_pipe.stderr",
+		"exec_tty.ready", "exec_tty.stdout":
 		var p struct {
 			ID *uint64 `json:"id"`
 		}

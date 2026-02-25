@@ -65,7 +65,7 @@ func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.E
 	return opts
 }
 
-func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+func prepareExecOptions(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine, opts *api.ExecOptions) *api.ExecOptions {
 	if opts == nil {
 		opts = &api.ExecOptions{}
 	}
@@ -84,6 +84,11 @@ func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, ca
 		opts.Env[k] = v
 	}
 
+	return opts
+}
+
+func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	opts = prepareExecOptions(config, caPool, pol, opts)
 	return machine.Exec(ctx, command, opts)
 }
 

@@ -277,6 +277,8 @@ try {
 
 See full examples in:
 - [`examples/go/basic/main.go`](examples/go/basic/main.go)
+- [`examples/go/exec_modes/main.go`](examples/go/exec_modes/main.go)
+- [`examples/go/exec_modes/README.md`](examples/go/exec_modes/README.md)
 - [`examples/go/network_interception/main.go`](examples/go/network_interception/main.go)
 - [`examples/go/network_interception/README.md`](examples/go/network_interception/README.md)
 - [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)

@@ -70,6 +70,38 @@ type portForwardVM interface {
 	StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error)
 }
 
+type interactiveExecVM interface {
+	ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
+}
+
+type execInputChunk struct {
+	Data []byte
+	EOF  bool
+}
+
+type execInputReader struct {
+	ctx context.Context
+	ch  <-chan execInputChunk
+	buf []byte
+}
+
+func (r *execInputReader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 {
+		select {
+		case <-r.ctx.Done():
+			return 0, io.EOF
+		case chunk, ok := <-r.ch:
+			if !ok || chunk.EOF {
+				return 0, io.EOF
+			}
+			r.buf = chunk.Data
+		}
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
 type Handler struct {
 	factory   VMFactory
 	vm        VM
@@ -84,15 +116,25 @@ type Handler struct {
 	wg        sync.WaitGroup // tracks in-flight requests
 	cancelsMu sync.Mutex
 	cancels   map[uint64]context.CancelFunc // per-request cancel funcs
+	execMu    sync.RWMutex
+	execPipes map[uint64]chan execInputChunk
+	execTTYs  map[uint64]execTTYSession
+}
+
+type execTTYSession struct {
+	stdin  chan execInputChunk
+	resize chan [2]uint16
 }
 
 func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 	return &Handler{
-		factory: factory,
-		events:  make(chan api.Event, 100),
-		stdin:   stdin,
-		stdout:  stdout,
-		cancels: make(map[uint64]context.CancelFunc),
+		factory:   factory,
+		events:    make(chan api.Event, 100),
+		stdin:     stdin,
+		stdout:    stdout,
+		cancels:   make(map[uint64]context.CancelFunc),
+		execPipes: make(map[uint64]chan execInputChunk),
+		execTTYs:  make(map[uint64]execTTYSession),
 	}
 }
 
@@ -183,6 +225,20 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleExec(ctx, req)
 	case "exec_stream":
 		return h.handleExecStream(ctx, req)
+	case "exec_pipe":
+		return h.handleExecPipe(ctx, req)
+	case "exec_tty":
+		return h.handleExecTTY(ctx, req)
+	case "exec_pipe.stdin":
+		return h.handleExecPipeStdin(req)
+	case "exec_pipe.stdin_eof":
+		return h.handleExecPipeStdinEOF(req)
+	case "exec_tty.stdin":
+		return h.handleExecTTYStdin(req)
+	case "exec_tty.stdin_eof":
+		return h.handleExecTTYStdinEOF(req)
+	case "exec_tty.resize":
+		return h.handleExecTTYResize(req)
 	case "write_file":
 		return h.handleWriteFile(ctx, req)
 	case "read_file":
@@ -431,6 +487,307 @@ func (h *Handler) handleExecStream(ctx context.Context, req *Request) *Response 
 	}
 }
 
+func (h *Handler) handleExecPipe(ctx context.Context, req *Request) *Response {
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	if req.ID == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidRequest, Message: "exec_pipe requires request id"},
+		}
+	}
+
+	var params struct {
+		Command    string `json:"command"`
+		WorkingDir string `json:"working_dir,omitempty"`
+		User       string `json:"user,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	stdinCh := make(chan execInputChunk, 64)
+	h.execMu.Lock()
+	h.execPipes[*req.ID] = stdinCh
+	h.execMu.Unlock()
+	defer func() {
+		h.execMu.Lock()
+		delete(h.execPipes, *req.ID)
+		h.execMu.Unlock()
+		close(stdinCh)
+	}()
+
+	h.sendRequestNotification(req.ID, "exec_pipe.ready", nil)
+
+	reqID := req.ID
+	stdoutWriter := &streamWriter{handler: h, reqID: reqID, method: "exec_pipe.stdout"}
+	stderrWriter := &streamWriter{handler: h, reqID: reqID, method: "exec_pipe.stderr"}
+	stdinReader := &execInputReader{ctx: ctx, ch: stdinCh}
+
+	opts := &api.ExecOptions{
+		WorkingDir: params.WorkingDir,
+		User:       params.User,
+		Stdin:      stdinReader,
+		Stdout:     stdoutWriter,
+		Stderr:     stderrWriter,
+	}
+
+	result, err := vm.Exec(ctx, params.Command, opts)
+	if err != nil {
+		code := ErrCodeExecFailed
+		if ctx.Err() != nil {
+			code = ErrCodeCancelled
+		}
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: code, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	if !stdoutWriter.used && len(result.Stdout) > 0 {
+		h.sendStreamData(reqID, "exec_pipe.stdout", result.Stdout)
+	}
+	if !stderrWriter.used && len(result.Stderr) > 0 {
+		h.sendStreamData(reqID, "exec_pipe.stderr", result.Stderr)
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"exit_code":   result.ExitCode,
+			"duration_ms": result.DurationMS,
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleExecTTY(ctx context.Context, req *Request) *Response {
+	vm := h.getVM()
+	if vm == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	if req.ID == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidRequest, Message: "exec_tty requires request id"},
+		}
+	}
+
+	interactiveVM, ok := vm.(interactiveExecVM)
+	if !ok {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM backend does not support interactive exec"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Command    string `json:"command"`
+		WorkingDir string `json:"working_dir,omitempty"`
+		User       string `json:"user,omitempty"`
+		Rows       uint16 `json:"rows,omitempty"`
+		Cols       uint16 `json:"cols,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+	if params.Rows == 0 {
+		params.Rows = 24
+	}
+	if params.Cols == 0 {
+		params.Cols = 80
+	}
+
+	stdinCh := make(chan execInputChunk, 64)
+	resizeCh := make(chan [2]uint16, 16)
+	h.execMu.Lock()
+	h.execTTYs[*req.ID] = execTTYSession{
+		stdin:  stdinCh,
+		resize: resizeCh,
+	}
+	h.execMu.Unlock()
+	defer func() {
+		h.execMu.Lock()
+		delete(h.execTTYs, *req.ID)
+		h.execMu.Unlock()
+		close(stdinCh)
+		close(resizeCh)
+	}()
+
+	h.sendRequestNotification(req.ID, "exec_tty.ready", nil)
+
+	stdinReader := &execInputReader{ctx: ctx, ch: stdinCh}
+	stdoutWriter := &streamWriter{handler: h, reqID: req.ID, method: "exec_tty.stdout"}
+	opts := &api.ExecOptions{
+		WorkingDir: params.WorkingDir,
+		User:       params.User,
+	}
+
+	start := time.Now()
+	exitCode, err := interactiveVM.ExecInteractive(ctx, params.Command, opts, params.Rows, params.Cols, stdinReader, stdoutWriter, resizeCh)
+	if err != nil {
+		code := ErrCodeExecFailed
+		if ctx.Err() != nil {
+			code = ErrCodeCancelled
+		}
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: code, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"exit_code":   exitCode,
+			"duration_ms": time.Since(start).Milliseconds(),
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleExecPipeStdin(req *Request) *Response {
+	var params struct {
+		ID   *uint64 `json:"id"`
+		Data string  `json:"data"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == nil {
+		return nil
+	}
+
+	data, err := base64.StdEncoding.DecodeString(params.Data)
+	if err != nil {
+		return nil
+	}
+
+	h.execMu.RLock()
+	stdinCh, ok := h.execPipes[*params.ID]
+	h.execMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	safeSendExecInput(stdinCh, execInputChunk{Data: data})
+	return nil
+}
+
+func (h *Handler) handleExecPipeStdinEOF(req *Request) *Response {
+	var params struct {
+		ID *uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == nil {
+		return nil
+	}
+
+	h.execMu.RLock()
+	stdinCh, ok := h.execPipes[*params.ID]
+	h.execMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	safeSendExecInput(stdinCh, execInputChunk{EOF: true})
+	return nil
+}
+
+func (h *Handler) handleExecTTYStdin(req *Request) *Response {
+	var params struct {
+		ID   *uint64 `json:"id"`
+		Data string  `json:"data"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == nil {
+		return nil
+	}
+
+	data, err := base64.StdEncoding.DecodeString(params.Data)
+	if err != nil {
+		return nil
+	}
+
+	h.execMu.RLock()
+	session, ok := h.execTTYs[*params.ID]
+	h.execMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	safeSendExecInput(session.stdin, execInputChunk{Data: data})
+	return nil
+}
+
+func (h *Handler) handleExecTTYStdinEOF(req *Request) *Response {
+	var params struct {
+		ID *uint64 `json:"id"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == nil {
+		return nil
+	}
+
+	h.execMu.RLock()
+	session, ok := h.execTTYs[*params.ID]
+	h.execMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	safeSendExecInput(session.stdin, execInputChunk{EOF: true})
+	return nil
+}
+
+func (h *Handler) handleExecTTYResize(req *Request) *Response {
+	var params struct {
+		ID   *uint64 `json:"id"`
+		Rows uint16  `json:"rows"`
+		Cols uint16  `json:"cols"`
+	}
+	if err := json.Unmarshal(req.Params, &params); err != nil || params.ID == nil {
+		return nil
+	}
+
+	h.execMu.RLock()
+	session, ok := h.execTTYs[*params.ID]
+	h.execMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	safeSendTTYResize(session.resize, [2]uint16{params.Rows, params.Cols})
+	return nil
+}
+
+func safeSendExecInput(ch chan execInputChunk, chunk execInputChunk) {
+	defer func() { _ = recover() }()
+	ch <- chunk
+}
+
+func safeSendTTYResize(ch chan [2]uint16, size [2]uint16) {
+	defer func() { _ = recover() }()
+	ch <- size
+}
+
 // streamWriter implements io.Writer and sends each Write as a JSON-RPC notification.
 type streamWriter struct {
 	handler *Handler
@@ -446,16 +803,26 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 }
 
 func (h *Handler) sendStreamData(reqID *uint64, method string, data []byte) {
+	h.sendRequestNotification(reqID, method, map[string]interface{}{
+		"data": base64.StdEncoding.EncodeToString(data),
+	})
+}
+
+func (h *Handler) sendRequestNotification(reqID *uint64, method string, extraParams map[string]interface{}) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	params := map[string]interface{}{
+		"id": reqID,
+	}
+	for k, v := range extraParams {
+		params[k] = v
+	}
 
 	notification := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  method,
-		"params": map[string]interface{}{
-			"id":   reqID,
-			"data": base64.StdEncoding.EncodeToString(data),
-		},
+		"params":  params,
 	}
 	encoded, _ := json.Marshal(notification)
 	fmt.Fprintln(h.stdout, string(encoded))

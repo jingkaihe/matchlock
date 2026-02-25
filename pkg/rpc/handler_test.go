@@ -22,6 +22,7 @@ import (
 type mockVM struct {
 	id                     string
 	execFunc               func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	execInteractiveFunc    func(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
 	addAllowedHostsFunc    func(ctx context.Context, hosts []string) ([]string, error)
 	removeAllowedHostsFunc func(ctx context.Context, hosts []string) ([]string, error)
 	allowedHostsFunc       func(ctx context.Context) ([]string, error)
@@ -60,6 +61,13 @@ func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions
 		return m.execFunc(ctx, command, opts)
 	}
 	return &api.ExecResult{Stdout: []byte("hello\n")}, nil
+}
+
+func (m *mockVM) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+	if m.execInteractiveFunc != nil {
+		return m.execInteractiveFunc(ctx, command, opts, rows, cols, stdin, stdout, resizeCh)
+	}
+	return 1, fmt.Errorf("interactive exec not implemented")
 }
 
 type mockPortForwardVM struct {
@@ -129,6 +137,19 @@ func (t *testRPC) send(method string, id uint64, params interface{}) {
 		"jsonrpc": "2.0",
 		"method":  method,
 		"id":      id,
+	}
+	if params != nil {
+		p, _ := json.Marshal(params)
+		req["params"] = json.RawMessage(p)
+	}
+	data, _ := json.Marshal(req)
+	fmt.Fprintln(t.stdinW, string(data))
+}
+
+func (t *testRPC) sendNotification(method string, params interface{}) {
+	req := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  method,
 	}
 	if params != nil {
 		p, _ := json.Marshal(params)
@@ -266,6 +287,168 @@ func TestHandlerExecStream(t *testing.T) {
 	json.Unmarshal(final.Result, &result)
 	assert.Equal(t, 0, result.ExitCode)
 	assert.Equal(t, int64(42), result.DurationMS)
+}
+
+func TestHandlerExecPipe(t *testing.T) {
+	vm := &mockVM{
+		id: "vm-test",
+		execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+			require.Equal(t, "cat", command)
+			require.NotNil(t, opts)
+			require.NotNil(t, opts.Stdin)
+			require.NotNil(t, opts.Stdout)
+			require.NotNil(t, opts.Stderr)
+
+			in, err := io.ReadAll(opts.Stdin)
+			require.NoError(t, err)
+			_, _ = opts.Stdout.Write([]byte("out:" + string(in)))
+			_, _ = opts.Stderr.Write([]byte("warn"))
+			return &api.ExecResult{ExitCode: 7, DurationMS: 33}, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("exec_pipe", 2, map[string]string{"command": "cat"})
+
+	var stdout string
+	var stderr string
+	var final *rpcMsg
+
+	for {
+		msg := rpc.read()
+		if msg.ID != nil {
+			final = msg
+			break
+		}
+
+		switch msg.Method {
+		case "exec_pipe.ready":
+			rpc.sendNotification("exec_pipe.stdin", map[string]interface{}{
+				"id":   2,
+				"data": base64.StdEncoding.EncodeToString([]byte("hello")),
+			})
+			rpc.sendNotification("exec_pipe.stdin_eof", map[string]interface{}{
+				"id": 2,
+			})
+		case "exec_pipe.stdout", "exec_pipe.stderr":
+			var params struct {
+				Data string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(msg.Params, &params))
+			data, err := base64.StdEncoding.DecodeString(params.Data)
+			require.NoError(t, err)
+			if msg.Method == "exec_pipe.stdout" {
+				stdout += string(data)
+			} else {
+				stderr += string(data)
+			}
+		}
+	}
+
+	require.NotNil(t, final)
+	require.Nil(t, final.Error)
+	var result struct {
+		ExitCode   int   `json:"exit_code"`
+		DurationMS int64 `json:"duration_ms"`
+	}
+	require.NoError(t, json.Unmarshal(final.Result, &result))
+	assert.Equal(t, 7, result.ExitCode)
+	assert.Equal(t, int64(33), result.DurationMS)
+	assert.Equal(t, "out:hello", stdout)
+	assert.Equal(t, "warn", stderr)
+}
+
+func TestHandlerExecTTY(t *testing.T) {
+	var gotRows uint16
+	var gotCols uint16
+	var gotResize [2]uint16
+
+	vm := &mockVM{
+		id: "vm-test",
+		execInteractiveFunc: func(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+			require.Equal(t, "sh", command)
+			gotRows = rows
+			gotCols = cols
+
+			select {
+			case gotResize = <-resizeCh:
+			case <-time.After(time.Second):
+				require.FailNow(t, "did not receive resize event")
+			}
+
+			in, err := io.ReadAll(stdin)
+			require.NoError(t, err)
+			require.Equal(t, "tty-input", string(in))
+			_, _ = stdout.Write([]byte("tty-out"))
+			return 0, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("exec_tty", 3, map[string]interface{}{
+		"command": "sh",
+		"rows":    40,
+		"cols":    120,
+	})
+
+	var ttyOut string
+	var final *rpcMsg
+
+	for {
+		msg := rpc.read()
+		if msg.ID != nil {
+			final = msg
+			break
+		}
+
+		switch msg.Method {
+		case "exec_tty.ready":
+			rpc.sendNotification("exec_tty.resize", map[string]interface{}{
+				"id":   3,
+				"rows": 50,
+				"cols": 140,
+			})
+			rpc.sendNotification("exec_tty.stdin", map[string]interface{}{
+				"id":   3,
+				"data": base64.StdEncoding.EncodeToString([]byte("tty-input")),
+			})
+			rpc.sendNotification("exec_tty.stdin_eof", map[string]interface{}{
+				"id": 3,
+			})
+		case "exec_tty.stdout":
+			var params struct {
+				Data string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(msg.Params, &params))
+			data, err := base64.StdEncoding.DecodeString(params.Data)
+			require.NoError(t, err)
+			ttyOut += string(data)
+		}
+	}
+
+	require.NotNil(t, final)
+	require.Nil(t, final.Error)
+	var result struct {
+		ExitCode   int   `json:"exit_code"`
+		DurationMS int64 `json:"duration_ms"`
+	}
+	require.NoError(t, json.Unmarshal(final.Result, &result))
+	assert.Equal(t, 0, result.ExitCode)
+	assert.GreaterOrEqual(t, result.DurationMS, int64(0))
+	assert.Equal(t, uint16(40), gotRows)
+	assert.Equal(t, uint16(120), gotCols)
+	assert.Equal(t, [2]uint16{50, 140}, gotResize)
+	assert.Equal(t, "tty-out", ttyOut)
 }
 
 func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
