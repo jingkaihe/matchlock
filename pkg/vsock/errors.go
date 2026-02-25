@@ -29,4 +29,7 @@ var (
 	ErrReadPortForwardResponse  = errors.New("read port-forward response")
 	ErrPortForwardRejected      = errors.New("port-forward rejected")
 	ErrUnexpectedPortForwardMsg = errors.New("unexpected port-forward response message")
+
+	ErrEncodeFileRequest = errors.New("encode file request")
+	ErrFileRemote        = errors.New("guest file operation")
 )

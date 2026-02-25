@@ -519,31 +519,19 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 }
 
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
-	if s.vfsRoot == nil {
-		return errx.With(ErrVFSDisabled, ": write_file %q", path)
-	}
-	return writeFile(s.vfsRoot, path, content, mode)
+	return s.machine.WriteFile(ctx, path, content, mode)
 }
 
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	if s.vfsRoot == nil {
-		return nil, errx.With(ErrVFSDisabled, ": read_file %q", path)
-	}
-	return readFile(s.vfsRoot, path)
+	return s.machine.ReadFile(ctx, path)
 }
 
 func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
-	if s.vfsRoot == nil {
-		return 0, errx.With(ErrVFSDisabled, ": read_file %q", path)
-	}
-	return readFileTo(s.vfsRoot, path, w)
+	return readFileTo(ctx, s.machine, path, w)
 }
 
 func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
-	if s.vfsRoot == nil {
-		return nil, errx.With(ErrVFSDisabled, ": list_files %q", path)
-	}
-	return listFiles(s.vfsRoot, path)
+	return s.machine.ListFiles(ctx, path)
 }
 
 // Events returns a channel for receiving sandbox events.

@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.1.25
+
+* File operations over SDK rpc now no longer relies on vfs.
+* Also fixed all the examples that were broken due to previous breaking changes
+
 ## 0.1.24
 
 * Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).

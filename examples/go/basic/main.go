@@ -55,19 +55,16 @@ func run() error {
 	}
 	slog.Info("sandbox ready", "vm", vmID)
 
-	// Buffered exec — collects all output, returns when done
 	result, err := client.Exec(context.Background(), "python3 --version")
 	if err != nil {
 		return errx.Wrap(errExecPythonVer, err)
 	}
 	fmt.Print(result.Stdout)
 
-	// Install uv
 	if _, err := client.Exec(context.Background(), "pip install --quiet uv"); err != nil {
 		return errx.Wrap(errExecPipInstall, err)
 	}
 
-	// Write a Python script that uses the Anthropic SDK to stream plain text
 	script := `# /// script
 # requires-python = ">=3.12"
 # dependencies = ["anthropic"]
@@ -88,7 +85,6 @@ print()
 		return errx.Wrap(errWriteFile, err)
 	}
 
-	// Streaming exec — prints plain text as it arrives
 	streamResult, err := client.ExecStream(context.Background(),
 		"uv run /workspace/ask.py",
 		os.Stdout, os.Stderr,

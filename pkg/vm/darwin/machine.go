@@ -169,6 +169,30 @@ func (m *DarwinMachine) Wait(ctx context.Context) error {
 	}
 }
 
+func (m *DarwinMachine) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.WriteFileVsock(conn, path, content, mode)
+}
+
+func (m *DarwinMachine) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ReadFileVsock(conn, path)
+}
+
+func (m *DarwinMachine) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ListFilesVsock(conn, path)
+}
+
 func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if opts != nil && opts.Stdin != nil {
 		conn, err := m.dialVsock(VsockPortExec)

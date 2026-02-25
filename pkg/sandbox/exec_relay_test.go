@@ -44,6 +44,15 @@ func (m *fakeMachine) Exec(ctx context.Context, command string, opts *api.ExecOp
 	}
 }
 
+func (m *fakeMachine) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	return nil
+}
+func (m *fakeMachine) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	return nil, nil
+}
+func (m *fakeMachine) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	return nil, nil
+}
 func (m *fakeMachine) NetworkFD() (int, error) { return 0, nil }
 func (m *fakeMachine) VsockFD() (int, error)   { return 0, nil }
 func (m *fakeMachine) PID() int                { return 0 }
@@ -84,6 +93,15 @@ func (m *fakeInteractiveMachine) ExecInteractive(ctx context.Context, command st
 	return 0, nil
 }
 
+func (m *fakeInteractiveMachine) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	return nil
+}
+func (m *fakeInteractiveMachine) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	return nil, nil
+}
+func (m *fakeInteractiveMachine) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	return nil, nil
+}
 func (m *fakeInteractiveMachine) NetworkFD() (int, error) { return 0, nil }
 func (m *fakeInteractiveMachine) VsockFD() (int, error)   { return 0, nil }
 func (m *fakeInteractiveMachine) PID() int                { return 0 }

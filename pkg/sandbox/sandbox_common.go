@@ -1,16 +1,19 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"io"
-	"os"
+	"strings"
 	"time"
 
+	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
+	"github.com/jingkaihe/matchlock/pkg/vsock"
 )
 
 func buildVFSProviders(config *api.Config) map[string]vfs.Provider {
@@ -84,65 +87,56 @@ func execCommand(ctx context.Context, machine vm.Machine, config *api.Config, ca
 	return machine.Exec(ctx, command, opts)
 }
 
-func writeFile(vfsRoot vfs.Provider, path string, content []byte, mode uint32) error {
-	if mode == 0 {
-		mode = 0644
-	}
-	h, err := vfsRoot.Create(path, os.FileMode(mode))
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	_, err = h.Write(content)
-	return err
-}
-
-func readFile(vfsRoot vfs.Provider, path string) ([]byte, error) {
-	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer h.Close()
-
-	info, err := vfsRoot.Stat(path)
-	if err != nil {
-		return nil, err
+func readFileTo(ctx context.Context, machine vm.Machine, path string, w io.Writer) (int64, error) {
+	dialer, ok := machine.(vm.VsockDialer)
+	if !ok {
+		data, err := machine.ReadFile(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		return io.Copy(w, bytes.NewReader(data))
 	}
 
-	content := make([]byte, info.Size())
-	_, err = h.Read(content)
-	if err != nil {
-		return nil, err
-	}
-	return content, nil
-}
-
-func readFileTo(vfsRoot vfs.Provider, path string, w io.Writer) (int64, error) {
-	h, err := vfsRoot.Open(path, os.O_RDONLY, 0)
+	conn, err := dialer.DialVsock(vsock.ServicePortExec)
 	if err != nil {
 		return 0, err
 	}
-	defer h.Close()
-	return io.Copy(w, h)
+
+	counting := &countingWriter{w: w}
+	var stderr bytes.Buffer
+	quotedPath := shellSingleQuote(path)
+	cmd := "if [ ! -f " + quotedPath + " ]; then echo 'read_file only supports regular files' >&2; exit 1; fi; cat < " + quotedPath
+	result, err := vsock.ExecPipe(ctx, conn, cmd, &api.ExecOptions{
+		Stdout: counting,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		return counting.n, err
+	}
+	if result.ExitCode != 0 {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return counting.n, errx.With(vsock.ErrFileRemote, ": %s", msg)
+		}
+		return counting.n, errx.With(vsock.ErrFileRemote, ": exit code %d", result.ExitCode)
+	}
+
+	return counting.n, nil
 }
 
-func listFiles(vfsRoot vfs.Provider, path string) ([]api.FileInfo, error) {
-	entries, err := vfsRoot.ReadDir(path)
-	if err != nil {
-		return nil, err
-	}
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
 
-	result := make([]api.FileInfo, len(entries))
-	for i, e := range entries {
-		info, _ := e.Info()
-		result[i] = api.FileInfo{
-			Name:  e.Name(),
-			Size:  info.Size(),
-			Mode:  uint32(info.Mode()),
-			IsDir: e.IsDir(),
-		}
-	}
-	return result, nil
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func flushGuestDisks(machine vm.Machine) {
