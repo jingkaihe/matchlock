@@ -49,9 +49,9 @@ type usageLoggerPlugin struct {
 // openRouterResponse is the minimal structure parsed from OpenRouter/Ollama
 // chat completions response bodies.
 type openRouterResponse struct {
-	ID    string             `json:"id"`
-	Model string             `json:"model"`
-	Usage *openRouterUsage   `json:"usage"`
+	ID    string           `json:"id"`
+	Model string           `json:"model"`
+	Usage *openRouterUsage `json:"usage"`
 }
 
 type openRouterUsage struct {

@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"time"
 	"sync"
+	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"

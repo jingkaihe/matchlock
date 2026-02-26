@@ -22,7 +22,7 @@ type mockGatePlugin struct {
 	verdict *GateVerdict
 }
 
-func (m *mockGatePlugin) Name() string           { return m.name }
+func (m *mockGatePlugin) Name() string                  { return m.name }
 func (m *mockGatePlugin) Gate(host string) *GateVerdict { return m.verdict }
 
 func TestEngine_IsHostAllowed_NoRestrictions(t *testing.T) {

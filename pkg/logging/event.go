@@ -23,11 +23,11 @@ type Event struct {
 const (
 	EventHTTPRequest       = "http_request"
 	EventHTTPResponse      = "http_response"
-	EventKeyInjection      = "key_injection"       // DEPRECATED: replaced by EventRequestTransform
+	EventKeyInjection      = "key_injection" // DEPRECATED: replaced by EventRequestTransform
 	EventGateDecision      = "gate_decision"
-	EventRouteDecision     = "route_decision"       // NEW
-	EventRequestTransform  = "request_transform"    // NEW
-	EventResponseTransform = "response_transform"   // NEW
+	EventRouteDecision     = "route_decision"     // NEW
+	EventRequestTransform  = "request_transform"  // NEW
+	EventResponseTransform = "response_transform" // NEW
 )
 
 // HTTPRequestData is the data payload for http_request events.
@@ -77,13 +77,13 @@ type RouteDecisionData struct {
 // RequestTransformData is the data payload for request_transform events.
 type RequestTransformData struct {
 	Host   string `json:"host"`
-	Action string `json:"action"`          // "injected", "skipped", "no_op", etc.
+	Action string `json:"action"` // "injected", "skipped", "no_op", etc.
 	Reason string `json:"reason,omitempty"`
 }
 
 // ResponseTransformData is the data payload for response_transform events.
 type ResponseTransformData struct {
 	Host   string `json:"host"`
-	Action string `json:"action"`          // "logged_usage", "no_op", etc.
+	Action string `json:"action"` // "logged_usage", "no_op", etc.
 	Reason string `json:"reason,omitempty"`
 }
