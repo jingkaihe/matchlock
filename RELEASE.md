@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unrelease
+## 0.1.26 
 
 * `matchlock volume cp <src> <dest>`
 * Added Go SDK `exec_pipe` and `exec_tty` support (stdin piping + interactive PTY shell), plus a new interactive terminal example at `examples/go/exec_modes`.
