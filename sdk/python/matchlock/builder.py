@@ -26,6 +26,10 @@ class Sandbox:
     def __init__(self, image: str) -> None:
         self._opts = CreateOptions(image=image)
 
+    def with_privileged(self) -> Sandbox:
+        self._opts.privileged = True
+        return self
+
     def with_cpus(self, cpus: int) -> Sandbox:
         self._opts.cpus = cpus
         return self

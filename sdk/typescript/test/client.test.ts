@@ -75,6 +75,21 @@ describe("Client", () => {
     await expect(client.create({})).rejects.toThrow("image is required");
   });
 
+  it("sets launch_entrypoint on launch", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const launchPromise = client.launch(new Sandbox("alpine:latest"));
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.launch_entrypoint).toBe(true);
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-launch" } });
+    await expect(launchPromise).resolves.toBe("vm-launch");
+
+    fake.close();
+    await client.close();
+  });
+
   it("sends create payload with network defaults", async () => {
     const fake = installFakeProcess();
     const client = new Client();

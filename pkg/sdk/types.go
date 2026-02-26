@@ -62,6 +62,9 @@ type CreateOptions struct {
 	PortForwardAddresses []string
 	// ImageConfig holds OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)
 	ImageConfig *ImageConfig
+	// LaunchEntrypoint starts image ENTRYPOINT/CMD in detached mode during create.
+	// Set by Client.Launch; low-level Create keeps this false unless requested.
+	LaunchEntrypoint bool
 }
 
 // ImageConfig holds OCI image metadata for user/entrypoint/cmd/workdir/env.

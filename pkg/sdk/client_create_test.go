@@ -102,6 +102,43 @@ func TestCreateReturnsVMIDWhenPostCreatePortForwardFails(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "address already in use")
 }
 
+func TestLaunchSetsLaunchEntrypoint(t *testing.T) {
+	var launchEntrypoint bool
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if v, ok := params["launch_entrypoint"].(bool); ok {
+						launchEntrypoint = v
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-launch"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Launch(New("alpine:latest"))
+	require.NoError(t, err)
+	assert.Equal(t, "vm-launch", vmID)
+	assert.True(t, launchEntrypoint)
+}
+
 func TestCreateSendsNetworkMTU(t *testing.T) {
 	var capturedMTU float64
 	var capturedBlockPrivateIPs bool

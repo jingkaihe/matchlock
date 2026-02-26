@@ -123,7 +123,9 @@ export class Client {
   }
 
   async launch(sandbox: Sandbox): Promise<string> {
-    return this.create(sandbox.options());
+    const options = cloneCreateOptions(sandbox.options());
+    options.launchEntrypoint = true;
+    return this.create(options);
   }
 
   async create(opts: CreateOptions = {}): Promise<string> {

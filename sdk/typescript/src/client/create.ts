@@ -113,6 +113,9 @@ export function buildCreateParams(
     }
     params.image_config = imageConfig;
   }
+  if (options.launchEntrypoint) {
+    params.launch_entrypoint = true;
+  }
 
   return params;
 }

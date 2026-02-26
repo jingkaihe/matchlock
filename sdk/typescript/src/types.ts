@@ -242,6 +242,7 @@ export interface CreateOptions {
   portForwards?: PortForward[];
   portForwardAddresses?: string[];
   imageConfig?: ImageConfig;
+  launchEntrypoint?: boolean;
 }
 
 export interface ExecResult {

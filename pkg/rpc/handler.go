@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,6 +120,8 @@ type Handler struct {
 	execMu    sync.RWMutex
 	execPipes map[uint64]chan execInputChunk
 	execTTYs  map[uint64]execTTYSession
+	// entryCancel stops a launch-started image ENTRYPOINT/CMD exec when VM closes.
+	entryCancel context.CancelFunc
 }
 
 type execTTYSession struct {
@@ -351,12 +354,27 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 			ID:      req.ID,
 		}
 	}
+	entryCancel, err := startImageEntrypoint(ctx, vm)
+	if err != nil {
+		vm.Close(ctx)
+		state.NewManager().Remove(vm.ID())
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
 
 	h.vmMu.Lock()
 	if h.pfManager != nil {
 		_ = h.pfManager.Close()
 		h.pfManager = nil
 	}
+	if h.entryCancel != nil {
+		h.entryCancel()
+		h.entryCancel = nil
+	}
+	h.entryCancel = entryCancel
 	h.vm = vm
 	h.vmMu.Unlock()
 
@@ -374,6 +392,58 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		JSONRPC: "2.0",
 		Result:  result,
 		ID:      req.ID,
+	}
+}
+
+func startImageEntrypoint(
+	ctx context.Context, vm VM,
+) (context.CancelFunc, error) {
+	cfg := vm.Config()
+	if cfg == nil || !cfg.LaunchEntrypoint || cfg.ImageCfg == nil {
+		return nil, nil
+	}
+
+	commandArgs := cfg.ImageCfg.ComposeCommand(nil)
+	if len(commandArgs) == 0 {
+		return nil, nil
+	}
+
+	command := api.ShellQuoteArgs(commandArgs)
+	entryCtx, cancel := context.WithCancel(context.Background())
+	type runResult struct {
+		result *api.ExecResult
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		// Force pipe-mode execution so detached startup never buffers unbounded
+		// stdout/stderr in host memory.
+		result, err := vm.Exec(entryCtx, command, &api.ExecOptions{
+			Stdin:  strings.NewReader(""),
+			Stdout: io.Discard,
+			Stderr: io.Discard,
+		})
+		done <- runResult{result: result, err: err}
+	}()
+
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case rr := <-done:
+		cancel()
+		if rr.err != nil {
+			return nil, fmt.Errorf("start image entrypoint: %s", rr.err)
+		}
+		if rr.result != nil && rr.result.ExitCode != 0 {
+			return nil, fmt.Errorf("start image entrypoint: exit code %d", rr.result.ExitCode)
+		}
+		return nil, nil
+	case <-timer.C:
+		return cancel, nil
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
 	}
 }
 
@@ -1106,7 +1176,12 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.vm = nil
 	pfManager := h.pfManager
 	h.pfManager = nil
+	entryCancel := h.entryCancel
+	h.entryCancel = nil
 	h.vmMu.Unlock()
+	if entryCancel != nil {
+		entryCancel()
+	}
 
 	if pfManager != nil {
 		if err := pfManager.Close(); err != nil {

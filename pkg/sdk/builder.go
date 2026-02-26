@@ -266,7 +266,10 @@ func (b *SandboxBuilder) Options() CreateOptions {
 }
 
 // Launch creates and starts the sandbox using the given client.
-// This is a convenience that calls client.Create(b.Options()).
+// This is a convenience that calls client.Create(b.Options()) and starts the
+// image ENTRYPOINT/CMD in detached mode.
 func (c *Client) Launch(b *SandboxBuilder) (string, error) {
-	return c.Create(b.Options())
+	opts := b.Options()
+	opts.LaunchEntrypoint = true
+	return c.Create(opts)
 }

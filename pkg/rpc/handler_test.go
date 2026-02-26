@@ -21,6 +21,7 @@ import (
 
 type mockVM struct {
 	id                     string
+	config                 *api.Config
 	execFunc               func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
 	execInteractiveFunc    func(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
 	addAllowedHostsFunc    func(ctx context.Context, hosts []string) ([]string, error)
@@ -28,8 +29,13 @@ type mockVM struct {
 	allowedHostsFunc       func(ctx context.Context) ([]string, error)
 }
 
-func (m *mockVM) ID() string                                                { return m.id }
-func (m *mockVM) Config() *api.Config                                       { return api.DefaultConfig() }
+func (m *mockVM) ID() string { return m.id }
+func (m *mockVM) Config() *api.Config {
+	if m.config != nil {
+		return m.config
+	}
+	return api.DefaultConfig()
+}
 func (m *mockVM) Start(context.Context) error                               { return nil }
 func (m *mockVM) Stop(context.Context) error                                { return nil }
 func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error   { return nil }
@@ -575,6 +581,123 @@ func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
 	require.Contains(t, msg.Error.Message, "id is internal-only")
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+func TestHandlerCreateLaunchEntrypointStartsDetachedCommand(t *testing.T) {
+	gotCommand := ""
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				gotCommand = command
+				return &api.ExecResult{ExitCode: 0}, nil
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sh", "-lc"},
+			"cmd":        []string{"echo hello world"},
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+	assert.Equal(t, "sh -lc 'echo hello world'", gotCommand)
+}
+
+func TestHandlerCreateLaunchEntrypointReportsFailure(t *testing.T) {
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				return &api.ExecResult{ExitCode: 42}, nil
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sleep"},
+			"cmd":        []string{"1"},
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail when entrypoint start fails")
+	require.Equal(t, ErrCodeVMFailed, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "start image entrypoint")
+}
+
+func TestHandlerCreateLaunchEntrypointUsesNonBufferingExecAndCancelsOnClose(t *testing.T) {
+	started := make(chan *api.ExecOptions, 1)
+	cancelled := make(chan struct{}, 1)
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				started <- opts
+				<-ctx.Done()
+				cancelled <- struct{}{}
+				return nil, ctx.Err()
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sleep"},
+			"cmd":        []string{"10"},
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	var opts *api.ExecOptions
+	select {
+	case opts = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint exec to start")
+	}
+	require.NotNil(t, opts)
+	require.NotNil(t, opts.Stdin)
+	require.NotNil(t, opts.Stdout)
+	require.NotNil(t, opts.Stderr)
+
+	stdinData, err := io.ReadAll(opts.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, stdinData)
+
+	_, err = opts.Stdout.Write([]byte("stdout"))
+	require.NoError(t, err)
+	_, err = opts.Stderr.Write([]byte("stderr"))
+	require.NoError(t, err)
+
+	rpc.send("close", 2, map[string]interface{}{})
+	closeResp := rpc.read()
+	require.Nil(t, closeResp.Error, "close failed")
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint cancellation")
+	}
 }
 
 func TestHandlerCreateRejectsNoNetworkWithAllowHosts(t *testing.T) {
