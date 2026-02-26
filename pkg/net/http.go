@@ -109,27 +109,27 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
-		if err != nil {
-			resp.Body.Close()
-			pc.conn.Close()
-			return
-		}
-
-		// Buffer the entire body so we can inspect it and avoid broken
-		// chunked re-encoding for streaming responses (SSE / LLM APIs).
-		body, err := io.ReadAll(modifiedResp.Body)
+		// Buffer the response body before calling policy plugins so that
+		// response transforms (e.g. usage_logger) see the complete body,
+		// including fully-assembled SSE streams.
+		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			pc.conn.Close()
 			return
 		}
+		resp.Body = io.NopCloser(strings.NewReader(string(body)))
+		resp.ContentLength = int64(len(body))
+		resp.TransferEncoding = nil
+		resp.Header.Del("Transfer-Encoding")
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
-		modifiedResp.Body = io.NopCloser(strings.NewReader(string(body)))
-		modifiedResp.ContentLength = int64(len(body))
-		modifiedResp.TransferEncoding = nil
-		modifiedResp.Header.Del("Transfer-Encoding")
-		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		// OnResponse — plugins now see buffered bodies
+		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
+		if err != nil {
+			pc.conn.Close()
+			return
+		}
 
 		duration := time.Since(start)
 
@@ -285,27 +285,26 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 			resp.Header.Set("X-Routed-Via", "local-backend")
 		}
 
-		// OnResponse
-		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
-		if err != nil {
-			resp.Body.Close()
-			upstreamConn.Close()
-			return
-		}
-
-		// Buffer full response body
-		body, err := io.ReadAll(modifiedResp.Body)
+		// Buffer the response body before calling policy plugins so that
+		// response transforms (e.g. usage_logger) see the complete body,
+		// including fully-assembled SSE streams.
+		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		upstreamConn.Close()
 		if err != nil {
 			return
 		}
+		resp.Body = io.NopCloser(strings.NewReader(string(body)))
+		resp.ContentLength = int64(len(body))
+		resp.TransferEncoding = nil
+		resp.Header.Del("Transfer-Encoding")
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
-		modifiedResp.Body = io.NopCloser(strings.NewReader(string(body)))
-		modifiedResp.ContentLength = int64(len(body))
-		modifiedResp.TransferEncoding = nil
-		modifiedResp.Header.Del("Transfer-Encoding")
-		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		// OnResponse — plugins now see buffered bodies
+		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, serverName)
+		if err != nil {
+			return
+		}
 
 		duration := time.Since(start)
 

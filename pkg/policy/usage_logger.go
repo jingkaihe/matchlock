@@ -148,15 +148,20 @@ func (p *usageLoggerPlugin) TransformResponse(resp *http.Response, req *http.Req
 	// Reassign body so downstream can still read it
 	resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
-	// Parse the response
+	// Parse the response — try single JSON object first, then SSE format
 	var parsed openRouterResponse
 	if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
-		p.logger.Warn("usage_logger: failed to parse response JSON", "error", err)
-		return &ResponseDecision{
-			Response: resp,
-			Action:   "no_op",
-			Reason:   "skipped: invalid JSON in response body",
-		}, nil
+		// Try SSE (Server-Sent Events) format: lines prefixed with "data: "
+		if sseParsed, ok := parseSSEUsage(bodyBytes); ok {
+			parsed = *sseParsed
+		} else {
+			p.logger.Warn("usage_logger: failed to parse response JSON", "error", err)
+			return &ResponseDecision{
+				Response: resp,
+				Action:   "no_op",
+				Reason:   "skipped: invalid JSON in response body",
+			}, nil
+		}
 	}
 
 	if parsed.Usage == nil {
@@ -296,6 +301,37 @@ func (p *usageLoggerPlugin) restoreTotal() {
 			"path", p.logPath,
 			"total_cost_usd", fmt.Sprintf("%.6f", total))
 	}
+}
+
+// parseSSEUsage tries to extract usage data from a Server-Sent Events (SSE)
+// response body. SSE responses consist of lines prefixed with "data: " followed
+// by a JSON object. The final data chunk from OpenRouter typically contains
+// the usage/cost information. We scan backwards to find it.
+func parseSSEUsage(body []byte) (*openRouterResponse, bool) {
+	lines := bytes.Split(body, []byte("\n"))
+
+	// Scan from the end to find the last data line with a usage object
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		payload := bytes.TrimPrefix(line, []byte("data: "))
+
+		// Skip [DONE] sentinel
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+
+		var parsed openRouterResponse
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			continue
+		}
+		if parsed.Usage != nil {
+			return &parsed, true
+		}
+	}
+	return nil, false
 }
 
 func intPtr(v int) *int {

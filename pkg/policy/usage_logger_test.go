@@ -516,3 +516,156 @@ func TestUsageLoggerPlugin_Decision_NoOp_Non200(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "no_op", decision.Action)
 }
+
+// --- SSE Streaming Response Tests ---
+
+const sseResponseWithUsage = `data: {"id":"gen-abc123","object":"chat.completion.chunk","model":"minimax/minimax-m2.5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"usage":null}
+
+data: {"id":"gen-abc123","object":"chat.completion.chunk","model":"minimax/minimax-m2.5","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}],"usage":null}
+
+data: {"id":"gen-abc123","object":"chat.completion.chunk","model":"minimax/minimax-m2.5","choices":[{"index":0,"delta":{"content":" World"},"finish_reason":"stop"}],"usage":{"prompt_tokens":589,"completion_tokens":91,"total_tokens":680,"cost":0.00028,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]
+`
+
+const sseResponseNoUsage = `data: {"id":"gen-xyz","choices":[{"delta":{"content":"Hi"}}]}
+
+data: {"id":"gen-xyz","choices":[{"delta":{"content":"!"}}]}
+
+data: [DONE]
+`
+
+// 21. SSE Response -- Extracts Usage From Final Chunk
+func TestUsageLoggerPlugin_SSEResponse(t *testing.T) {
+	logPath := tempLogPath(t)
+	p := NewUsageLoggerPlugin(logPath, nil)
+
+	resp := makeUsageResponse(200, sseResponseWithUsage, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+	assert.Equal(t, "logged_usage", decision.Action)
+	assert.Contains(t, decision.Reason, "minimax/minimax-m2.5")
+
+	entries := readJSONLEntries(t, logPath)
+	require.Len(t, entries, 1)
+
+	e := entries[0]
+	assert.Equal(t, "gen-abc123", e.GenerationID)
+	assert.Equal(t, "minimax/minimax-m2.5", e.Model)
+	assert.Equal(t, "openrouter", e.Backend)
+	require.NotNil(t, e.PromptTokens)
+	assert.Equal(t, 589, *e.PromptTokens)
+	require.NotNil(t, e.CompletionTokens)
+	assert.Equal(t, 91, *e.CompletionTokens)
+	require.NotNil(t, e.TotalTokens)
+	assert.Equal(t, 680, *e.TotalTokens)
+	assert.InDelta(t, 0.00028, e.CostUSD, 0.000001)
+
+	assert.InDelta(t, 0.00028, p.TotalCostUSD(), 0.000001)
+}
+
+// 22. SSE Response Without Usage -- Graceful Skip
+func TestUsageLoggerPlugin_SSEResponse_NoUsage(t *testing.T) {
+	logPath := tempLogPath(t)
+	p := NewUsageLoggerPlugin(logPath, nil)
+
+	resp := makeUsageResponse(200, sseResponseNoUsage, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+	// Falls through to "invalid JSON" since no SSE chunk has usage
+	assert.Equal(t, "no_op", decision.Action)
+}
+
+// 23. SSE Response Body Preserved
+func TestUsageLoggerPlugin_SSEResponse_BodyPreserved(t *testing.T) {
+	logPath := tempLogPath(t)
+	p := NewUsageLoggerPlugin(logPath, nil)
+
+	resp := makeUsageResponse(200, sseResponseWithUsage, nil)
+	req := makeUsageRequest("POST", "/api/v1/chat/completions")
+
+	decision, err := p.TransformResponse(resp, req, "openrouter.ai")
+	require.NoError(t, err)
+
+	body, err := io.ReadAll(decision.Response.Body)
+	require.NoError(t, err)
+	assert.Equal(t, sseResponseWithUsage, string(body))
+}
+
+// 24. SSE Cost Accumulates
+func TestUsageLoggerPlugin_SSEResponse_CostAccumulates(t *testing.T) {
+	logPath := tempLogPath(t)
+	p := NewUsageLoggerPlugin(logPath, nil)
+
+	// First: normal JSON response
+	resp1 := makeUsageResponse(200, openRouterResponseJSON, nil)
+	req1 := makeUsageRequest("POST", "/api/v1/chat/completions")
+	_, err := p.TransformResponse(resp1, req1, "openrouter.ai")
+	require.NoError(t, err)
+
+	// Second: SSE response
+	resp2 := makeUsageResponse(200, sseResponseWithUsage, nil)
+	req2 := makeUsageRequest("POST", "/api/v1/chat/completions")
+	_, err = p.TransformResponse(resp2, req2, "openrouter.ai")
+	require.NoError(t, err)
+
+	entries := readJSONLEntries(t, logPath)
+	assert.Len(t, entries, 2)
+	assert.InDelta(t, 0.00492+0.00028, p.TotalCostUSD(), 0.000001)
+}
+
+// 25. parseSSEUsage unit test
+func TestParseSSEUsage(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantOK   bool
+		wantID   string
+		wantCost float64
+	}{
+		{
+			name:     "valid SSE with usage in last data chunk",
+			body:     sseResponseWithUsage,
+			wantOK:   true,
+			wantID:   "gen-abc123",
+			wantCost: 0.00028,
+		},
+		{
+			name:   "SSE without usage",
+			body:   sseResponseNoUsage,
+			wantOK: false,
+		},
+		{
+			name:   "not SSE at all",
+			body:   "just plain text",
+			wantOK: false,
+		},
+		{
+			name:   "empty body",
+			body:   "",
+			wantOK: false,
+		},
+		{
+			name:   "single JSON object (not SSE)",
+			body:   openRouterResponseJSON,
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, ok := parseSSEUsage([]byte(tt.body))
+			assert.Equal(t, tt.wantOK, ok)
+			if ok {
+				assert.Equal(t, tt.wantID, parsed.ID)
+				require.NotNil(t, parsed.Usage)
+				require.NotNil(t, parsed.Usage.Cost)
+				assert.InDelta(t, tt.wantCost, *parsed.Usage.Cost, 0.000001)
+			}
+		})
+	}
+}
