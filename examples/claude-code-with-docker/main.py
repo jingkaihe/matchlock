@@ -53,16 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--memory", type=int, default=4096, help="Memory in MB (default: %(default)s)"
     )
-    parser.add_argument(
-        "--no-privileged",
-        action="store_true",
-        help="Disable privileged mode (Docker will usually fail without privileged mode)",
-    )
     return parser.parse_args()
 
 
 def build_sandbox(args: argparse.Namespace, api_key: str) -> Sandbox:
-    sandbox = (
+    return (
         Sandbox(args.image)
         .with_cpus(args.cpus)
         .with_memory(args.memory)
@@ -75,12 +70,8 @@ def build_sandbox(args: argparse.Namespace, api_key: str) -> Sandbox:
             "*.anthropic.com",
         )
         .add_secret("ANTHROPIC_API_KEY", api_key, "api.anthropic.com")
+        .with_privileged()
     )
-
-    if not args.no_privileged:
-        sandbox = sandbox.with_privileged()
-
-    return sandbox
 
 
 def run_interactive_shell(client: Client) -> None:
@@ -102,7 +93,7 @@ def run_interactive_shell(client: Client) -> None:
 +------------------------------------------------------------------------+
 | Connected to sandbox shell as agent.                                   |
 | Try:                                                                   |
-|   docker info && docker run --rm hello-world &&                        |
+|   docker run --rm hello-world                                          |
 |   claude --dangerously-skip-permissions                                |
 +------------------------------------------------------------------------+
 """

@@ -15,6 +15,7 @@ Usage with builder API:
 """
 
 import base64
+import copy
 import fnmatch
 import json
 import os
@@ -1238,7 +1239,7 @@ class Client:
         return False, False
 
     def launch(self, sandbox: Sandbox) -> str:
-        opts = sandbox.options()
+        opts = copy.deepcopy(sandbox.options())
         opts.launch_entrypoint = True
         return self.create(opts)
 

@@ -639,6 +639,67 @@ func TestHandlerCreateLaunchEntrypointReportsFailure(t *testing.T) {
 	require.Contains(t, msg.Error.Message, "start image entrypoint")
 }
 
+func TestHandlerCreateLaunchEntrypointUsesNonBufferingExecAndCancelsOnClose(t *testing.T) {
+	started := make(chan *api.ExecOptions, 1)
+	cancelled := make(chan struct{}, 1)
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				started <- opts
+				<-ctx.Done()
+				cancelled <- struct{}{}
+				return nil, ctx.Err()
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sleep"},
+			"cmd":        []string{"10"},
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	var opts *api.ExecOptions
+	select {
+	case opts = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint exec to start")
+	}
+	require.NotNil(t, opts)
+	require.NotNil(t, opts.Stdin)
+	require.NotNil(t, opts.Stdout)
+	require.NotNil(t, opts.Stderr)
+
+	stdinData, err := io.ReadAll(opts.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, stdinData)
+
+	_, err = opts.Stdout.Write([]byte("stdout"))
+	require.NoError(t, err)
+	_, err = opts.Stderr.Write([]byte("stderr"))
+	require.NoError(t, err)
+
+	rpc.send("close", 2, map[string]interface{}{})
+	closeResp := rpc.read()
+	require.Nil(t, closeResp.Error, "close failed")
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint cancellation")
+	}
+}
+
 func TestHandlerCreateRejectsNoNetworkWithAllowHosts(t *testing.T) {
 	factoryCalls := 0
 	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {

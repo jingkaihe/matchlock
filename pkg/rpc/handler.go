@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -415,7 +416,13 @@ func startImageEntrypoint(
 	}
 	done := make(chan runResult, 1)
 	go func() {
-		result, err := vm.Exec(entryCtx, command, nil)
+		// Force pipe-mode execution so detached startup never buffers unbounded
+		// stdout/stderr in host memory.
+		result, err := vm.Exec(entryCtx, command, &api.ExecOptions{
+			Stdin:  strings.NewReader(""),
+			Stdout: io.Discard,
+			Stderr: io.Discard,
+		})
 		done <- runResult{result: result, err: err}
 	}()
 

@@ -1141,6 +1141,50 @@ class TestClientLaunch:
         finally:
             fake.close_stdout()
 
+    def test_launch_does_not_mutate_builder_options(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-launch"},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"id": "vm-create"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            sandbox = Sandbox("alpine:latest")
+            launch_vm_id = client.launch(sandbox)
+            assert launch_vm_id == "vm-launch"
+            assert sandbox.options().launch_entrypoint is False
+
+            create_vm_id = client.create(sandbox.options())
+            assert create_vm_id == "vm-create"
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            create_reqs = [req for req in reqs if req["method"] == "create"]
+            assert len(create_reqs) == 2
+            assert create_reqs[0]["params"]["launch_entrypoint"] is True
+            assert "launch_entrypoint" not in create_reqs[1]["params"]
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
 
 class TestClientExec:
     def test_exec_success(self):

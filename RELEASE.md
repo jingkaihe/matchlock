@@ -1,5 +1,11 @@
 # Release Notes
 
+## 0.1.27
+
+* added entrypoint support for sdkk
+* added missing `with_privileged` for python sdk
+* added example of running both claude code and docker in the sandbox
+
 ## 0.1.26 
 
 * `matchlock volume cp <src> <dest>`
