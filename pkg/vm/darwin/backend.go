@@ -186,6 +186,11 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 		privilegedArg = " matchlock.privileged=1"
 	}
 
+	noWorkspaceArg := ""
+	if config.NoWorkspace {
+		noWorkspaceArg = " matchlock.no_workspace=1"
+	}
+
 	diskArgs := ""
 	devLetter := 'b' // vda is rootfs
 	if config.OverlayEnabled {
@@ -222,8 +227,8 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 
 	if config.NoNetwork {
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.no_network=1%s%s",
-			hostname, workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.no_network=1%s%s%s",
+			hostname, workspace, vm.KernelDNSParam(config.DNSServers), privilegedArg, noWorkspaceArg, diskArgs+addHostArgs,
 		)
 	}
 
@@ -237,14 +242,14 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s%s%s",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, noWorkspaceArg, diskArgs, addHostArgs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s%s",
-		hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s matchlock.workspace=%s matchlock.dns=%s matchlock.mtu=%d%s%s%s%s",
+		hostname, workspace, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, noWorkspaceArg, diskArgs, addHostArgs,
 	)
 }
 

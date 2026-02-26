@@ -66,6 +66,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
+	vfsNeeded := config.VFS != nil && len(config.VFS.Mounts) > 0
 
 	if config.Network != nil {
 		if err := config.Network.Validate(); err != nil {
@@ -242,6 +243,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
 		NoNetwork:           noNetwork,
+		NoWorkspace:         !vfsNeeded,
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
@@ -350,51 +352,58 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	vfsProviders := buildVFSProviders(config, workspace)
-	vfsRouter := vfs.NewMountRouter(vfsProviders)
-	var vfsRoot vfs.Provider = vfsRouter
-	vfsHooks := buildVFSHookEngine(config)
-	if vfsHooks != nil {
-		attachVFSFileEvents(vfsHooks, events)
-		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
-	}
+	var vfsRoot vfs.Provider
+	var vfsHooks *vfs.HookEngine
+	var vfsServer *vfs.VFSServer
+	var vfsStopFunc func()
 
-	vfsServer := vfs.NewVFSServer(vfsRoot)
-
-	vfsListener, err := darwinMachine.SetupVFSListener()
-	if err != nil {
-		if netStack != nil {
-			netStack.Close()
+	if vfsNeeded {
+		vfsProviders := buildVFSProviders(config, workspace)
+		vfsRouter := vfs.NewMountRouter(vfsProviders)
+		vfsRoot = vfsRouter
+		vfsHooks = buildVFSHookEngine(config)
+		if vfsHooks != nil {
+			attachVFSFileEvents(vfsHooks, events)
+			vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
 		}
-		machine.Close(ctx)
-		releaseSubnet()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrVFSListener, err)
-	}
 
-	vfsStopCh := make(chan struct{})
-	vfsStopFunc := func() {
-		close(vfsStopCh)
-		vfsListener.Close()
-	}
+		vfsServer = vfs.NewVFSServer(vfsRoot)
 
-	go func() {
-		for {
-			select {
-			case <-vfsStopCh:
-				return
-			default:
-				conn, err := vfsListener.Accept()
-				if err != nil {
-					if err == net.ErrClosed {
-						return
-					}
-					continue
-				}
-				go vfsServer.HandleConnection(conn)
+		vfsListener, err := darwinMachine.SetupVFSListener()
+		if err != nil {
+			if netStack != nil {
+				netStack.Close()
 			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrVFSListener, err)
 		}
-	}()
+
+		vfsStopCh := make(chan struct{})
+		vfsStopFunc = func() {
+			close(vfsStopCh)
+			vfsListener.Close()
+		}
+
+		go func() {
+			for {
+				select {
+				case <-vfsStopCh:
+					return
+				default:
+					conn, err := vfsListener.Accept()
+					if err != nil {
+						if err == net.ErrClosed {
+							return
+						}
+						continue
+					}
+					go vfsServer.HandleConnection(conn)
+				}
+			}
+		}()
+	}
 
 	sb = &Sandbox{
 		id:               id,

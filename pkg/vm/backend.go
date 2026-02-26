@@ -45,6 +45,7 @@ type VMConfig struct {
 	AddHosts            []api.HostIPMapping // Additional /etc/hosts entries injected at boot
 	MTU                 int                 // Guest interface/network stack MTU (default: 1500)
 	NoNetwork           bool                // Disable guest network interface entirely
+	NoWorkspace         bool                // Skip guest VFS/FUSE mount (no -v volumes)
 	PrebuiltRootfs      string              // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks          []DiskConfig        // Additional block devices to attach
 }
