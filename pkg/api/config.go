@@ -33,15 +33,18 @@ type ImageConfig struct {
 }
 
 type Config struct {
-	ID         string            `json:"id,omitempty"`
-	Image      string            `json:"image,omitempty"`
-	Privileged bool              `json:"privileged,omitempty"`
-	Resources  *Resources        `json:"resources,omitempty"`
-	Network    *NetworkConfig    `json:"network,omitempty"`
-	VFS        *VFSConfig        `json:"vfs,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	ExtraDisks []DiskMount       `json:"extra_disks,omitempty"`
-	ImageCfg   *ImageConfig      `json:"image_config,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Image      string `json:"image,omitempty"`
+	Privileged bool   `json:"privileged,omitempty"`
+	// LaunchEntrypoint starts image ENTRYPOINT/CMD in detached mode during create.
+	// This is used by SDK `launch` convenience helpers.
+	LaunchEntrypoint bool              `json:"launch_entrypoint,omitempty"`
+	Resources        *Resources        `json:"resources,omitempty"`
+	Network          *NetworkConfig    `json:"network,omitempty"`
+	VFS              *VFSConfig        `json:"vfs,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	ExtraDisks       []DiskMount       `json:"extra_disks,omitempty"`
+	ImageCfg         *ImageConfig      `json:"image_config,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -289,6 +292,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.Privileged {
 		result.Privileged = true
+	}
+	if other.LaunchEntrypoint {
+		result.LaunchEntrypoint = true
 	}
 	if other.Env != nil {
 		result.Env = other.Env

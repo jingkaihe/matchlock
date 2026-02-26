@@ -45,6 +45,8 @@ try {
 }
 ```
 
+`client.launch(...)` starts image ENTRYPOINT/CMD in detached mode. Use `client.create(...)` when you want a VM without auto-starting image command.
+
 Callback-based interception:
 
 ```ts

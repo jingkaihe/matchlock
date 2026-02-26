@@ -104,6 +104,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.ImageConfig != nil {
 		params["image_config"] = opts.ImageConfig
 	}
+	if opts.LaunchEntrypoint {
+		params["launch_entrypoint"] = true
+	}
 
 	result, err := c.sendRequest("create", params)
 	if err != nil {

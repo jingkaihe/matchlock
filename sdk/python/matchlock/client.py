@@ -1110,6 +1110,9 @@ class Client:
 
         params: dict[str, Any] = {"image": opts.image}
 
+        if opts.privileged:
+            params["privileged"] = True
+
         resources: dict[str, Any] = {}
         if opts.cpus:
             resources["cpus"] = opts.cpus
@@ -1141,6 +1144,8 @@ class Client:
 
         if opts.image_config is not None:
             params["image_config"] = opts.image_config.to_dict()
+        if opts.launch_entrypoint:
+            params["launch_entrypoint"] = True
 
         try:
             result = self._send_request("create", params)
@@ -1233,7 +1238,9 @@ class Client:
         return False, False
 
     def launch(self, sandbox: Sandbox) -> str:
-        return self.create(sandbox.options())
+        opts = sandbox.options()
+        opts.launch_entrypoint = True
+        return self.create(opts)
 
     def exec(
         self,

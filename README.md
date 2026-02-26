@@ -286,6 +286,8 @@ See full examples in:
 - [`examples/python/network_interception/main.py`](examples/python/network_interception/main.py)
 - [`examples/python/network_interception/README.md`](examples/python/network_interception/README.md)
 - [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
+- [`examples/claude-code-with-docker/main.py`](examples/claude-code-with-docker/main.py)
+- [`examples/claude-code-with-docker/README.md`](examples/claude-code-with-docker/README.md)
 - [`examples/typescript/basic/main.ts`](examples/typescript/basic/main.ts)
 - [`examples/typescript/network_interception/main.ts`](examples/typescript/network_interception/main.ts)
 - [`examples/typescript/network_interception/README.md`](examples/typescript/network_interception/README.md)

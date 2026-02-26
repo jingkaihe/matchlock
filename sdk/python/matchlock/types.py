@@ -408,6 +408,9 @@ class CreateOptions:
     image: str = ""
     """Container image reference (required, e.g., alpine:latest)."""
 
+    privileged: bool = False
+    """Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)."""
+
     cpus: int = 0
     """Number of vCPUs (0 = use default)."""
 
@@ -464,6 +467,9 @@ class CreateOptions:
 
     image_config: ImageConfig | None = None
     """OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)."""
+
+    launch_entrypoint: bool = False
+    """Start image ENTRYPOINT/CMD in detached mode during create."""
 
 
 @dataclass

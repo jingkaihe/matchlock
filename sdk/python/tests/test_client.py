@@ -230,6 +230,35 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_with_privileged(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-priv"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(CreateOptions(image="img", privileged=True))
+            assert vm_id == "vm-priv"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["privileged"] is True
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
     def test_create_with_network(self):
         client, fake = make_client_with_fake()
         try:
@@ -1105,6 +1134,9 @@ class TestClientLaunch:
             sandbox = Sandbox("alpine:latest").with_cpus(2)
             vm_id = client.launch(sandbox)
             assert vm_id == "vm-launch"
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            create_req = next(req for req in reqs if req["method"] == "create")
+            assert create_req["params"]["launch_entrypoint"] is True
             t.join(timeout=2)
         finally:
             fake.close_stdout()

@@ -45,6 +45,7 @@ from matchlock import Client, Sandbox
 
 sandbox = (
     Sandbox("python:3.12-alpine")
+    .with_privileged()
     .with_cpus(2)
     .with_memory(512)
     .with_disk_size(2048)
@@ -300,6 +301,7 @@ Fluent builder for sandbox configuration.
 | Method | Description |
 |---|---|
 | `.with_cpus(n)` | Set number of vCPUs |
+| `.with_privileged()` | Enable privileged mode (skip in-guest seccomp/cap-drop/no_new_privs) |
 | `.with_memory(mb)` | Set memory in MB |
 | `.with_disk_size(mb)` | Set disk size in MB |
 | `.with_timeout(seconds)` | Set max execution time |
@@ -327,8 +329,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Method | Description |
 |---|---|
 | `.start()` | Start the matchlock RPC subprocess |
-| `.launch(sandbox)` | Create a VM from a `Sandbox` builder — returns VM ID |
-| `.create(opts)` | Create a VM from `CreateOptions` — returns VM ID |
+| `.launch(sandbox)` | Create a VM and start image ENTRYPOINT/CMD in detached mode — returns VM ID |
+| `.create(opts)` | Create a VM from `CreateOptions` (does not auto-start ENTRYPOINT unless `launch_entrypoint=True`) — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
 | `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
 | `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="")` | Bidirectional pipe-mode exec (no PTY), returns `ExecPipeResult` |
@@ -345,7 +347,7 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
+| `CreateOptions` | `image`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config`, `launch_entrypoint` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
 | `ExecPipeResult` | `exit_code: int`, `duration_ms: int` |

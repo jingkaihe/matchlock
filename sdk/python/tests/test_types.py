@@ -95,6 +95,7 @@ class TestCreateOptions:
     def test_defaults(self):
         opts = CreateOptions()
         assert opts.image == ""
+        assert opts.privileged is False
         assert opts.cpus == 0
         assert opts.memory_mb == 0
         assert opts.disk_size_mb == 0
@@ -108,6 +109,7 @@ class TestCreateOptions:
         assert opts.env == {}
         assert opts.network_interception is None
         assert opts.vfs_interception is None
+        assert opts.launch_entrypoint is False
         assert opts.secrets == []
         assert opts.workspace == ""
         assert opts.dns_servers == []
