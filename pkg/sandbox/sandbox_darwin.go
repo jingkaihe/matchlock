@@ -488,6 +488,16 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 	return execCommand(ctx, s.machine, s.config, s.caPool, s.policy, command, opts)
 }
 
+func (s *Sandbox) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+	interactiveMachine, ok := s.machine.(vm.InteractiveMachine)
+	if !ok {
+		return 1, errx.With(ErrInteractiveUnsupported, ": VM backend does not support interactive exec")
+	}
+
+	opts = prepareExecOptions(s.config, s.caPool, s.policy, opts)
+	return interactiveMachine.ExecInteractive(ctx, command, opts, rows, cols, stdin, stdout, resizeCh)
+}
+
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
 	return s.machine.WriteFile(ctx, path, content, mode)
 }

@@ -23,12 +23,14 @@ import socket
 import subprocess
 import tempfile
 import threading
-from typing import IO, Any, Callable
+from typing import IO, Any, Callable, Iterable
 
 from .builder import Sandbox
 from .types import (
     Config,
     CreateOptions,
+    ExecInteractiveResult,
+    ExecPipeResult,
     ExecResult,
     ExecStreamResult,
     FileInfo,
@@ -399,7 +401,15 @@ class Client:
             self._handle_event_notification(params)
             return
 
-        if method not in ("exec_stream.stdout", "exec_stream.stderr"):
+        if method not in (
+            "exec_stream.stdout",
+            "exec_stream.stderr",
+            "exec_pipe.ready",
+            "exec_pipe.stdout",
+            "exec_pipe.stderr",
+            "exec_tty.ready",
+            "exec_tty.stdout",
+        ):
             return
 
         params = msg.get("params", {})
@@ -1036,6 +1046,28 @@ class Client:
         except Exception:
             pass
 
+    def _send_fire_and_forget(
+        self, method: str, params: dict[str, Any] | None = None
+    ) -> None:
+        req_id = self._next_id()
+        request: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "id": req_id,
+        }
+        if params:
+            request["params"] = params
+
+        data = json.dumps(request) + "\n"
+        try:
+            with self._write_lock:
+                assert self._process is not None
+                assert self._process.stdin is not None
+                self._process.stdin.write(data)
+                self._process.stdin.flush()
+        except Exception:
+            pass
+
     # ── Public API ───────────────────────────────────────────────────
 
     def create(self, opts: CreateOptions | None = None) -> str:
@@ -1275,6 +1307,239 @@ class Client:
         )
 
         return ExecStreamResult(
+            exit_code=result["exit_code"],
+            duration_ms=result["duration_ms"],
+        )
+
+    def _wait_ready_or_done(
+        self, ready_event: threading.Event, done_event: threading.Event
+    ) -> bool:
+        while not done_event.is_set():
+            if ready_event.wait(timeout=0.05):
+                return True
+        return False
+
+    def _write_decoded_chunk(self, writer: IO[str] | None, data_b64: str) -> None:
+        if writer is None:
+            return
+        try:
+            decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
+        except Exception:
+            return
+        writer.write(decoded)
+        flush = getattr(writer, "flush", None)
+        if callable(flush):
+            flush()
+
+    def _pump_exec_input(
+        self,
+        ready_event: threading.Event,
+        done_event: threading.Event,
+        state: dict[str, Any],
+        stdin: IO[str] | IO[bytes] | None,
+        chunk_method: str,
+        eof_method: str,
+    ) -> None:
+        if not self._wait_ready_or_done(ready_event, done_event):
+            return
+        req_id = state.get("req_id")
+        if req_id is None:
+            return
+
+        if stdin is None:
+            self._send_fire_and_forget(eof_method, {"id": req_id})
+            return
+
+        while not done_event.is_set():
+            try:
+                chunk = stdin.read(4096)
+            except Exception:
+                self._send_fire_and_forget(eof_method, {"id": req_id})
+                return
+
+            if chunk is None:
+                continue
+
+            if isinstance(chunk, str):
+                chunk_bytes = chunk.encode("utf-8")
+            elif isinstance(chunk, bytes):
+                chunk_bytes = chunk
+            else:
+                chunk_bytes = bytes(chunk)
+
+            if len(chunk_bytes) == 0:
+                self._send_fire_and_forget(eof_method, {"id": req_id})
+                return
+
+            self._send_fire_and_forget(
+                chunk_method,
+                {
+                    "id": req_id,
+                    "data": base64.b64encode(chunk_bytes).decode("ascii"),
+                },
+            )
+
+    def exec_pipe(
+        self,
+        command: str,
+        stdin: IO[str] | IO[bytes] | None = None,
+        stdout: IO[str] | None = None,
+        stderr: IO[str] | None = None,
+        working_dir: str = "",
+        timeout: float | None = None,
+    ) -> ExecPipeResult:
+        """Execute a command in pipe mode (no PTY).
+
+        Args:
+            command: The command to execute.
+            stdin: Optional input stream to forward to the process.
+            stdout: Optional writer for streaming stdout chunks.
+            stderr: Optional writer for streaming stderr chunks.
+            working_dir: Optional working directory.
+            timeout: Optional timeout in seconds.
+        """
+        params: dict[str, str] = {"command": command}
+        if working_dir:
+            params["working_dir"] = working_dir
+
+        state: dict[str, Any] = {"req_id": None}
+        ready_event = threading.Event()
+        done_event = threading.Event()
+
+        pump_thread = threading.Thread(
+            target=self._pump_exec_input,
+            args=(
+                ready_event,
+                done_event,
+                state,
+                stdin,
+                "exec_pipe.stdin",
+                "exec_pipe.stdin_eof",
+            ),
+            daemon=True,
+        )
+        pump_thread.start()
+
+        def on_notification(method: str, notif_params: dict[str, Any]) -> None:
+            if method == "exec_pipe.ready":
+                state["req_id"] = notif_params.get("id")
+                ready_event.set()
+                return
+            if method == "exec_pipe.stdout":
+                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+                return
+            if method == "exec_pipe.stderr":
+                self._write_decoded_chunk(stderr, str(notif_params.get("data", "")))
+
+        try:
+            result = self._send_request(
+                "exec_pipe", params, on_notification=on_notification, timeout=timeout
+            )
+        finally:
+            done_event.set()
+            ready_event.set()
+            pump_thread.join(timeout=0.2)
+
+        return ExecPipeResult(
+            exit_code=result["exit_code"],
+            duration_ms=result["duration_ms"],
+        )
+
+    def exec_interactive(
+        self,
+        command: str,
+        stdin: IO[str] | IO[bytes] | None = None,
+        stdout: IO[str] | None = None,
+        working_dir: str = "",
+        rows: int = 24,
+        cols: int = 80,
+        resize: Iterable[tuple[int, int]] | None = None,
+        timeout: float | None = None,
+    ) -> ExecInteractiveResult:
+        """Execute a command in interactive PTY mode.
+
+        Args:
+            command: The command to execute.
+            stdin: Optional input stream to forward to the PTY.
+            stdout: Optional writer for streaming PTY output.
+            working_dir: Optional working directory.
+            rows: Initial terminal rows.
+            cols: Initial terminal columns.
+            resize: Optional iterable of ``(rows, cols)`` resize events.
+            timeout: Optional timeout in seconds.
+        """
+        params: dict[str, Any] = {
+            "command": command,
+            "rows": rows if rows > 0 else 24,
+            "cols": cols if cols > 0 else 80,
+        }
+        if working_dir:
+            params["working_dir"] = working_dir
+
+        state: dict[str, Any] = {"req_id": None}
+        ready_event = threading.Event()
+        done_event = threading.Event()
+
+        stdin_thread = threading.Thread(
+            target=self._pump_exec_input,
+            args=(
+                ready_event,
+                done_event,
+                state,
+                stdin,
+                "exec_tty.stdin",
+                "exec_tty.stdin_eof",
+            ),
+            daemon=True,
+        )
+        stdin_thread.start()
+
+        resize_thread: threading.Thread | None = None
+        if resize is not None:
+
+            def pump_resize() -> None:
+                if not self._wait_ready_or_done(ready_event, done_event):
+                    return
+                req_id = state.get("req_id")
+                if req_id is None:
+                    return
+                for size in resize:
+                    if done_event.is_set():
+                        return
+                    if not isinstance(size, (tuple, list)) or len(size) < 2:
+                        continue
+                    self._send_fire_and_forget(
+                        "exec_tty.resize",
+                        {
+                            "id": req_id,
+                            "rows": int(size[0]),
+                            "cols": int(size[1]),
+                        },
+                    )
+
+            resize_thread = threading.Thread(target=pump_resize, daemon=True)
+            resize_thread.start()
+
+        def on_notification(method: str, notif_params: dict[str, Any]) -> None:
+            if method == "exec_tty.ready":
+                state["req_id"] = notif_params.get("id")
+                ready_event.set()
+                return
+            if method == "exec_tty.stdout":
+                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+
+        try:
+            result = self._send_request(
+                "exec_tty", params, on_notification=on_notification, timeout=timeout
+            )
+        finally:
+            done_event.set()
+            ready_event.set()
+            stdin_thread.join(timeout=0.2)
+            if resize_thread is not None:
+                resize_thread.join(timeout=0.2)
+
+        return ExecInteractiveResult(
             exit_code=result["exit_code"],
             duration_ms=result["duration_ms"],
         )

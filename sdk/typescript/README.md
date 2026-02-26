@@ -75,8 +75,9 @@ const sandbox = new Sandbox("alpine:latest").withNetworkInterception({
 - Fluent sandbox builder (`Sandbox`) with network, secrets, mounts, env, VFS hooks, image config
 - Typed network interception rules and local callback hooks via `withNetworkInterception(...)`
 - Supports fully offline mode via `.withNoNetwork()` (no guest NIC / no egress)
-- JSON-RPC `create`, `exec`, `exec_stream`, `write_file`, `read_file`, `list_files`, `port_forward`, `cancel`, `close`
-- Streaming stdout/stderr via `execStream`
+- JSON-RPC `create`, `exec`, `exec_stream`, `exec_pipe`, `exec_tty`, `write_file`, `read_file`, `list_files`, `port_forward`, `cancel`, `close`
+- Streaming stdout/stderr via `execStream` and bidirectional stdin/stdout/stderr via `execPipe`
+- Interactive PTY shell/commands via `execInteractive` (stdin/stdout + resize events)
 - Local VFS callbacks (`hook`, `dangerousHook`, `mutateHook`, `actionHook`)
 - Port forwarding API parity (`portForward`, `portForwardWithAddresses`)
 - Lifecycle control (`close`, `remove`, `vmId`)

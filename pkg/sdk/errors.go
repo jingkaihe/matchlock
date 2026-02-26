@@ -36,6 +36,8 @@ var (
 var (
 	ErrParseExecResult       = errors.New("parse exec result")
 	ErrParseExecStreamResult = errors.New("parse exec_stream result")
+	ErrParseExecPipeResult   = errors.New("parse exec_pipe result")
+	ErrParseExecTTYResult    = errors.New("parse exec_tty result")
 )
 
 // File operation errors

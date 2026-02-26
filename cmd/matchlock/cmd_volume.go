@@ -36,6 +36,14 @@ var volumeRmCmd = &cobra.Command{
 	RunE:    runVolumeRm,
 }
 
+var volumeCpCmd = &cobra.Command{
+	Use:     "cp <src> <dest>",
+	Aliases: []string{"copy"},
+	Short:   "Copy a named volume",
+	Args:    cobra.ExactArgs(2),
+	RunE:    runVolumeCp,
+}
+
 func init() {
 	volumeCreateCmd.Flags().Int("size", defaultNamedVolumeSizeMB, "Volume size in MB")
 	volumeCreateCmd.Flags().Bool("json", false, "Output machine-readable JSON")
@@ -44,6 +52,7 @@ func init() {
 	volumeCmd.AddCommand(volumeCreateCmd)
 	volumeCmd.AddCommand(volumeLsCmd)
 	volumeCmd.AddCommand(volumeRmCmd)
+	volumeCmd.AddCommand(volumeCpCmd)
 	rootCmd.AddCommand(volumeCmd)
 }
 
@@ -117,5 +126,17 @@ func runVolumeRm(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Removed volume %s\n", name)
+	return nil
+}
+
+func runVolumeCp(cmd *cobra.Command, args []string) error {
+	srcName := args[0]
+	destName := args[1]
+
+	if err := copyNamedVolume(srcName, destName); err != nil {
+		return err
+	}
+
+	fmt.Printf("Copied volume %s to %s\n", srcName, destName)
 	return nil
 }
