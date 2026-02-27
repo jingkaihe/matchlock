@@ -275,22 +275,27 @@ try {
 }
 ```
 
-See full examples in:
-- [`examples/go/basic/main.go`](examples/go/basic/main.go)
-- [`examples/go/exec_modes/main.go`](examples/go/exec_modes/main.go)
-- [`examples/go/exec_modes/README.md`](examples/go/exec_modes/README.md)
-- [`examples/go/network_interception/main.go`](examples/go/network_interception/main.go)
-- [`examples/go/network_interception/README.md`](examples/go/network_interception/README.md)
-- [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
-- [`examples/python/basic/main.py`](examples/python/basic/main.py)
-- [`examples/python/network_interception/main.py`](examples/python/network_interception/main.py)
-- [`examples/python/network_interception/README.md`](examples/python/network_interception/README.md)
-- [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
-- [`examples/claude-code-with-docker/main.py`](examples/claude-code-with-docker/main.py)
-- [`examples/claude-code-with-docker/README.md`](examples/claude-code-with-docker/README.md)
-- [`examples/typescript/basic/main.ts`](examples/typescript/basic/main.ts)
-- [`examples/typescript/network_interception/main.ts`](examples/typescript/network_interception/main.ts)
-- [`examples/typescript/network_interception/README.md`](examples/typescript/network_interception/README.md)
+More examples in the [`examples/`](examples/) directory:
+
+| Description | Example |
+|---|---|
+| Streams Anthropic API response with secret injection (Go) | [`examples/go/basic/`](examples/go/basic/) |
+| Interactive terminal with PTY using ExecInteractive (Go) | [`examples/go/exec_modes/`](examples/go/exec_modes/) |
+| Injects API key via network interception hook (Go) | [`examples/go/network_interception/`](examples/go/network_interception/) |
+| VFS interception hooks for file operation mutations (Go) | [`examples/go/vfs_hooks/`](examples/go/vfs_hooks/) |
+| Streams Anthropic API response (Python) | [`examples/python/basic/`](examples/python/basic/) |
+| Stream, pipe, and interactive execution modes (Python) | [`examples/python/exec_modes/`](examples/python/exec_modes/) |
+| Injects API key via network interception hook (Python) | [`examples/python/network_interception/`](examples/python/network_interception/) |
+| VFS interception hooks for file operation mutations (Python) | [`examples/python/vfs_hooks/`](examples/python/vfs_hooks/) |
+| Streams Anthropic API response (TypeScript) | [`examples/typescript/basic/`](examples/typescript/basic/) |
+| Stream, pipe, and interactive execution modes (TypeScript) | [`examples/typescript/exec_modes/`](examples/typescript/exec_modes/) |
+| Injects API key via network interception hook (TypeScript) | [`examples/typescript/network_interception/`](examples/typescript/network_interception/) |
+| Claude Code CLI in micro-VM with GitHub bootstrap | [`examples/claude-code/`](examples/claude-code/) |
+| Claude Code with Docker inside sandbox via SDK | [`examples/claude-code-with-docker/`](examples/claude-code-with-docker/) |
+| OpenAI Codex CLI in micro-VM with GitHub bootstrap | [`examples/codex/`](examples/codex/) |
+| Docker daemon inside sandbox with systemd | [`examples/docker-in-sandbox/`](examples/docker-in-sandbox/) |
+| Streamlit chatbot using Agent Client Protocol | [`examples/agent-client-protocol/`](examples/agent-client-protocol/) |
+| Browser automation with Kodelet and Playwright MCP | [`examples/playwright/`](examples/playwright/) |
 
 ## Architecture
 
