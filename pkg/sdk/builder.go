@@ -1,8 +1,6 @@
 package sdk
 
 import (
-	"encoding/json"
-
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
@@ -309,13 +307,6 @@ func (b *SandboxBuilder) WithImageConfig(cfg *ImageConfig) *SandboxBuilder {
 		b.opts.ImageConfig.Env = cfg.Env
 	}
 	return b
-}
-
-// PluginConfig configures a network policy plugin for the SDK wire format.
-type PluginConfig struct {
-	Type    string          `json:"type"`
-	Enabled *bool           `json:"enabled,omitempty"`
-	Config  json.RawMessage `json:"config,omitempty"`
 }
 
 // WithPlugin adds an explicit plugin configuration to the network config.

@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -107,6 +108,13 @@ type ModelRouteOption struct {
 	Target      string
 	BackendHost string
 	BackendPort int
+}
+
+// PluginConfig configures a network policy plugin for the SDK wire format.
+type PluginConfig struct {
+	Type    string          `json:"type"`
+	Enabled *bool           `json:"enabled,omitempty"`
+	Config  json.RawMessage `json:"config,omitempty"`
 }
 
 // Network hook phases.
