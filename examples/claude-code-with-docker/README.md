@@ -32,14 +32,14 @@ Prerequisite: export `ANTHROPIC_API_KEY` in your shell before running this examp
 From repo root:
 
 ```bash
-uv run ./sdk/python examples/claude-code-with-docker/main.py
+uv run examples/claude-code-with-docker/main.py
 ```
 
 Optional flags:
 
 ```bash
-uv run --with-editable ./sdk/python examples/claude-code-with-docker/main.py \
-  --cpus 4 --memory 8192 --image claude-code-with-docker:latest # for using local sdk
+uv run examples/claude-code-with-docker/main.py \
+  --cpus 4 --memory 8192 --image claude-code-with-docker:latest
 ```
 
 By default the script launches the sandbox in privileged mode so Docker can run inside the VM. You can disable that with `--no-privileged`.
