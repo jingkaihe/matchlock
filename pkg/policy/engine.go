@@ -20,6 +20,11 @@ type Engine struct {
 	placeholders map[string]string
 	logger       *slog.Logger
 	emitter      *logging.Emitter // nil means no event logging
+
+	// Upstream network hook infrastructure — compiled interception rules
+	// and an optional SDK-local callback invoker.
+	networkRules []compiledNetworkRule
+	networkHook  networkHookInvoker
 }
 
 // NewEngine creates a policy engine from a NetworkConfig.
@@ -134,14 +139,28 @@ func NewEngine(config *api.NetworkConfig, logger *slog.Logger, emitter *logging.
 
 	e.collectPlaceholders()
 
+	// --- Step 4: Compile upstream network interception rules ---
+
+	if config.Interception != nil {
+		e.networkRules = compileNetworkRules(config.Interception)
+		e.networkHook = newNetworkHookInvoker(config)
+	}
+
 	e.logger.Info("engine ready",
 		"gates", len(e.gates),
 		"routers", len(e.routers),
 		"requests", len(e.requests),
 		"responses", len(e.responses),
+		"networkRules", len(e.networkRules),
 	)
 
 	return e
+}
+
+// SetNetworkHookInvoker replaces the SDK-local network hook invoker.
+// Used by the SDK to inject a callback invoker after engine creation.
+func (e *Engine) SetNetworkHookInvoker(invoker networkHookInvoker) {
+	e.networkHook = invoker
 }
 
 // addPlugin sorts a plugin into the correct phase slices based on
@@ -283,9 +302,17 @@ func (e *Engine) RouteRequest(req *http.Request, host string) (*RouteDirective, 
 	return nil, nil
 }
 
-// OnRequest runs request transform plugins in chain order.
+// OnRequest runs request transform plugins in chain order, then applies
+// upstream network interception rules.
 // Emits a request_transform event for each plugin.
 func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error) {
+	// Apply upstream network hook rules (before phase)
+	if len(e.networkRules) > 0 {
+		if err := e.applyBeforeNetworkRules(req, host); err != nil {
+			return nil, err
+		}
+	}
+
 	for _, p := range e.requests {
 		decision, err := p.TransformRequest(req, host)
 		if err != nil {
@@ -311,9 +338,19 @@ func (e *Engine) OnRequest(req *http.Request, host string) (*http.Request, error
 	return req, nil
 }
 
-// OnResponse runs response transform plugins in chain order.
+// OnResponse runs response transform plugins in chain order, then applies
+// upstream network interception rules (after phase).
 // Emits a response_transform event for each plugin.
 func (e *Engine) OnResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error) {
+	// Apply upstream network hook rules (after phase)
+	if len(e.networkRules) > 0 {
+		var err error
+		resp, err = e.applyAfterNetworkRules(resp, req, host)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	for _, p := range e.responses {
 		decision, err := p.TransformResponse(resp, req, host)
 		if err != nil {
@@ -351,6 +388,38 @@ func (e *Engine) GetPlaceholders() map[string]string {
 		result[k] = v
 	}
 	return result
+}
+
+// AddAllowedHosts adds hosts to the first hostFilterPlugin's allow-list.
+// Returns the current allow-list after modification.
+func (e *Engine) AddAllowedHosts(hosts ...string) []string {
+	for _, g := range e.gates {
+		if hf, ok := g.(*hostFilterPlugin); ok {
+			return hf.AddAllowedHosts(hosts...)
+		}
+	}
+	return nil
+}
+
+// RemoveAllowedHosts removes hosts from the first hostFilterPlugin's allow-list.
+// Returns the current allow-list after modification.
+func (e *Engine) RemoveAllowedHosts(hosts ...string) []string {
+	for _, g := range e.gates {
+		if hf, ok := g.(*hostFilterPlugin); ok {
+			return hf.RemoveAllowedHosts(hosts...)
+		}
+	}
+	return nil
+}
+
+// AllowedHosts returns the current allow-list from the first hostFilterPlugin.
+func (e *Engine) AllowedHosts() []string {
+	for _, g := range e.gates {
+		if hf, ok := g.(*hostFilterPlugin); ok {
+			return hf.AllowedHosts()
+		}
+	}
+	return nil
 }
 
 // Emitter returns the engine's event emitter. May be nil.

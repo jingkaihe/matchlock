@@ -10,10 +10,10 @@ import (
 	"io"
 	"os"
 
+	"github.com/jingkaihe/matchlock/internal/errx"
 	"log/slog"
 	"path/filepath"
 
-	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	"github.com/jingkaihe/matchlock/pkg/logging"
@@ -40,7 +40,6 @@ type Sandbox struct {
 	fwRules          FirewallRules
 	natRules         *sandboxnet.NFTablesNAT
 	policy           *policy.Engine
-	emitter          *logging.Emitter
 	vfsRoot          vfs.Provider
 	vfsHooks         *vfs.HookEngine
 	vfsServer        *vfs.VFSServer
@@ -51,6 +50,7 @@ type Sandbox struct {
 	caPool           *sandboxnet.CAPool
 	subnetInfo       *state.SubnetInfo
 	subnetAlloc      *state.SubnetAllocator
+	emitter          *logging.Emitter
 	workspace        string
 	rootfsPath       string // Writable overlay upper disk
 	bootstrapPath    string // Bootstrap root disk (vda)
@@ -76,13 +76,16 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
+	if err := config.ValidateVFS(); err != nil {
+		return nil, err
+	}
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
+	vfsEnabled := config.HasVFSMounts()
 
 	id := config.GetID()
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
-	vfsNeeded := config.VFS != nil && len(config.VFS.Mounts) > 0
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -149,7 +152,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	// Create CAPool early and inject cert into writable upper before VM creation
-	needsProxy := !noNetwork && config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	needsProxy := !noNetwork && config.Network != nil && (config.Network.Intercept || config.Network.Interception != nil || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	var caPool *sandboxnet.CAPool
 	if needsProxy {
 		var err error
@@ -253,7 +256,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
 		NoNetwork:           noNetwork,
-		NoWorkspace:         !vfsNeeded,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -298,38 +300,25 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, err
 	}
 
-	// Construct event logging emitter if configured
+	// Construct emitter from config.Logging (fork addition)
 	var emitter *logging.Emitter
 	if config.Logging != nil && config.Logging.Enabled {
+		logPath := config.Logging.EventLogPath
+		if logPath == "" {
+			logPath = filepath.Join(stateMgr.Dir(id), "events.jsonl")
+		}
 		runID := config.Logging.RunID
 		if runID == "" {
 			runID = id
 		}
-
-		logPath := config.Logging.EventLogPath
-		if logPath == "" {
-			logDir := filepath.Join(filepath.Dir(stateMgr.Dir(id)), "..", "logs", id)
-			if err := os.MkdirAll(logDir, 0755); err != nil {
-				slog.Warn("failed to create event log directory", "path", logDir, "error", err)
-			} else {
-				logPath = filepath.Join(logDir, "events.jsonl")
-			}
-		}
-
-		if logPath != "" {
-			if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
-				slog.Warn("failed to create event log directory", "path", logPath, "error", err)
-			} else {
-				writer, err := logging.NewJSONLWriter(logPath)
-				if err != nil {
-					slog.Warn("failed to create event log writer", "path", logPath, "error", err)
-				} else {
-					emitter = logging.NewEmitter(logging.EmitterConfig{
-						RunID:       runID,
-						AgentSystem: config.Logging.AgentSystem,
-					}, writer)
-				}
-			}
+		sink, emitErr := logging.NewJSONLWriter(logPath)
+		if emitErr != nil {
+			slog.Warn("failed to create event log sink", "error", emitErr)
+		} else {
+			emitter = logging.NewEmitter(logging.EmitterConfig{
+				RunID:       runID,
+				AgentSystem: config.Logging.AgentSystem,
+			}, sink)
 		}
 	}
 
@@ -354,8 +343,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Policy:          policyEngine,
 			Events:          events,
 			CAPool:          caPool,
-			Logger:          nil,
-			Emitter:         emitter,
 		})
 		if err != nil {
 			machine.Close(ctx)
@@ -390,10 +377,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var vfsHooks *vfs.HookEngine
 	var vfsServer *vfs.VFSServer
 	var vfsStopFunc func()
-
-	if vfsNeeded {
+	if vfsEnabled {
 		// Create VFS providers
-		vfsProviders := buildVFSProviders(config, workspace)
+		vfsProviders := buildVFSProviders(config)
 		vfsRouter := vfs.NewMountRouter(vfsProviders)
 		vfsRoot = vfsRouter
 		vfsHooks = buildVFSHookEngine(config)
@@ -407,7 +393,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 		// Start VFS server on the vsock UDS path for VFS port
 		vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
-		var err error
 		vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
 		if err != nil {
 			if proxy != nil {
@@ -431,7 +416,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		fwRules:          fwRules,
 		natRules:         natRules,
 		policy:           policyEngine,
-		emitter:          emitter,
 		vfsRoot:          vfsRoot,
 		vfsHooks:         vfsHooks,
 		vfsServer:        vfsServer,
@@ -442,6 +426,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		caPool:           caPool,
 		subnetInfo:       subnetInfo,
 		subnetAlloc:      subnetAlloc,
+		emitter:          emitter,
 		workspace:        workspace,
 		rootfsPath:       upperRootfsPath,
 		bootstrapPath:    bootstrapRootfsPath,
@@ -475,6 +460,33 @@ func (s *Sandbox) Machine() vm.Machine { return s.machine }
 func (s *Sandbox) Policy() *policy.Engine { return s.policy }
 
 func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
+
+func (s *Sandbox) AddAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	if len(hosts) == 0 {
+		return nil, errx.With(ErrAllowListHosts, ": no hosts provided")
+	}
+	return s.policy.AddAllowedHosts(hosts...), nil
+}
+
+func (s *Sandbox) RemoveAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	if len(hosts) == 0 {
+		return nil, errx.With(ErrAllowListHosts, ": no hosts provided")
+	}
+	return s.policy.RemoveAllowedHosts(hosts...), nil
+}
+
+func (s *Sandbox) AllowedHosts(ctx context.Context) ([]string, error) {
+	if s.proxy == nil {
+		return nil, errx.With(ErrAllowListUnavailable, ": sandbox was started without network interception")
+	}
+	return s.policy.AllowedHosts(), nil
+}
 
 // Start starts the sandbox VM.
 func (s *Sandbox) Start(ctx context.Context) error {
@@ -534,20 +546,30 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 	return execCommand(ctx, s.machine, s.config, s.caPool, s.policy, command, opts)
 }
 
+func (s *Sandbox) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+	interactiveMachine, ok := s.machine.(vm.InteractiveMachine)
+	if !ok {
+		return 1, errx.With(ErrInteractiveUnsupported, ": VM backend does not support interactive exec")
+	}
+
+	opts = prepareExecOptions(s.config, s.caPool, s.policy, opts)
+	return interactiveMachine.ExecInteractive(ctx, command, opts, rows, cols, stdin, stdout, resizeCh)
+}
+
 func (s *Sandbox) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
-	return writeFile(s.vfsRoot, path, content, mode)
+	return s.machine.WriteFile(ctx, path, content, mode)
 }
 
 func (s *Sandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
-	return readFile(s.vfsRoot, path)
+	return s.machine.ReadFile(ctx, path)
 }
 
 func (s *Sandbox) ReadFileTo(ctx context.Context, path string, w io.Writer) (int64, error) {
-	return readFileTo(s.vfsRoot, path, w)
+	return readFileTo(ctx, s.machine, path, w)
 }
 
 func (s *Sandbox) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
-	return listFiles(s.vfsRoot, path)
+	return s.machine.ListFiles(ctx, path)
 }
 
 // Events returns a channel for receiving sandbox events.
@@ -643,6 +665,9 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("emitter_close", nil)
 	}
+
+	flushGuestDisks(s.machine)
+	markCleanup("guest_sync", nil)
 
 	if err := s.stateMgr.Unregister(s.id); err != nil {
 		errs = append(errs, errx.Wrap(ErrUnregisterState, err))

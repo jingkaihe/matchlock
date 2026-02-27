@@ -22,12 +22,18 @@ from matchlock.client import (
 from matchlock.types import (
     Config,
     CreateOptions,
+    ExecInteractiveResult,
+    ExecPipeResult,
     ExecResult,
     ExecStreamResult,
     FileInfo,
     MatchlockError,
     MountConfig,
+    NetworkBodyTransform,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
     RPCError,
+    VolumeInfo,
     VFS_HOOK_ACTION_ALLOW,
     VFS_HOOK_ACTION_BLOCK,
     VFSHookRule,
@@ -165,6 +171,7 @@ class TestClientCreate:
             with pytest.raises(MatchlockError, match="image is required"):
                 client.create(CreateOptions())
         finally:
+            client._stop_network_hook_server()
             fake.close_stdout()
 
     def test_create_success(self):
@@ -219,6 +226,35 @@ class TestClientCreate:
             )
             vm_id = client.create(opts)
             assert vm_id == "vm-res"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_with_privileged(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-priv"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(CreateOptions(image="img", privileged=True))
+            assert vm_id == "vm-priv"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["privileged"] is True
             t.join(timeout=2)
         finally:
             fake.close_stdout()
@@ -331,6 +367,172 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_sends_force_network_interception(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-force"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                force_interception=True,
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-force"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            assert "interception" not in req["params"]["network"]
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_sends_network_interception_rules(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-rules"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_interception=NetworkInterceptionConfig(
+                    rules=[
+                        NetworkHookRule(
+                            phase="after",
+                            action="mutate",
+                            hosts=["api.example.com"],
+                            path="/v1/*",
+                            body_replacements=[
+                                NetworkBodyTransform(find="foo", replace="bar")
+                            ],
+                        )
+                    ]
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-rules"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            assert req["params"]["network"]["interception"] == {
+                "rules": [
+                    {
+                        "phase": "after",
+                        "action": "mutate",
+                        "hosts": ["api.example.com"],
+                        "path": "/v1/*",
+                        "body_replacements": [{"find": "foo", "replace": "bar"}],
+                    }
+                ]
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_sends_network_interception_callback_rule(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-net-callback"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            opts = CreateOptions(
+                image="img",
+                network_interception=NetworkInterceptionConfig(
+                    rules=[
+                        NetworkHookRule(
+                            name="callback-after",
+                            phase="after",
+                            hosts=["api.example.com"],
+                            path="/v1/*",
+                            timeout_ms=1500,
+                            hook=lambda req: None,
+                        )
+                    ]
+                ),
+            )
+            vm_id = client.create(opts)
+            assert vm_id == "vm-net-callback"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["network"]["intercept"] is True
+            interception = req["params"]["network"]["interception"]
+            assert isinstance(interception["callback_socket"], str)
+            assert interception["callback_socket"].strip() != ""
+            assert len(interception["rules"]) == 1
+            rule = interception["rules"][0]
+            assert isinstance(rule["callback_id"], str)
+            assert rule["callback_id"].strip() != ""
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_network_callback_with_action_block(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="callback hooks cannot set action",
+            ):
+                client.create(
+                    CreateOptions(
+                        image="img",
+                        network_interception=NetworkInterceptionConfig(
+                            rules=[
+                                NetworkHookRule(
+                                    name="bad-callback",
+                                    phase="after",
+                                    action="block",
+                                    hook=lambda req: None,
+                                )
+                            ]
+                        ),
+                    )
+                )
+        finally:
+            fake.close_stdout()
+
     def test_create_respects_explicit_disable_block_private_ips(self):
         client, fake = make_client_with_fake()
         try:
@@ -432,13 +634,34 @@ class TestClientCreate:
         try:
             with pytest.raises(
                 MatchlockError,
-                match="no network cannot be combined with allowed hosts or secrets",
+                match="no network cannot be combined with allowed hosts, secrets, "
+                "forced interception, or network interception rules",
             ):
                 client.create(
                     CreateOptions(
                         image="img",
                         no_network=True,
                         allowed_hosts=["api.openai.com"],
+                    )
+                )
+        finally:
+            fake.close_stdout()
+
+    def test_create_rejects_no_network_with_interception_rules(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="no network cannot be combined with allowed hosts, secrets, "
+                "forced interception, or network interception rules",
+            ):
+                client.create(
+                    CreateOptions(
+                        image="img",
+                        no_network=True,
+                        network_interception=NetworkInterceptionConfig(
+                            rules=[NetworkHookRule(action="block", hosts=["bad.example.com"])]
+                        ),
                     )
                 )
         finally:
@@ -911,6 +1134,53 @@ class TestClientLaunch:
             sandbox = Sandbox("alpine:latest").with_cpus(2)
             vm_id = client.launch(sandbox)
             assert vm_id == "vm-launch"
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            create_req = next(req for req in reqs if req["method"] == "create")
+            assert create_req["params"]["launch_entrypoint"] is True
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_launch_does_not_mutate_builder_options(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-launch"},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {"id": "vm-create"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            sandbox = Sandbox("alpine:latest")
+            launch_vm_id = client.launch(sandbox)
+            assert launch_vm_id == "vm-launch"
+            assert sandbox.options().launch_entrypoint is False
+
+            create_vm_id = client.create(sandbox.options())
+            assert create_vm_id == "vm-create"
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            create_reqs = [req for req in reqs if req["method"] == "create"]
+            assert len(create_reqs) == 2
+            assert create_reqs[0]["params"]["launch_entrypoint"] is True
+            assert "launch_entrypoint" not in create_reqs[1]["params"]
             t.join(timeout=2)
         finally:
             fake.close_stdout()
@@ -1103,6 +1373,154 @@ class TestClientExecStream:
             t.start()
             result = client.exec_stream("cmd")
             assert result.exit_code == 0
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestClientExecPipe:
+    def test_exec_pipe_streams_and_pipes_stdin(self):
+        client, fake = make_client_with_fake()
+        try:
+            out_b64 = base64.b64encode(b"hello from pipe\n").decode()
+            err_b64 = base64.b64encode(b"warning\n").decode()
+            stdin_buf = io.StringIO("hello stdin\n")
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.ready",
+                        "params": {"id": 1},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stdout",
+                        "params": {"id": 1, "data": out_b64},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stderr",
+                        "params": {"id": 1, "data": err_b64},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 88},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            result = client.exec_pipe(
+                "cat",
+                stdin=stdin_buf,
+                stdout=stdout_buf,
+                stderr=stderr_buf,
+            )
+
+            assert isinstance(result, ExecPipeResult)
+            assert result.exit_code == 0
+            assert result.duration_ms == 88
+            assert stdout_buf.getvalue() == "hello from pipe\n"
+            assert stderr_buf.getvalue() == "warning\n"
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            methods = [req["method"] for req in reqs]
+            assert methods[0] == "exec_pipe"
+            assert "exec_pipe.stdin" in methods
+            assert "exec_pipe.stdin_eof" in methods
+
+            stdin_req = next(req for req in reqs if req["method"] == "exec_pipe.stdin")
+            assert stdin_req["params"]["id"] == 1
+            stdin_data = base64.b64decode(stdin_req["params"]["data"]).decode()
+            assert stdin_data == "hello stdin\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestClientExecInteractive:
+    def test_exec_interactive_streams_and_sends_resize(self):
+        client, fake = make_client_with_fake()
+        try:
+            out_b64 = base64.b64encode(b"/workspace # ").decode()
+            stdin_buf = io.StringIO("exit\n")
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_tty.ready",
+                        "params": {"id": 1},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_tty.stdout",
+                        "params": {"id": 1, "data": out_b64},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 120},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.StringIO()
+            result = client.exec_interactive(
+                "sh",
+                stdin=stdin_buf,
+                stdout=stdout_buf,
+                rows=30,
+                cols=100,
+                resize=[(40, 120)],
+            )
+
+            assert isinstance(result, ExecInteractiveResult)
+            assert result.exit_code == 0
+            assert result.duration_ms == 120
+            assert stdout_buf.getvalue() == "/workspace # "
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            methods = [req["method"] for req in reqs]
+            assert methods[0] == "exec_tty"
+            assert "exec_tty.stdin" in methods
+            assert "exec_tty.stdin_eof" in methods
+            assert "exec_tty.resize" in methods
+
+            exec_req = reqs[0]
+            assert exec_req["params"]["rows"] == 30
+            assert exec_req["params"]["cols"] == 100
+
+            resize_req = next(req for req in reqs if req["method"] == "exec_tty.resize")
+            assert resize_req["params"]["id"] == 1
+            assert resize_req["params"]["rows"] == 40
+            assert resize_req["params"]["cols"] == 120
             t.join(timeout=2)
         finally:
             fake.close_stdout()
@@ -1548,6 +1966,98 @@ class TestClientRemove:
     def test_remove_noop_without_vm_id(self):
         client = Client()
         client.remove()  # should not raise
+
+
+class TestClientVolume:
+    @patch("subprocess.run")
+    def test_volume_create_calls_cli_and_parses_path(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout='{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n'
+        )
+        client = Client(Config(binary_path="matchlock"))
+
+        volume = client.volume_create("cache", 16)
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "create", "cache", "--size", "16", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert volume == VolumeInfo(
+            name="cache",
+            size="16.0 MB",
+            path="/tmp/cache.ext4",
+        )
+
+    @patch("subprocess.run")
+    def test_volume_create_rejects_invalid_inputs(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="volume name is required"):
+            client.volume_create("   ", 16)
+        with pytest.raises(MatchlockError, match="volume size must be > 0"):
+            client.volume_create("cache", 0)
+        mock_run.assert_not_called()
+
+    @patch("subprocess.run")
+    def test_volume_create_fails_on_missing_path(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout='{"name":"cache","size":"16.0 MB","path":""}\n'
+        )
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="failed to parse volume create output"):
+            client.volume_create("cache", 16)
+
+    @patch("subprocess.run")
+    def test_volume_list_calls_cli_and_parses_rows(self, mock_run):
+        mock_run.return_value = MagicMock(
+            stdout='[{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"},{"name":"data","size":"32.0 MB","path":"/tmp/data.ext4"}]\n'
+        )
+        client = Client(Config(binary_path="matchlock"))
+
+        volumes = client.volume_list()
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "ls", "--json"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert volumes == [
+            VolumeInfo(name="cache", size="16.0 MB", path="/tmp/cache.ext4"),
+            VolumeInfo(name="data", size="32.0 MB", path="/tmp/data.ext4"),
+        ]
+
+    @patch("subprocess.run")
+    def test_volume_list_fails_on_invalid_line(self, mock_run):
+        mock_run.return_value = MagicMock(stdout='[{"name":"cache","size":"16.0 MB"}]\n')
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="failed to parse volume list output line"):
+            client.volume_list()
+
+    @patch("subprocess.run")
+    def test_volume_remove_calls_cli(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        client.volume_remove("cache")
+
+        mock_run.assert_called_once_with(
+            ["matchlock", "volume", "rm", "cache"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    @patch("subprocess.run")
+    def test_volume_remove_rejects_empty_name(self, mock_run):
+        client = Client(Config(binary_path="matchlock"))
+
+        with pytest.raises(MatchlockError, match="volume name is required"):
+            client.volume_remove("  ")
+        mock_run.assert_not_called()
 
 
 class TestClientClose:

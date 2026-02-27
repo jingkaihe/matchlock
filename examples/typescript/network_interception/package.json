@@ -1,0 +1,14 @@
+{
+  "name": "matchlock-typescript-network-interception-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts"
+  },
+  "dependencies": {
+    "matchlock-sdk": "^0.1.22"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}

@@ -166,6 +166,34 @@ func TestBuilderNoNetwork(t *testing.T) {
 	require.True(t, opts.NoNetwork)
 }
 
+func TestBuilderNetworkInterception(t *testing.T) {
+	opts := New("alpine:latest").
+		WithNetworkInterception().
+		Options()
+
+	require.True(t, opts.ForceInterception)
+}
+
+func TestBuilderNetworkInterceptionRules(t *testing.T) {
+	cfg := &NetworkInterceptionConfig{
+		Rules: []NetworkHookRule{
+			{
+				Phase:  NetworkHookPhaseBefore,
+				Action: NetworkHookActionBlock,
+				Hosts:  []string{"example.com"},
+			},
+		},
+	}
+	opts := New("alpine:latest").
+		WithNetworkInterception(cfg).
+		Options()
+
+	require.True(t, opts.ForceInterception)
+	require.NotNil(t, opts.NetworkInterception)
+	require.Len(t, opts.NetworkInterception.Rules, 1)
+	assert.Equal(t, "example.com", opts.NetworkInterception.Rules[0].Hosts[0])
+}
+
 func TestBuilderPortForwards(t *testing.T) {
 	opts := New("alpine:latest").
 		WithPortForward(18080, 8080).
@@ -320,7 +348,7 @@ func TestBuilderWithPluginSerialization(t *testing.T) {
 		},
 	}
 
-	network := buildCreateNetworkParams(opts)
+	network := buildCreateNetworkParams(opts, nil)
 	require.NotNil(t, network, "Network params should be included when plugins are present")
 
 	plugins, ok := network["plugins"]

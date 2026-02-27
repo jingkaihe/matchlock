@@ -264,16 +264,17 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
 		workspace := m.config.Workspace
-		if workspace == "" {
-			workspace = "/workspace"
-		}
 		hostname := m.config.Hostname
 		if hostname == "" {
 			hostname = m.config.ID
 		}
+		workspaceArg := ""
+		if workspace != "" {
+			workspaceArg = " matchlock.workspace=" + workspace
+		}
 
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s matchlock.workspace=%s matchlock.dns=%s",
-			hostname, workspace, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s matchlock.dns=%s",
+			hostname, workspaceArg, vm.KernelDNSParam(m.config.DNSServers))
 		if m.config.NoNetwork {
 			kernelArgs += " ip=off matchlock.no_network=1"
 		} else {
@@ -320,7 +321,11 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		for _, disk := range m.config.ExtraDisks {
 			dev := fmt.Sprintf("vd%c", devLetter)
 			devLetter++
-			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, disk.GuestMount)
+			diskMount := disk.GuestMount
+			if disk.ReadOnly {
+				diskMount += ",ro"
+			}
+			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 		}
 		for i, mapping := range m.config.AddHosts {
 			kernelArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)
@@ -476,6 +481,30 @@ func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecO
 		return nil, ErrVsockNotConfigured
 	}
 	return m.execVsock(ctx, command, opts)
+}
+
+func (m *LinuxMachine) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.WriteFileVsock(conn, path, content, mode)
+}
+
+func (m *LinuxMachine) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ReadFileVsock(conn, path)
+}
+
+func (m *LinuxMachine) ListFiles(ctx context.Context, path string) ([]api.FileInfo, error) {
+	conn, err := m.dialVsock(VsockPortExec)
+	if err != nil {
+		return nil, errx.Wrap(ErrExecConnect, err)
+	}
+	return vsock.ListFilesVsock(conn, path)
 }
 
 // execVsock executes a command via vsock.

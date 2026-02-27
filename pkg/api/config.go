@@ -4,13 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-// DefaultWorkspace is the default mount point for the VFS in the guest
+// DefaultWorkspace is the conventional mount point for the VFS in the guest.
+// VFS is now opt-in and this path is used only when explicitly configured.
 const DefaultWorkspace = "/workspace"
 
 const (
@@ -39,16 +41,19 @@ type LoggingConfig struct {
 }
 
 type Config struct {
-	ID         string            `json:"id,omitempty"`
-	Image      string            `json:"image,omitempty"`
-	Privileged bool              `json:"privileged,omitempty"`
-	Resources  *Resources        `json:"resources,omitempty"`
-	Network    *NetworkConfig    `json:"network,omitempty"`
-	VFS        *VFSConfig        `json:"vfs,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	ExtraDisks []DiskMount       `json:"extra_disks,omitempty"`
-	ImageCfg   *ImageConfig      `json:"image_config,omitempty"`
-	Logging    *LoggingConfig    `json:"logging,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Image      string `json:"image,omitempty"`
+	Privileged bool   `json:"privileged,omitempty"`
+	// LaunchEntrypoint starts image ENTRYPOINT/CMD in detached mode during create.
+	// This is used by SDK `launch` convenience helpers.
+	LaunchEntrypoint bool              `json:"launch_entrypoint,omitempty"`
+	Resources        *Resources        `json:"resources,omitempty"`
+	Network          *NetworkConfig    `json:"network,omitempty"`
+	VFS              *VFSConfig        `json:"vfs,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	ExtraDisks       []DiskMount       `json:"extra_disks,omitempty"`
+	ImageCfg         *ImageConfig      `json:"image_config,omitempty"`
+	Logging          *LoggingConfig    `json:"logging,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -86,102 +91,22 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts        []string          `json:"allowed_hosts,omitempty"`
-	AddHosts            []HostIPMapping   `json:"add_hosts,omitempty"`
-	BlockPrivateIPs     bool              `json:"block_private_ips,omitempty"`
-	NoNetwork           bool              `json:"no_network,omitempty"`
-	AllowedPrivateHosts []string          `json:"allowed_private_hosts,omitempty"`
-	Secrets             map[string]Secret `json:"secrets,omitempty"`
-	PolicyScript        string            `json:"policy_script,omitempty"`
-	DNSServers          []string          `json:"dns_servers,omitempty"`
-	Hostname            string            `json:"hostname,omitempty"`
-	MTU                 int               `json:"mtu,omitempty"`
-	LocalModelRouting   []LocalModelRoute `json:"local_model_routing,omitempty"`
-	UsageLogPath        string            `json:"usage_log_path,omitempty"`
-	BudgetLimitUSD      float64           `json:"budget_limit_usd,omitempty"`
-	// Plugins contains explicit plugin configurations.
-	// Flat fields (AllowedHosts, Secrets, LocalModelRouting) are compiled
-	// into built-in plugins internally. This array is for advanced
-	// configuration: overrides, additional instances, or disabling defaults.
-	Plugins []PluginConfig `json:"plugins,omitempty"`
-}
-
-// PluginConfig is the generic config wrapper for a network policy plugin.
-// Each entry in NetworkConfig.Plugins is a PluginConfig.
-type PluginConfig struct {
-	// Type is the plugin type name (e.g., "host_filter", "secret_injector").
-	Type string `json:"type"`
-	// Enabled controls whether this plugin is active. Defaults to true if nil.
-	Enabled *bool `json:"enabled,omitempty"`
-	// Config is the plugin-specific configuration as raw JSON.
-	Config json.RawMessage `json:"config,omitempty"`
-}
-
-// IsEnabled returns whether the plugin is enabled. Defaults to true.
-func (p *PluginConfig) IsEnabled() bool {
-	if p.Enabled == nil {
-		return true
-	}
-	return *p.Enabled
-}
-
-// LocalModelRoute configures interception of LLM API requests from a
-// specific source host and redirection to a local inference backend.
-type LocalModelRoute struct {
-	SourceHost  string                `json:"source_host"`
-	Path        string                `json:"path,omitempty"`
-	BackendHost string                `json:"backend_host,omitempty"`
-	BackendPort int                   `json:"backend_port,omitempty"`
-	Models      map[string]ModelRoute `json:"models"`
-}
-
-// GetPath returns the configured path or the default ("/api/v1/chat/completions").
-func (r *LocalModelRoute) GetPath() string {
-	if r != nil && r.Path != "" {
-		return r.Path
-	}
-	return "/api/v1/chat/completions"
-}
-
-// GetBackendHost returns the configured backend host or the default ("127.0.0.1").
-func (r *LocalModelRoute) GetBackendHost() string {
-	if r != nil && r.BackendHost != "" {
-		return r.BackendHost
-	}
-	return "127.0.0.1"
-}
-
-// GetBackendPort returns the configured backend port or the default (11434).
-func (r *LocalModelRoute) GetBackendPort() int {
-	if r != nil && r.BackendPort > 0 {
-		return r.BackendPort
-	}
-	return 11434
-}
-
-// ModelRoute defines how a specific model is routed to a local backend.
-type ModelRoute struct {
-	Target      string `json:"target"`
-	BackendHost string `json:"backend_host,omitempty"`
-	BackendPort int    `json:"backend_port,omitempty"`
-}
-
-// EffectiveBackendHost returns the model-specific backend host,
-// falling back to the route-level default.
-func (m *ModelRoute) EffectiveBackendHost(routeDefault string) string {
-	if m.BackendHost != "" {
-		return m.BackendHost
-	}
-	return routeDefault
-}
-
-// EffectiveBackendPort returns the model-specific backend port,
-// falling back to the route-level default.
-func (m *ModelRoute) EffectiveBackendPort(routeDefault int) int {
-	if m.BackendPort > 0 {
-		return m.BackendPort
-	}
-	return routeDefault
+	AllowedHosts        []string                   `json:"allowed_hosts,omitempty"`
+	AddHosts            []HostIPMapping            `json:"add_hosts,omitempty"`
+	BlockPrivateIPs     bool                       `json:"block_private_ips,omitempty"`
+	NoNetwork           bool                       `json:"no_network,omitempty"`
+	Intercept           bool                       `json:"intercept,omitempty"`
+	Interception        *NetworkInterceptionConfig `json:"interception,omitempty"`
+	AllowedPrivateHosts []string                   `json:"allowed_private_hosts,omitempty"`
+	Secrets             map[string]Secret          `json:"secrets,omitempty"`
+	PolicyScript        string                     `json:"policy_script,omitempty"`
+	DNSServers          []string                   `json:"dns_servers,omitempty"`
+	Hostname            string                     `json:"hostname,omitempty"`
+	MTU                 int                        `json:"mtu,omitempty"`
+	LocalModelRouting   []LocalModelRoute          `json:"local_model_routing,omitempty"`
+	UsageLogPath        string                     `json:"usage_log_path,omitempty"`
+	BudgetLimitUSD      float64                    `json:"budget_limit_usd,omitempty"`
+	Plugins             []PluginConfig             `json:"plugins,omitempty"`
 }
 
 // GetDNSServers returns the configured DNS servers or defaults.
@@ -211,6 +136,12 @@ func (n *NetworkConfig) Validate() error {
 	if len(n.Secrets) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
 	}
+	if n.Intercept {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.intercept")
+	}
+	if n.Interception != nil {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.interception")
+	}
 	return nil
 }
 
@@ -220,6 +151,70 @@ type Secret struct {
 	Hosts       []string `json:"hosts"`
 }
 
+// PluginConfig is the generic config wrapper for a network policy plugin.
+type PluginConfig struct {
+	Type    string          `json:"type"`
+	Enabled *bool           `json:"enabled,omitempty"`
+	Config  json.RawMessage `json:"config,omitempty"`
+}
+
+func (p *PluginConfig) IsEnabled() bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+// LocalModelRoute configures interception of LLM API requests.
+type LocalModelRoute struct {
+	SourceHost  string                `json:"source_host"`
+	Path        string                `json:"path,omitempty"`
+	BackendHost string                `json:"backend_host,omitempty"`
+	BackendPort int                   `json:"backend_port,omitempty"`
+	Models      map[string]ModelRoute `json:"models"`
+}
+
+func (r *LocalModelRoute) GetPath() string {
+	if r != nil && r.Path != "" {
+		return r.Path
+	}
+	return "/api/v1/chat/completions"
+}
+
+func (r *LocalModelRoute) GetBackendHost() string {
+	if r != nil && r.BackendHost != "" {
+		return r.BackendHost
+	}
+	return "127.0.0.1"
+}
+
+func (r *LocalModelRoute) GetBackendPort() int {
+	if r != nil && r.BackendPort > 0 {
+		return r.BackendPort
+	}
+	return 11434
+}
+
+type ModelRoute struct {
+	Target      string `json:"target"`
+	BackendHost string `json:"backend_host,omitempty"`
+	BackendPort int    `json:"backend_port,omitempty"`
+}
+
+func (m *ModelRoute) EffectiveBackendHost(routeDefault string) string {
+	if m.BackendHost != "" {
+		return m.BackendHost
+	}
+	return routeDefault
+}
+
+func (m *ModelRoute) EffectiveBackendPort(routeDefault int) int {
+	if m.BackendPort > 0 {
+		return m.BackendPort
+	}
+	return routeDefault
+}
+
 type VFSConfig struct {
 	Workspace    string                 `json:"workspace,omitempty"`
 	DirectMounts map[string]DirectMount `json:"direct_mounts,omitempty"`
@@ -227,12 +222,12 @@ type VFSConfig struct {
 	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
 }
 
-// GetWorkspace returns the configured workspace path or the default
+// GetWorkspace returns the configured workspace path, or empty when unset.
 func (v *VFSConfig) GetWorkspace() string {
 	if v != nil && v.Workspace != "" {
 		return v.Workspace
 	}
-	return DefaultWorkspace
+	return ""
 }
 
 type DirectMount struct {
@@ -273,12 +268,57 @@ func (c *Config) GetHostname() string {
 	return c.GetID()
 }
 
-// GetWorkspace returns the workspace path from config, or default if not set
+// GetWorkspace returns the workspace path from config, or empty when unset.
 func (c *Config) GetWorkspace() string {
 	if c.VFS != nil {
 		return c.VFS.GetWorkspace()
 	}
-	return DefaultWorkspace
+	return ""
+}
+
+// HasVFSMounts reports whether VFS is enabled with at least one mount.
+func (c *Config) HasVFSMounts() bool {
+	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
+}
+
+// ValidateVFS checks VFS config invariants.
+//
+// Rules:
+// - vfs.workspace requires at least one vfs.mounts entry
+// - vfs.mounts requires a non-empty vfs.workspace
+// - vfs.interception requires at least one vfs.mounts entry
+// - vfs.workspace must be a safe absolute guest path
+// - every vfs.mounts key must be under vfs.workspace
+func (c *Config) ValidateVFS() error {
+	if c == nil || c.VFS == nil {
+		return nil
+	}
+
+	workspace := c.VFS.Workspace
+	hasWorkspace := strings.TrimSpace(workspace) != ""
+	hasMounts := len(c.VFS.Mounts) > 0
+	hasInterception := c.VFS.Interception != nil
+
+	if hasWorkspace && !hasMounts {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
+	}
+	if hasMounts && !hasWorkspace {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
+	}
+	if hasInterception && !hasMounts {
+		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
+	}
+	if !hasMounts {
+		return nil
+	}
+
+	if err := ValidateGuestMount(workspace); err != nil {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+	}
+	if err := ValidateVFSMountsWithinWorkspace(c.VFS.Mounts, workspace); err != nil {
+		return errx.With(ErrInvalidConfig, ": %v", err)
+	}
+	return nil
 }
 
 func DefaultConfig() *Config {
@@ -292,11 +332,6 @@ func DefaultConfig() *Config {
 		Network: &NetworkConfig{
 			BlockPrivateIPs: true,
 			MTU:             DefaultNetworkMTU,
-		},
-		VFS: &VFSConfig{
-			Mounts: map[string]MountConfig{
-				DefaultWorkspace: {Type: MountTypeMemory},
-			},
 		},
 	}
 }
@@ -335,6 +370,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.Privileged {
 		result.Privileged = true
+	}
+	if other.LaunchEntrypoint {
+		result.LaunchEntrypoint = true
 	}
 	if other.Env != nil {
 		result.Env = other.Env

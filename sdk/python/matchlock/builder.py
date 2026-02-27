@@ -14,6 +14,7 @@ from .types import (
     CreateOptions,
     ImageConfig,
     MountConfig,
+    NetworkInterceptionConfig,
     Secret,
     VFSInterceptionConfig,
 )
@@ -24,6 +25,10 @@ class Sandbox:
 
     def __init__(self, image: str) -> None:
         self._opts = CreateOptions(image=image)
+
+    def with_privileged(self) -> Sandbox:
+        self._opts.privileged = True
+        return self
 
     def with_cpus(self, cpus: int) -> Sandbox:
         self._opts.cpus = cpus
@@ -47,6 +52,13 @@ class Sandbox:
 
     def with_vfs_interception(self, config: VFSInterceptionConfig) -> Sandbox:
         self._opts.vfs_interception = config
+        return self
+
+    def with_network_interception(
+        self, config: NetworkInterceptionConfig | None = None
+    ) -> Sandbox:
+        self._opts.force_interception = True
+        self._opts.network_interception = config
         return self
 
     def with_env(self, name: str, value: str) -> Sandbox:

@@ -29,7 +29,7 @@ The sandbox must have been started with --rm=false to remain running.`,
 func init() {
 	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
-	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then workspace path)")
+	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then configured workspace path)")
 	execCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username)")
 
 	rootCmd.AddCommand(execCmd)

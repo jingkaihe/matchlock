@@ -24,6 +24,24 @@ function installFakeProcess(): FakeProcess {
   return fake;
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 250): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 describe("Client", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -57,6 +75,21 @@ describe("Client", () => {
     await expect(client.create({})).rejects.toThrow("image is required");
   });
 
+  it("sets launch_entrypoint on launch", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const launchPromise = client.launch(new Sandbox("alpine:latest"));
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.launch_entrypoint).toBe(true);
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-launch" } });
+    await expect(launchPromise).resolves.toBe("vm-launch");
+
+    fake.close();
+    await client.close();
+  });
+
   it("sends create payload with network defaults", async () => {
     const fake = installFakeProcess();
     const client = new Client();
@@ -86,6 +119,140 @@ describe("Client", () => {
 
     fake.close();
     await client.close();
+  });
+
+  it("sends create payload with network interception", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest")
+        .withNetworkInterception({
+          rules: [
+            {
+              phase: "after",
+              action: "mutate",
+              hosts: ["api.example.com"],
+              path: "/v1/*",
+              setResponseHeaders: { "X-Intercepted": "true" },
+              bodyReplacements: [{ find: "foo", replace: "bar" }],
+              timeoutMs: 1500,
+            },
+          ],
+        })
+        .options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.network).toEqual({
+      allowed_hosts: [],
+      block_private_ips: true,
+      intercept: true,
+      interception: {
+        rules: [
+          {
+            phase: "after",
+            action: "mutate",
+            hosts: ["api.example.com"],
+            path: "/v1/*",
+            set_response_headers: { "X-Intercepted": "true" },
+            body_replacements: [{ find: "foo", replace: "bar" }],
+            timeout_ms: 1500,
+          },
+        ],
+      },
+    });
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-hooks" } });
+    await expect(createPromise).resolves.toBe("vm-net-hooks");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("sends create payload with forced interception only", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest").withNetworkInterception().options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    expect(request.params?.network).toEqual({
+      allowed_hosts: [],
+      block_private_ips: true,
+      intercept: true,
+    });
+
+    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-force" } });
+    await expect(createPromise).resolves.toBe("vm-net-force");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("sends create payload with callback-based network interception rule", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const createPromise = client.create(
+      new Sandbox("alpine:latest")
+        .withNetworkInterception({
+          rules: [
+            {
+              name: "callback-after",
+              phase: "after",
+              hosts: ["api.example.com"],
+              path: "/v1/*",
+              timeoutMs: 1500,
+              hook: async () => undefined,
+            },
+          ],
+        })
+        .options(),
+    );
+
+    const request = await fake.waitForRequest("create");
+    const network = request.params?.network as Record<string, unknown>;
+    expect(network.intercept).toBe(true);
+    const interception = network.interception as Record<string, unknown>;
+    expect(typeof interception.callback_socket).toBe("string");
+    expect(String(interception.callback_socket)).not.toBe("");
+    const rules = interception.rules as Array<Record<string, unknown>>;
+    expect(rules).toHaveLength(1);
+    expect(typeof rules[0].callback_id).toBe("string");
+    expect(String(rules[0].callback_id)).not.toBe("");
+
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-net-callback" },
+    });
+    await expect(createPromise).resolves.toBe("vm-net-callback");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("rejects callback network interception rule with non-allow action", async () => {
+    const client = new Client();
+    await expect(
+      client.create(
+        new Sandbox("alpine:latest")
+          .withNetworkInterception({
+            rules: [
+              {
+                name: "bad-callback",
+                phase: "after",
+                action: "block",
+                hook: async () => undefined,
+              },
+            ],
+          })
+          .options(),
+      ),
+    ).rejects.toThrow("callback hooks cannot set action");
   });
 
   it("respects explicit block_private_ips=false", async () => {
@@ -147,7 +314,9 @@ describe("Client", () => {
         noNetwork: true,
         allowedHosts: ["api.openai.com"],
       }),
-    ).rejects.toThrow("no network cannot be combined with allowed hosts or secrets");
+    ).rejects.toThrow(
+      "no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules",
+    );
   });
 
   it("keeps vmId when post-create port_forward fails", async () => {
@@ -262,6 +431,173 @@ describe("Client", () => {
     await expect(streamPromise).resolves.toEqual({ exitCode: 0, durationMs: 42 });
     expect(out).toBe("line1\nline2\n");
     expect(err).toBe("warn\n");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("supports execPipe with stdin/stdout/stderr streaming", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    let out = "";
+    let err = "";
+    const pipePromise = client.execPipe("cat", {
+      stdin: [Buffer.from("hello stdin\n")],
+      stdout: (chunk) => {
+        out += chunk.toString("utf8");
+      },
+      stderr: (chunk) => {
+        err += chunk.toString("utf8");
+      },
+    });
+
+    const req = await fake.waitForRequest("exec_pipe");
+    fake.pushNotification("exec_pipe.ready", { id: req.id });
+
+    const stdinReq = await fake.waitForRequest("exec_pipe.stdin");
+    expect((stdinReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect(
+      Buffer.from(
+        String((stdinReq.params as Record<string, unknown>).data),
+        "base64",
+      ).toString("utf8"),
+    ).toBe("hello stdin\n");
+
+    const eofReq = await fake.waitForRequest("exec_pipe.stdin_eof");
+    expect((eofReq.params as Record<string, unknown>).id).toBe(req.id);
+
+    fake.pushNotification("exec_pipe.stdout", {
+      id: req.id,
+      data: Buffer.from("line\n").toString("base64"),
+    });
+    fake.pushNotification("exec_pipe.stderr", {
+      id: req.id,
+      data: Buffer.from("warn\n").toString("base64"),
+    });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 64 },
+    });
+
+    await expect(pipePromise).resolves.toEqual({ exitCode: 0, durationMs: 64 });
+    expect(out).toBe("line\n");
+    expect(err).toBe("warn\n");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("supports execInteractive with stdin, stdout, and resize", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    let out = "";
+    const interactivePromise = client.execInteractive("sh", {
+      stdin: [Buffer.from("exit\n")],
+      stdout: (chunk) => {
+        out += chunk.toString("utf8");
+      },
+      rows: 30,
+      cols: 100,
+      resize: [[40, 120]],
+    });
+
+    const req = await fake.waitForRequest("exec_tty");
+    expect(req.params).toEqual({ command: "sh", rows: 30, cols: 100 });
+    fake.pushNotification("exec_tty.ready", { id: req.id });
+
+    const stdinReq = await fake.waitForRequest("exec_tty.stdin");
+    expect((stdinReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect(
+      Buffer.from(
+        String((stdinReq.params as Record<string, unknown>).data),
+        "base64",
+      ).toString("utf8"),
+    ).toBe("exit\n");
+
+    const resizeReq = await fake.waitForRequest("exec_tty.resize");
+    expect((resizeReq.params as Record<string, unknown>).id).toBe(req.id);
+    expect((resizeReq.params as Record<string, unknown>).rows).toBe(40);
+    expect((resizeReq.params as Record<string, unknown>).cols).toBe(120);
+
+    const eofReq = await fake.waitForRequest("exec_tty.stdin_eof");
+    expect((eofReq.params as Record<string, unknown>).id).toBe(req.id);
+
+    fake.pushNotification("exec_tty.stdout", {
+      id: req.id,
+      data: Buffer.from("/workspace # ").toString("base64"),
+    });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 101 },
+    });
+
+    await expect(interactivePromise).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 101,
+    });
+    expect(out).toBe("/workspace # ");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("does not hang execPipe when stdin iterable does not terminate", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    async function* blockedInput(): AsyncGenerator<Buffer> {
+      await new Promise<void>(() => {});
+    }
+
+    const pipePromise = client.execPipe("cat", {
+      stdin: blockedInput(),
+    });
+
+    const req = await fake.waitForRequest("exec_pipe");
+    fake.pushNotification("exec_pipe.ready", { id: req.id });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 8 },
+    });
+
+    await expect(withTimeout(pipePromise)).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 8,
+    });
+
+    fake.close();
+    await client.close();
+  });
+
+  it("does not hang execInteractive when resize iterable does not terminate", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    async function* blockedResize(): AsyncGenerator<[number, number]> {
+      await new Promise<void>(() => {});
+    }
+
+    const interactivePromise = client.execInteractive("sh", {
+      resize: blockedResize(),
+    });
+
+    const req = await fake.waitForRequest("exec_tty");
+    fake.pushNotification("exec_tty.ready", { id: req.id });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 13 },
+    });
+
+    await expect(withTimeout(interactivePromise)).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 13,
+    });
 
     fake.close();
     await client.close();
@@ -503,6 +839,78 @@ describe("Client", () => {
 
     fake.close();
     await client.close();
+  });
+
+  it("creates volume via cli and parses output", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb === "function") {
+        cb(null, '{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n', "");
+      }
+      return {} as never;
+    });
+
+    await expect(client.volumeCreate("cache", 16)).resolves.toEqual({
+      name: "cache",
+      size: "16.0 MB",
+      path: "/tmp/cache.ext4",
+    });
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "create", "cache", "--size", "16", "--json"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("lists volumes via cli and parses rows", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
+      const cb = args[args.length - 1];
+      if (typeof cb === "function") {
+        cb(
+          null,
+          '[{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"},{"name":"data","size":"32.0 MB","path":"/tmp/data.ext4"}]\n',
+          "",
+        );
+      }
+      return {} as never;
+    });
+
+    await expect(client.volumeList()).resolves.toEqual([
+      { name: "cache", size: "16.0 MB", path: "/tmp/cache.ext4" },
+      { name: "data", size: "32.0 MB", path: "/tmp/data.ext4" },
+    ]);
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "ls", "--json"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("removes volume via cli", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    await client.volumeRemove("cache");
+
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "matchlock",
+      ["volume", "rm", "cache"],
+      { encoding: "utf8" },
+      expect.any(Function),
+    );
+  });
+
+  it("rejects volume operations with invalid inputs", async () => {
+    const client = new Client({ binaryPath: "matchlock" });
+
+    await expect(client.volumeCreate("  ", 16)).rejects.toThrow("volume name is required");
+    await expect(client.volumeCreate("cache", 0)).rejects.toThrow("volume size must be > 0");
+    await expect(client.volumeRemove("  ")).rejects.toThrow("volume name is required");
   });
 
   it("throws when process is not running", async () => {

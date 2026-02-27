@@ -290,7 +290,7 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return errx.Wrap(ErrCreateBuildSandbox, err)
 	}
 	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), api.DefaultGracefulShutdownPeriod)
+		closeCtx, cancel := closeContext(api.DefaultGracefulShutdownPeriod)
 		defer cancel()
 		sb.Close(closeCtx)
 	}()

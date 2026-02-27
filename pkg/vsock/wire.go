@@ -92,6 +92,80 @@ func OpenPortForward(conn net.Conn, host string, port uint16) error {
 	return errx.With(ErrUnexpectedPortForwardMsg, ": type=%d", msgType)
 }
 
+// fileRPC sends a file operation request and reads back a FileResponse.
+func fileRPC(conn net.Conn, msgType uint8, req any) (*FileResponse, error) {
+	reqData, err := json.Marshal(req)
+	if err != nil {
+		return nil, errx.Wrap(ErrEncodeFileRequest, err)
+	}
+
+	if err := SendMessage(conn, msgType, reqData); err != nil {
+		return nil, errx.Wrap(ErrWriteRequest, err)
+	}
+
+	header := make([]byte, 5)
+	if _, err := ReadFull(conn, header); err != nil {
+		return nil, errx.Wrap(ErrReadResponseHeader, err)
+	}
+	length := binary.BigEndian.Uint32(header[1:])
+
+	data := make([]byte, length)
+	if length > 0 {
+		if _, err := ReadFull(conn, data); err != nil {
+			return nil, errx.Wrap(ErrReadResponseData, err)
+		}
+	}
+
+	var resp FileResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, errx.Wrap(ErrReadResponseData, err)
+	}
+	if resp.Error != "" {
+		return nil, errx.With(ErrFileRemote, ": %s", resp.Error)
+	}
+	return &resp, nil
+}
+
+// WriteFileVsock writes a file inside the guest via the exec service vsock.
+func WriteFileVsock(conn net.Conn, path string, content []byte, mode uint32) error {
+	defer conn.Close()
+	_, err := fileRPC(conn, MsgTypeWriteFile, WriteFileRequest{
+		Path:    path,
+		Content: content,
+		Mode:    mode,
+	})
+	return err
+}
+
+// ReadFileVsock reads a file from the guest via the exec service vsock.
+func ReadFileVsock(conn net.Conn, path string) ([]byte, error) {
+	defer conn.Close()
+	resp, err := fileRPC(conn, MsgTypeReadFile, ReadFileRequest{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Content, nil
+}
+
+// ListFilesVsock lists files in a guest directory via the exec service vsock.
+func ListFilesVsock(conn net.Conn, path string) ([]api.FileInfo, error) {
+	defer conn.Close()
+	resp, err := fileRPC(conn, MsgTypeListFiles, ListFilesRequest{Path: path})
+	if err != nil {
+		return nil, err
+	}
+	files := make([]api.FileInfo, len(resp.Files))
+	for i, f := range resp.Files {
+		files[i] = api.FileInfo{
+			Name:  f.Name,
+			Size:  f.Size,
+			Mode:  f.Mode,
+			IsDir: f.IsDir,
+		}
+	}
+	return files, nil
+}
+
 // ExecPipe executes a command over a vsock connection with bidirectional
 // stdin/stdout/stderr piping (no PTY). The caller must supply an already-dialed
 // conn; ExecPipe takes ownership and closes it when done.

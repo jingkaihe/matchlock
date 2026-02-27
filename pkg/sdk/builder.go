@@ -211,6 +211,17 @@ func (b *SandboxBuilder) WithNoNetwork() *SandboxBuilder {
 	return b
 }
 
+// WithNetworkInterception enables network interception.
+// With no args, it only forces interception for runtime allow-list mutation.
+// With one config arg, it also installs network interception rules.
+func (b *SandboxBuilder) WithNetworkInterception(cfg ...*NetworkInterceptionConfig) *SandboxBuilder {
+	b.opts.ForceInterception = true
+	if len(cfg) > 0 {
+		b.opts.NetworkInterception = cfg[0]
+	}
+	return b
+}
+
 // WithPortForward adds a host-to-guest port mapping.
 func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuilder {
 	b.opts.PortForwards = append(b.opts.PortForwards, api.PortForward{
@@ -320,7 +331,10 @@ func (b *SandboxBuilder) Options() CreateOptions {
 }
 
 // Launch creates and starts the sandbox using the given client.
-// This is a convenience that calls client.Create(b.Options()).
+// This is a convenience that calls client.Create(b.Options()) and starts the
+// image ENTRYPOINT/CMD in detached mode.
 func (c *Client) Launch(b *SandboxBuilder) (string, error) {
-	return c.Create(b.Options())
+	opts := b.Options()
+	opts.LaunchEntrypoint = true
+	return c.Create(opts)
 }

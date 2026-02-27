@@ -1,9 +1,37 @@
 # Release Notes
 
-## Unreleased
+## 0.1.27
+
+* added entrypoint support for sdkk
+* added missing `with_privileged` for python sdk
+* added example of running both claude code and docker in the sandbox
+
+## 0.1.26 
+
+* `matchlock volume cp <src> <dest>`
+* Added Go SDK `exec_pipe` and `exec_tty` support (stdin piping + interactive PTY shell), plus a new interactive terminal example at `examples/go/exec_modes`.
+* Added Python and TypeScript SDK support for `exec_pipe` and interactive `exec_tty` execution modes.
+
+## 0.1.25
+
+* File operations over SDK rpc now no longer relies on vfs.
+* Also fixed all the examples that were broken due to previous breaking changes
+
+## 0.1.24
 
 * Added `--no-network` to disable sandbox network egress, with matching support in Go, Python, and TypeScript SDKs ([#62](https://github.com/jingkaihe/matchlock/issues/62)).
+* Added Go SDK callback-based network interception hooks.
 * Reduced `MemoryProvider` directory bookkeeping overhead by using a single `dirs` mode map, preventing `dirs`/`dirModes` desyncs in VFS ([#67](https://github.com/jingkaihe/matchlock/pull/67) by [@comunidadio](https://github.com/comunidadio)).
+* Made workspace/VFS opt-in for `run`: no workspace is mounted by default, and `guest-fused` starts only when a workspace is explicitly configured with VFS mounts.
+* Tightened VFS startup validation to fail fast on invalid configurations (for example, `vfs.workspace` without mounts, mounts without `vfs.workspace`, or mount paths outside workspace).
+* Changed CLI volume behavior to require explicit `--workspace` when using `--volume`/`-v`, with clear startup-time errors for invalid combinations.
+* Added raw ext4 disk mounts for `run` via `--disk host_path:guest_mount[:ro]`, including multiple `--disk` entries in one sandbox.
+* Added named volume support for raw disks:
+  * `matchlock volume create <name> [--size MB]`
+  * `matchlock volume ls`
+  * `matchlock run --disk @<name>:<guest_mount>[:ro]`
+* Hardened extra-disk reliability by treating in-guest disk mount failures as fatal at boot, propagating read-only mount mode, and issuing a best-effort guest `sync` before VM shutdown.
+* Fixed close-time context handling so zero graceful-shutdown no longer creates an immediately expired timeout during sandbox cleanup.
 
 ## 0.1.23
 

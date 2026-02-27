@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,12 +48,19 @@ Secrets (--secret):
   Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
 Volume Mounts (-v):
-  Guest paths are relative to workspace (or use full workspace paths):
+  Requires --workspace. Guest paths are relative to workspace (or use full workspace paths):
   ./mycode:code                    Isolated snapshot mount to <workspace>/code (default)
   ./mycode:code:overlay            Same as above (explicit)
   ./data:/workspace/data           Same as above (explicit guest path)
   /host/path:subdir:host_fs        Read-write host mount to <workspace>/subdir
   /host/path:subdir:ro             Read-only host mount to <workspace>/subdir
+
+Raw Disk Mounts (--disk):
+  Attach an ext4 disk image directly as a block device.
+  Use @<name> to mount a named volume:
+  /host/cache.ext4:/var/lib/buildkit
+  @buildkit-cache:/var/lib/buildkit
+  /host/data.ext4:/mnt/data:ro
 
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
@@ -81,10 +90,11 @@ Custom hosts with --add-host:
 
 func init() {
 	runCmd.Flags().String("image", "", "Container image (required)")
-	runCmd.Flags().String("workspace", api.DefaultWorkspace, "Guest mount point for VFS")
+	runCmd.Flags().String("workspace", "", "Guest mount point for VFS (required with --volume)")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, fmt.Sprintf("Volume mount (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
+	runCmd.Flags().StringSlice("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:ro] or @volume_name:guest_mount[:ro])")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
@@ -97,6 +107,7 @@ func init() {
 	runCmd.Flags().String("hostname", "", "Guest hostname (default: sandbox ID)")
 	runCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
 	runCmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
+	runCmd.Flags().Bool("network-intercept", false, "Force network interception proxy/stack even when allow-list and secrets are empty")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
 	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
@@ -108,7 +119,7 @@ func init() {
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
-	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then workspace path)")
+	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then configured workspace path)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
 	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
 	runCmd.Flags().Duration("graceful-shutdown", api.DefaultGracefulShutdownPeriod, "Graceful shutdown timeout before force-stopping the VM ")
@@ -122,6 +133,7 @@ func init() {
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
+	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
@@ -133,6 +145,7 @@ func init() {
 	viper.BindPFlag("run.hostname", runCmd.Flags().Lookup("hostname"))
 	viper.BindPFlag("run.mtu", runCmd.Flags().Lookup("mtu"))
 	viper.BindPFlag("run.no-network", runCmd.Flags().Lookup("no-network"))
+	viper.BindPFlag("run.network-intercept", runCmd.Flags().Lookup("network-intercept"))
 	viper.BindPFlag("run.publish", runCmd.Flags().Lookup("publish"))
 	viper.BindPFlag("run.address", runCmd.Flags().Lookup("address"))
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
@@ -168,16 +181,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 	interactive, _ := cmd.Flags().GetBool("interactive")
 	interactiveMode := tty && interactive
 	workspace, _ := cmd.Flags().GetString("workspace")
+	workspaceSet := cmd.Flags().Changed("workspace")
 	workdir, _ := cmd.Flags().GetString("workdir")
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
-	allowPrivateHosts, _ := cmd.Flags().GetStringSlice("allow-private-host")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
+	diskMountSpecs, _ := cmd.Flags().GetStringSlice("disk")
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
+	allowPrivateHosts, _ := cmd.Flags().GetStringSlice("allow-private-host")
 	localModelBackend, _ := cmd.Flags().GetString("local-model-backend")
 	localModelRouteFlags, _ := cmd.Flags().GetStringSlice("local-model-route")
 	usageLogPath, _ := cmd.Flags().GetString("usage-log-path")
@@ -186,6 +201,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	hostname, _ := cmd.Flags().GetString("hostname")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
 	noNetwork, _ := cmd.Flags().GetBool("no-network")
+	networkIntercept, _ := cmd.Flags().GetBool("network-intercept")
 	publishSpecs, _ := cmd.Flags().GetStringArray("publish")
 	addresses, _ := cmd.Flags().GetStringSlice("address")
 
@@ -199,6 +215,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 		if len(secrets) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --secret")
 		}
+		if networkIntercept {
+			return fmt.Errorf("--no-network cannot be combined with --network-intercept")
+		}
 		if len(localModelRouteFlags) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --local-model-route")
 		}
@@ -206,15 +225,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("--no-network cannot be combined with --allow-private-host")
 		}
 	}
-
 	if budgetLimitUSD > 0 && usageLogPath == "" {
 		return fmt.Errorf("--budget-limit-usd requires --usage-log-path to be set")
 	}
 
 	// Shutdown
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
-
-	// Event logging
 	eventLogPath, _ := cmd.Flags().GetString("event-log")
 	runID, _ := cmd.Flags().GetString("run-id")
 	agentSystem, _ := cmd.Flags().GetString("agent-system")
@@ -299,8 +315,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 		RootfsFSTypes: buildResult.LowerFSTypes,
 	}
 
-	vfsConfig := &api.VFSConfig{Workspace: workspace}
+	var vfsConfig *api.VFSConfig
+	if workspaceSet || len(volumes) > 0 {
+		vfsConfig = &api.VFSConfig{Workspace: workspace}
+	}
 	if len(volumes) > 0 {
+		if workspace == "" {
+			return fmt.Errorf("--workspace is required when using --volume")
+		}
 		mounts := make(map[string]api.MountConfig)
 		for _, vol := range volumes {
 			spec, err := api.ParseVolumeMountSpec(vol, workspace)
@@ -316,6 +338,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 			mounts[spec.GuestPath] = mount
 		}
 		vfsConfig.Mounts = mounts
+	}
+
+	hasVFSMounts := vfsConfig != nil && len(vfsConfig.Mounts) > 0
+	extraDisks := make([]api.DiskMount, 0, len(diskMountSpecs))
+	for _, spec := range diskMountSpecs {
+		diskMount, err := parseDiskMountSpec(spec)
+		if err != nil {
+			return errx.With(ErrInvalidDiskMount, " %q: %w", spec, err)
+		}
+		if hasVFSMounts && diskMountShadowedByWorkspace(diskMount.GuestMount, vfsConfig.Workspace) {
+			return errx.With(ErrInvalidDiskMount, " %q: guest mount %q is inside workspace %q and will be shadowed by the VFS mount", spec, diskMount.GuestMount, vfsConfig.Workspace)
+		}
+		extraDisks = append(extraDisks, diskMount)
 	}
 
 	var parsedSecrets map[string]api.Secret
@@ -370,6 +405,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 			AddHosts:            addHosts,
 			BlockPrivateIPs:     true,
 			NoNetwork:           noNetwork,
+			Intercept:           networkIntercept,
 			AllowedPrivateHosts: allowPrivateHosts,
 			Secrets:             parsedSecrets,
 			DNSServers:          dnsServers,
@@ -379,11 +415,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 			UsageLogPath:        usageLogPath,
 			BudgetLimitUSD:      budgetLimitUSD,
 		},
-		VFS:      vfsConfig,
-		Env:      parsedEnv,
-		ImageCfg: imageCfg,
+		VFS:        vfsConfig,
+		Env:        parsedEnv,
+		ExtraDisks: extraDisks,
+		ImageCfg:   imageCfg,
 	}
-	// Event logging config
 	if eventLogPath != "" || agentSystem != "" {
 		config.Logging = &api.LoggingConfig{
 			EventLogPath: eventLogPath,
@@ -394,6 +430,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := config.Network.Validate(); err != nil {
+		return err
+	}
+	if err := config.ValidateVFS(); err != nil {
 		return err
 	}
 
@@ -425,12 +464,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
-	closeCtx := func() (context.Context, context.CancelFunc) {
-		return context.WithTimeout(context.Background(), gracefulShutdown)
-	}
-
 	cleanupSandbox := func(remove bool) error {
-		c, cancel := closeCtx()
+		c, cancel := closeContext(gracefulShutdown)
 		defer cancel()
 
 		var errs []error
@@ -570,4 +605,67 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir s
 	}
 
 	return exitCode
+}
+
+func parseDiskMountSpec(spec string) (api.DiskMount, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return api.DiskMount{}, fmt.Errorf("expected format host_path:guest_mount[:ro] or @volume_name:guest_mount[:ro]")
+	}
+
+	hostPath := strings.TrimSpace(parts[0])
+	guestMount := strings.TrimSpace(parts[1])
+	if hostPath == "" || guestMount == "" {
+		return api.DiskMount{}, fmt.Errorf("host_path and guest_mount are required")
+	}
+
+	if strings.HasPrefix(hostPath, "@") {
+		volumeName := strings.TrimSpace(strings.TrimPrefix(hostPath, "@"))
+		if volumeName == "" {
+			return api.DiskMount{}, fmt.Errorf("volume name is required after '@'")
+		}
+		path, err := findNamedVolume(volumeName)
+		if err != nil {
+			return api.DiskMount{}, err
+		}
+		hostPath = path
+	} else {
+		if !filepath.IsAbs(hostPath) {
+			abs, err := filepath.Abs(hostPath)
+			if err != nil {
+				return api.DiskMount{}, err
+			}
+			hostPath = abs
+		}
+		if _, err := os.Stat(hostPath); err != nil {
+			return api.DiskMount{}, fmt.Errorf("host path does not exist: %s", hostPath)
+		}
+	}
+
+	if err := api.ValidateGuestMount(guestMount); err != nil {
+		return api.DiskMount{}, err
+	}
+
+	readonly := false
+	if len(parts) == 3 {
+		switch strings.ToLower(strings.TrimSpace(parts[2])) {
+		case api.MountOptionReadonlyShort, api.MountOptionReadonly:
+			readonly = true
+		default:
+			return api.DiskMount{}, fmt.Errorf("unknown disk option %q (use %q)", parts[2], api.MountOptionReadonlyShort)
+		}
+	}
+
+	return api.DiskMount{
+		HostPath:   hostPath,
+		GuestMount: guestMount,
+		ReadOnly:   readonly,
+	}, nil
+}
+
+func diskMountShadowedByWorkspace(guestMount, workspace string) bool {
+	if strings.TrimSpace(workspace) == "" {
+		return false
+	}
+	return api.ValidateGuestPathWithinWorkspace(guestMount, workspace) == nil
 }

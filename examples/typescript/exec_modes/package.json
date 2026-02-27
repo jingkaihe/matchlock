@@ -1,0 +1,11 @@
+{
+  "name": "matchlock-typescript-exec-modes-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.3"
+  }
+}

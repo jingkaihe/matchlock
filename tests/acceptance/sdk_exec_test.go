@@ -95,13 +95,13 @@ func TestExecWithDirPwd(t *testing.T) {
 	assert.Equal(t, "/tmp", strings.TrimSpace(result.Stdout))
 }
 
-func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
+func TestExecDefaultDirWithoutWorkspaceIsRoot(t *testing.T) {
 	t.Parallel()
 	client := launchAlpine(t)
 
 	result, err := client.Exec(context.Background(), "pwd")
 	require.NoError(t, err, "Exec")
-	assert.Equal(t, "/workspace", strings.TrimSpace(result.Stdout))
+	assert.Equal(t, "/", strings.TrimSpace(result.Stdout))
 }
 
 func TestExecWithDirRelativeCommand(t *testing.T) {

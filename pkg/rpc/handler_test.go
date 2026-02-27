@@ -20,25 +20,60 @@ import (
 )
 
 type mockVM struct {
-	id       string
-	execFunc func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	id                     string
+	config                 *api.Config
+	execFunc               func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	execInteractiveFunc    func(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
+	addAllowedHostsFunc    func(ctx context.Context, hosts []string) ([]string, error)
+	removeAllowedHostsFunc func(ctx context.Context, hosts []string) ([]string, error)
+	allowedHostsFunc       func(ctx context.Context) ([]string, error)
 }
 
-func (m *mockVM) ID() string                                                { return m.id }
-func (m *mockVM) Config() *api.Config                                       { return api.DefaultConfig() }
+func (m *mockVM) ID() string { return m.id }
+func (m *mockVM) Config() *api.Config {
+	if m.config != nil {
+		return m.config
+	}
+	return api.DefaultConfig()
+}
 func (m *mockVM) Start(context.Context) error                               { return nil }
 func (m *mockVM) Stop(context.Context) error                                { return nil }
 func (m *mockVM) WriteFile(context.Context, string, []byte, uint32) error   { return nil }
 func (m *mockVM) ReadFile(context.Context, string) ([]byte, error)          { return nil, nil }
 func (m *mockVM) ListFiles(context.Context, string) ([]api.FileInfo, error) { return nil, nil }
-func (m *mockVM) Events() <-chan api.Event                                  { return make(chan api.Event) }
-func (m *mockVM) Close(context.Context) error                               { return nil }
+func (m *mockVM) AddAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if m.addAllowedHostsFunc != nil {
+		return m.addAllowedHostsFunc(ctx, hosts)
+	}
+	return nil, nil
+}
+func (m *mockVM) RemoveAllowedHosts(ctx context.Context, hosts []string) ([]string, error) {
+	if m.removeAllowedHostsFunc != nil {
+		return m.removeAllowedHostsFunc(ctx, hosts)
+	}
+	return nil, nil
+}
+func (m *mockVM) AllowedHosts(ctx context.Context) ([]string, error) {
+	if m.allowedHostsFunc != nil {
+		return m.allowedHostsFunc(ctx)
+	}
+	return nil, nil
+}
+func (m *mockVM) Events() <-chan api.Event    { return make(chan api.Event) }
+func (m *mockVM) Close(context.Context) error { return nil }
 
 func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if m.execFunc != nil {
 		return m.execFunc(ctx, command, opts)
 	}
 	return &api.ExecResult{Stdout: []byte("hello\n")}, nil
+}
+
+func (m *mockVM) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+	if m.execInteractiveFunc != nil {
+		return m.execInteractiveFunc(ctx, command, opts, rows, cols, stdin, stdout, resizeCh)
+	}
+	return 1, fmt.Errorf("interactive exec not implemented")
 }
 
 type mockPortForwardVM struct {
@@ -117,6 +152,19 @@ func (t *testRPC) send(method string, id uint64, params interface{}) {
 	fmt.Fprintln(t.stdinW, string(data))
 }
 
+func (t *testRPC) sendNotification(method string, params interface{}) {
+	req := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  method,
+	}
+	if params != nil {
+		p, _ := json.Marshal(params)
+		req["params"] = json.RawMessage(p)
+	}
+	data, _ := json.Marshal(req)
+	fmt.Fprintln(t.stdinW, string(data))
+}
+
 func (t *testRPC) read() *rpcMsg {
 	line, _ := t.stdout.ReadBytes('\n')
 	var msg rpcMsg
@@ -127,6 +175,31 @@ func (t *testRPC) read() *rpcMsg {
 func (t *testRPC) close() {
 	t.stdinW.Close()
 	<-t.done
+}
+
+func TestIsExecInputMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		method string
+		want   bool
+	}{
+		{method: "exec_pipe.stdin", want: true},
+		{method: "exec_pipe.stdin_eof", want: true},
+		{method: "exec_tty.stdin", want: true},
+		{method: "exec_tty.stdin_eof", want: true},
+		{method: "exec_tty.resize", want: false},
+		{method: "exec_pipe", want: false},
+		{method: "cancel", want: false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.method, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, isExecInputMethod(tc.method))
+		})
+	}
 }
 
 func TestHandlerConcurrentExec(t *testing.T) {
@@ -247,6 +320,168 @@ func TestHandlerExecStream(t *testing.T) {
 	assert.Equal(t, int64(42), result.DurationMS)
 }
 
+func TestHandlerExecPipe(t *testing.T) {
+	vm := &mockVM{
+		id: "vm-test",
+		execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+			require.Equal(t, "cat", command)
+			require.NotNil(t, opts)
+			require.NotNil(t, opts.Stdin)
+			require.NotNil(t, opts.Stdout)
+			require.NotNil(t, opts.Stderr)
+
+			in, err := io.ReadAll(opts.Stdin)
+			require.NoError(t, err)
+			_, _ = opts.Stdout.Write([]byte("out:" + string(in)))
+			_, _ = opts.Stderr.Write([]byte("warn"))
+			return &api.ExecResult{ExitCode: 7, DurationMS: 33}, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("exec_pipe", 2, map[string]string{"command": "cat"})
+
+	var stdout string
+	var stderr string
+	var final *rpcMsg
+
+	for {
+		msg := rpc.read()
+		if msg.ID != nil {
+			final = msg
+			break
+		}
+
+		switch msg.Method {
+		case "exec_pipe.ready":
+			rpc.sendNotification("exec_pipe.stdin", map[string]interface{}{
+				"id":   2,
+				"data": base64.StdEncoding.EncodeToString([]byte("hello")),
+			})
+			rpc.sendNotification("exec_pipe.stdin_eof", map[string]interface{}{
+				"id": 2,
+			})
+		case "exec_pipe.stdout", "exec_pipe.stderr":
+			var params struct {
+				Data string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(msg.Params, &params))
+			data, err := base64.StdEncoding.DecodeString(params.Data)
+			require.NoError(t, err)
+			if msg.Method == "exec_pipe.stdout" {
+				stdout += string(data)
+			} else {
+				stderr += string(data)
+			}
+		}
+	}
+
+	require.NotNil(t, final)
+	require.Nil(t, final.Error)
+	var result struct {
+		ExitCode   int   `json:"exit_code"`
+		DurationMS int64 `json:"duration_ms"`
+	}
+	require.NoError(t, json.Unmarshal(final.Result, &result))
+	assert.Equal(t, 7, result.ExitCode)
+	assert.Equal(t, int64(33), result.DurationMS)
+	assert.Equal(t, "out:hello", stdout)
+	assert.Equal(t, "warn", stderr)
+}
+
+func TestHandlerExecTTY(t *testing.T) {
+	var gotRows uint16
+	var gotCols uint16
+	var gotResize [2]uint16
+
+	vm := &mockVM{
+		id: "vm-test",
+		execInteractiveFunc: func(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
+			require.Equal(t, "sh", command)
+			gotRows = rows
+			gotCols = cols
+
+			select {
+			case gotResize = <-resizeCh:
+			case <-time.After(time.Second):
+				require.FailNow(t, "did not receive resize event")
+			}
+
+			in, err := io.ReadAll(stdin)
+			require.NoError(t, err)
+			require.Equal(t, "tty-input", string(in))
+			_, _ = stdout.Write([]byte("tty-out"))
+			return 0, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("exec_tty", 3, map[string]interface{}{
+		"command": "sh",
+		"rows":    40,
+		"cols":    120,
+	})
+
+	var ttyOut string
+	var final *rpcMsg
+
+	for {
+		msg := rpc.read()
+		if msg.ID != nil {
+			final = msg
+			break
+		}
+
+		switch msg.Method {
+		case "exec_tty.ready":
+			rpc.sendNotification("exec_tty.resize", map[string]interface{}{
+				"id":   3,
+				"rows": 50,
+				"cols": 140,
+			})
+			rpc.sendNotification("exec_tty.stdin", map[string]interface{}{
+				"id":   3,
+				"data": base64.StdEncoding.EncodeToString([]byte("tty-input")),
+			})
+			rpc.sendNotification("exec_tty.stdin_eof", map[string]interface{}{
+				"id": 3,
+			})
+		case "exec_tty.stdout":
+			var params struct {
+				Data string `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(msg.Params, &params))
+			data, err := base64.StdEncoding.DecodeString(params.Data)
+			require.NoError(t, err)
+			ttyOut += string(data)
+		}
+	}
+
+	require.NotNil(t, final)
+	require.Nil(t, final.Error)
+	var result struct {
+		ExitCode   int   `json:"exit_code"`
+		DurationMS int64 `json:"duration_ms"`
+	}
+	require.NoError(t, json.Unmarshal(final.Result, &result))
+	assert.Equal(t, 0, result.ExitCode)
+	assert.GreaterOrEqual(t, result.DurationMS, int64(0))
+	assert.Equal(t, uint16(40), gotRows)
+	assert.Equal(t, uint16(120), gotCols)
+	assert.Equal(t, [2]uint16{50, 140}, gotResize)
+	assert.Equal(t, "tty-out", ttyOut)
+}
+
 func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 	vm := &mockVM{id: "vm-test"}
 	factoryCalls := 0
@@ -276,6 +511,58 @@ func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }
 
+func TestHandlerCreateRejectsWorkspaceWithoutMounts(t *testing.T) {
+	vm := &mockVM{id: "vm-test"}
+	factoryCalls := 0
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"vfs": map[string]interface{}{
+			"workspace": "/workspace/project",
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail for workspace-only VFS config")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "requires at least one")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+func TestHandlerCreateRejectsMountsWithoutWorkspace(t *testing.T) {
+	vm := &mockVM{id: "vm-test"}
+	factoryCalls := 0
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"vfs": map[string]interface{}{
+			"mounts": map[string]interface{}{
+				"/workspace/project/data": map[string]interface{}{
+					"type": api.MountTypeMemory,
+				},
+			},
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail when mounts are set without workspace")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "vfs.workspace is required")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
 func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	factoryCalls := 0
 	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
@@ -294,6 +581,123 @@ func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
 	require.Contains(t, msg.Error.Message, "id is internal-only")
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+func TestHandlerCreateLaunchEntrypointStartsDetachedCommand(t *testing.T) {
+	gotCommand := ""
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				gotCommand = command
+				return &api.ExecResult{ExitCode: 0}, nil
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sh", "-lc"},
+			"cmd":        []string{"echo hello world"},
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+	assert.Equal(t, "sh -lc 'echo hello world'", gotCommand)
+}
+
+func TestHandlerCreateLaunchEntrypointReportsFailure(t *testing.T) {
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				return &api.ExecResult{ExitCode: 42}, nil
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sleep"},
+			"cmd":        []string{"1"},
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail when entrypoint start fails")
+	require.Equal(t, ErrCodeVMFailed, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "start image entrypoint")
+}
+
+func TestHandlerCreateLaunchEntrypointUsesNonBufferingExecAndCancelsOnClose(t *testing.T) {
+	started := make(chan *api.ExecOptions, 1)
+	cancelled := make(chan struct{}, 1)
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{
+			id:     "vm-test",
+			config: config,
+			execFunc: func(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+				started <- opts
+				<-ctx.Done()
+				cancelled <- struct{}{}
+				return nil, ctx.Err()
+			},
+		}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image":             "alpine:latest",
+		"launch_entrypoint": true,
+		"image_config": map[string]interface{}{
+			"entrypoint": []string{"sleep"},
+			"cmd":        []string{"10"},
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	var opts *api.ExecOptions
+	select {
+	case opts = <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint exec to start")
+	}
+	require.NotNil(t, opts)
+	require.NotNil(t, opts.Stdin)
+	require.NotNil(t, opts.Stdout)
+	require.NotNil(t, opts.Stderr)
+
+	stdinData, err := io.ReadAll(opts.Stdin)
+	require.NoError(t, err)
+	assert.Empty(t, stdinData)
+
+	_, err = opts.Stdout.Write([]byte("stdout"))
+	require.NoError(t, err)
+	_, err = opts.Stderr.Write([]byte("stderr"))
+	require.NoError(t, err)
+
+	rpc.send("close", 2, map[string]interface{}{})
+	closeResp := rpc.read()
+	require.Nil(t, closeResp.Error, "close failed")
+
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launch entrypoint cancellation")
+	}
 }
 
 func TestHandlerCreateRejectsNoNetworkWithAllowHosts(t *testing.T) {
@@ -422,4 +826,104 @@ func TestHandlerPortForwardSerializesReplacement(t *testing.T) {
 	require.Nil(t, msgB.Error)
 	assert.ElementsMatch(t, []uint64{2, 3}, []uint64{*msgA.ID, *msgB.ID})
 	assert.False(t, secondStartedEarly, "second port_forward started before first replacement completed")
+}
+
+func TestHandlerAllowListAddDelete(t *testing.T) {
+	allowedHosts := []string{"api.openai.com"}
+
+	vm := &mockVM{
+		id: "vm-test",
+		addAllowedHostsFunc: func(ctx context.Context, hosts []string) ([]string, error) {
+			seen := make(map[string]struct{}, len(allowedHosts))
+			for _, host := range allowedHosts {
+				seen[host] = struct{}{}
+			}
+			added := make([]string, 0, len(hosts))
+			for _, host := range hosts {
+				if _, ok := seen[host]; ok {
+					continue
+				}
+				allowedHosts = append(allowedHosts, host)
+				seen[host] = struct{}{}
+				added = append(added, host)
+			}
+			return added, nil
+		},
+		removeAllowedHostsFunc: func(ctx context.Context, hosts []string) ([]string, error) {
+			toRemove := make(map[string]struct{}, len(hosts))
+			for _, host := range hosts {
+				toRemove[host] = struct{}{}
+			}
+			next := make([]string, 0, len(allowedHosts))
+			removed := make([]string, 0, len(hosts))
+			removedSet := make(map[string]struct{})
+			for _, host := range allowedHosts {
+				if _, ok := toRemove[host]; ok {
+					if _, seen := removedSet[host]; !seen {
+						removed = append(removed, host)
+						removedSet[host] = struct{}{}
+					}
+					continue
+				}
+				next = append(next, host)
+			}
+			allowedHosts = next
+			return removed, nil
+		},
+		allowedHostsFunc: func(ctx context.Context) ([]string, error) {
+			out := make([]string, len(allowedHosts))
+			copy(out, allowedHosts)
+			return out, nil
+		},
+	}
+
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	rpc.send("allow_list_add", 2, map[string]interface{}{
+		"hosts": []string{"api.anthropic.com", "api.openai.com"},
+	})
+	msg = rpc.read()
+	require.Nil(t, msg.Error, "allow_list_add failed")
+	var addResult struct {
+		Added        []string `json:"added"`
+		AllowedHosts []string `json:"allowed_hosts"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Result, &addResult))
+	assert.Equal(t, []string{"api.anthropic.com"}, addResult.Added)
+	assert.Equal(t, []string{"api.openai.com", "api.anthropic.com"}, addResult.AllowedHosts)
+
+	rpc.send("allow_list_delete", 3, map[string]interface{}{
+		"hosts": []string{"api.openai.com"},
+	})
+	msg = rpc.read()
+	require.Nil(t, msg.Error, "allow_list_delete failed")
+	var delResult struct {
+		Removed      []string `json:"removed"`
+		AllowedHosts []string `json:"allowed_hosts"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Result, &delResult))
+	assert.Equal(t, []string{"api.openai.com"}, delResult.Removed)
+	assert.Equal(t, []string{"api.anthropic.com"}, delResult.AllowedHosts)
+}
+
+func TestHandlerAllowListAddRequiresHosts(t *testing.T) {
+	vm := &mockVM{id: "vm-test"}
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	_ = rpc.read()
+
+	rpc.send("allow_list_add", 2, map[string]interface{}{
+		"hosts": []string{},
+	})
+	msg := rpc.read()
+	require.NotNil(t, msg.Error)
+	assert.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	assert.Contains(t, msg.Error.Message, "hosts is required")
 }

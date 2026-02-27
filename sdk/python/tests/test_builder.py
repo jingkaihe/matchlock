@@ -5,6 +5,9 @@ from matchlock.types import (
     CreateOptions,
     ImageConfig,
     MountConfig,
+    NetworkBodyTransform,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
     VFSHookRule,
     VFSInterceptionConfig,
 )
@@ -22,6 +25,10 @@ class TestSandboxInit:
 
 
 class TestSandboxResources:
+    def test_with_privileged(self):
+        opts = Sandbox("img").with_privileged().options()
+        assert opts.privileged is True
+
     def test_with_cpus(self):
         opts = Sandbox("img").with_cpus(4).options()
         assert opts.cpus == 4
@@ -63,12 +70,14 @@ class TestSandboxChaining:
 
     def test_all_methods_return_sandbox(self):
         s = Sandbox("img")
+        assert isinstance(s.with_privileged(), Sandbox)
         assert isinstance(s.with_cpus(1), Sandbox)
         assert isinstance(s.with_memory(1), Sandbox)
         assert isinstance(s.with_disk_size(1), Sandbox)
         assert isinstance(s.with_timeout(1), Sandbox)
         assert isinstance(s.with_workspace("/x"), Sandbox)
         assert isinstance(s.with_vfs_interception(VFSInterceptionConfig()), Sandbox)
+        assert isinstance(s.with_network_interception(NetworkInterceptionConfig()), Sandbox)
         assert isinstance(s.with_env("K", "V"), Sandbox)
         assert isinstance(s.with_env_map({"K": "V"}), Sandbox)
         assert isinstance(s.allow_host("x.com"), Sandbox)
@@ -88,6 +97,33 @@ class TestSandboxChaining:
 
 
 class TestSandboxNetwork:
+    def test_network_interception_force_without_rules(self):
+        opts = Sandbox("img").with_network_interception().options()
+        assert opts.force_interception is True
+        assert opts.network_interception is None
+
+    def test_network_interception_with_rules(self):
+        opts = (
+            Sandbox("img")
+            .with_network_interception(
+                NetworkInterceptionConfig(
+                    rules=[
+                        NetworkHookRule(
+                            phase="after",
+                            hosts=["api.example.com"],
+                            action="mutate",
+                            body_replacements=[NetworkBodyTransform(find="foo", replace="bar")],
+                        )
+                    ]
+                )
+            )
+            .options()
+        )
+        assert opts.force_interception is True
+        assert opts.network_interception is not None
+        assert len(opts.network_interception.rules) == 1
+        assert opts.network_interception.rules[0].hosts == ["api.example.com"]
+
     def test_env_single(self):
         opts = Sandbox("img").with_env("FOO", "bar").options()
         assert opts.env == {"FOO": "bar"}

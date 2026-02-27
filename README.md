@@ -36,25 +36,16 @@ matchlock run --image alpine:latest --no-network -- sh -lc 'echo offline'
 matchlock run --image python:3.12-alpine \
   --allow-host "api.openai.com" python agent.py
 
+# Keep interception enabled even with an empty allowlist,
+# so hosts can be added/removed at runtime.
+matchlock run --image alpine:latest --rm=false --network-intercept
+matchlock allow-list add <vm-id> api.openai.com,api.anthropic.com
+matchlock allow-list delete <vm-id> api.openai.com
+
 # Secret injection (never enters the VM)
 export ANTHROPIC_API_KEY=sk-xxx
 matchlock run --image python:3.12-alpine \
   --secret ANTHROPIC_API_KEY@api.anthropic.com python call_api.py
-
-# Allow specific private IPs (e.g., local Ollama)
-matchlock run --image python:3.12-alpine \
-  --allow-host "ollama-host" \
-  --allow-private-host "192.168.1.100" \
-  --add-host "ollama-host:192.168.1.100" python agent.py
-
-# Local model routing (redirect cloud API calls to a local backend)
-matchlock run --image python:3.12-alpine \
-  --allow-host "openrouter.ai" \
-  --local-model-backend "192.168.1.100:11434" \
-  --local-model-route "openrouter.ai/google/gemini-2.0-flash-001=llama3.1:8b" \
-  python agent.py
-# The agent calls openrouter.ai as normal, but matchlock intercepts the request
-# and redirects it to the local Ollama backend, rewriting the model name.
 
 # Long-lived sandboxes
 matchlock run --image alpine:latest --rm=false   # prints VM ID
@@ -81,7 +72,7 @@ docker save myapp:latest | matchlock image import myapp:latest  # Import from ta
 
 ## SDK
 
-Matchlock also ships with Go and Python SDKs for embedding sandboxes directly in your application. Allows you to programmatically launch VMs, exec commands, stream output and write files.
+Matchlock ships Go, Python, and TypeScript SDKs for embedding sandboxes directly in your application. You can launch VMs, execute commands, stream output, and manage files programmatically.
 
 **Go**
 
@@ -97,18 +88,29 @@ import (
 )
 
 func main() {
-	client, _ := sdk.NewClient(sdk.DefaultConfig())
-	defer client.Close()
+	ctx := context.Background()
+
+	client, err := sdk.NewClient(sdk.DefaultConfig())
+	if err != nil {
+		panic(err)
+	}
+	defer client.Close(0)
+	defer client.Remove()
 
 	sandbox := sdk.New("alpine:latest").
 		AllowHost("dl-cdn.alpinelinux.org", "api.anthropic.com").
 		AddSecret("ANTHROPIC_API_KEY", os.Getenv("ANTHROPIC_API_KEY"), "api.anthropic.com")
-
-	client.Launch(sandbox)
-	client.Exec("apk add --no-cache curl")
-
+	if _, err := client.Launch(sandbox); err != nil {
+		panic(err)
+	}
+	if _, err := client.Exec(ctx, "apk add --no-cache curl"); err != nil {
+		panic(err)
+	}
 	// The VM only ever sees a placeholder - the real key never enters the sandbox
-	result, _ := client.Exec("echo $ANTHROPIC_API_KEY")
+	result, err := client.Exec(ctx, "echo $ANTHROPIC_API_KEY")
+	if err != nil {
+		panic(err)
+	}
 	fmt.Print(result.Stdout) // prints "SANDBOX_SECRET_a1b2c3d4..."
 
 	curlCmd := `curl -s --no-buffer https://api.anthropic.com/v1/messages \
@@ -117,7 +119,9 @@ func main() {
   -H "anthropic-version: 2023-06-01" \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
        "messages":[{"role":"user","content":"Explain TCP to me"}]}'`
-	client.ExecStream(curlCmd, os.Stdout, os.Stderr)
+	if _, err := client.ExecStream(ctx, curlCmd, os.Stdout, os.Stderr); err != nil {
+		panic(err)
+	}
 }
 ```
 
@@ -133,6 +137,26 @@ sandbox := sdk.New("alpine:latest").
 	AddHost("api.internal", "10.0.0.10").
 	WithNetworkMTU(1200).
 	AllowPrivateIPs() // explicit override: block_private_ips=false
+
+// SDK network interception (request/response mutation, body shaping, SSE data-line transform)
+sandbox = sandbox.WithNetworkInterception(&sdk.NetworkInterceptionConfig{
+	Rules: []sdk.NetworkHookRule{
+		{
+			Phase:      sdk.NetworkHookPhaseBefore,
+			Action:     sdk.NetworkHookActionMutate,
+			Hosts:      []string{"api.openai.com"},
+			SetHeaders: map[string]string{"X-Trace-Id": "trace-123"},
+		},
+		{
+			Phase:  sdk.NetworkHookPhaseAfter,
+			Action: sdk.NetworkHookActionMutate,
+			Hosts:  []string{"api.openai.com"},
+			BodyReplacements: []sdk.NetworkBodyTransform{
+				{Find: "internal-id", Replace: "redacted"},
+			},
+		},
+	},
+})
 ```
 
 If you use `client.Create(...)` directly (without the builder), set:
@@ -157,27 +181,46 @@ uv add matchlock
 import os
 import sys
 
-from matchlock import Client, Config, Sandbox
+from matchlock import Client, Sandbox
 
 sandbox = (
-    Sandbox("alpine:latest")
-    .allow_host("dl-cdn.alpinelinux.org", "api.anthropic.com")
+    Sandbox("python:3.12-alpine")
+    .allow_host(
+        "dl-cdn.alpinelinux.org",
+        "files.pythonhosted.org", "pypi.org",
+        "astral.sh", "github.com", "objects.githubusercontent.com",
+        "api.anthropic.com",
+    )
     .add_secret(
         "ANTHROPIC_API_KEY", os.environ["ANTHROPIC_API_KEY"], "api.anthropic.com"
     )
 )
 
-curl_cmd = """curl -s --no-buffer https://api.anthropic.com/v1/messages \
-  -H "content-type: application/json" \
-  -H "x-api-key: $ANTHROPIC_API_KEY" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1024,"stream":true,
-       "messages":[{"role":"user","content":"Explain TCP/IP."}]}'"""
+SCRIPT = """\
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["anthropic"]
+# ///
+import anthropic, os
 
-with Client(Config()) as client:
+client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+with client.messages.stream(
+    model="claude-haiku-4-5-20251001",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Explain TCP/IP."}],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+print()
+"""
+
+with Client() as client:
     client.launch(sandbox)
-    client.exec("apk add --no-cache curl")
-    client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
+    client.exec("pip install --quiet uv")
+    client.write_file("/workspace/ask.py", SCRIPT)
+    client.exec_stream("uv run /workspace/ask.py", stdout=sys.stdout, stderr=sys.stderr)
+
+client.remove()
 ```
 
 **TypeScript**
@@ -189,23 +232,70 @@ npm install matchlock-sdk
 ```ts
 import { Client, Sandbox } from "matchlock-sdk";
 
-const sandbox = new Sandbox("alpine:latest")
-  .allowHost("dl-cdn.alpinelinux.org", "api.anthropic.com")
-  .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
+const SCRIPT = `import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+const stream = anthropic.messages
+  .stream({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1024,
+    messages: [{ role: "user", content: "Explain TCP/IP." }],
+  })
+  .on("text", (text) => {
+    process.stdout.write(text);
+  });
+
+await stream.finalMessage();
+process.stdout.write("\\n");
+`;
 
 const client = new Client();
-await client.launch(sandbox);
-const result = await client.exec("echo hello from typescript");
-console.log(result.stdout);
-await client.close();
+try {
+  const sandbox = new Sandbox("node:22-alpine")
+    .allowHost("registry.npmjs.org", "*.npmjs.org", "api.anthropic.com")
+    .addSecret("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "", "api.anthropic.com");
+
+  await client.launch(sandbox);
+  await client.exec(
+    "npm init -y >/dev/null 2>&1 && npm install --quiet --no-bin-links @anthropic-ai/sdk",
+    { workingDir: "/workspace" },
+  );
+  await client.writeFile("/workspace/ask.mjs", SCRIPT);
+  await client.execStream("node ask.mjs", {
+    workingDir: "/workspace",
+    stdout: process.stdout,
+    stderr: process.stderr,
+  });
+} finally {
+  await client.close();
+  await client.remove();
+}
 ```
 
-See full examples in:
-- [`examples/go/basic/main.go`](examples/go/basic/main.go)
-- [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
-- [`examples/python/basic/main.py`](examples/python/basic/main.py)
-- [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
-- [`examples/typescript/basic/main.ts`](examples/typescript/basic/main.ts)
+More examples in the [`examples/`](examples/) directory:
+
+| Description | Example |
+|---|---|
+| Streams Anthropic API response with secret injection (Go) | [`examples/go/basic/`](examples/go/basic/) |
+| Interactive terminal with PTY using ExecInteractive (Go) | [`examples/go/exec_modes/`](examples/go/exec_modes/) |
+| Injects API key via network interception hook (Go) | [`examples/go/network_interception/`](examples/go/network_interception/) |
+| VFS interception hooks for file operation mutations (Go) | [`examples/go/vfs_hooks/`](examples/go/vfs_hooks/) |
+| Streams Anthropic API response (Python) | [`examples/python/basic/`](examples/python/basic/) |
+| Stream, pipe, and interactive execution modes (Python) | [`examples/python/exec_modes/`](examples/python/exec_modes/) |
+| Injects API key via network interception hook (Python) | [`examples/python/network_interception/`](examples/python/network_interception/) |
+| VFS interception hooks for file operation mutations (Python) | [`examples/python/vfs_hooks/`](examples/python/vfs_hooks/) |
+| Streams Anthropic API response (TypeScript) | [`examples/typescript/basic/`](examples/typescript/basic/) |
+| Stream, pipe, and interactive execution modes (TypeScript) | [`examples/typescript/exec_modes/`](examples/typescript/exec_modes/) |
+| Injects API key via network interception hook (TypeScript) | [`examples/typescript/network_interception/`](examples/typescript/network_interception/) |
+| Claude Code CLI in micro-VM with GitHub bootstrap | [`examples/claude-code/`](examples/claude-code/) |
+| Claude Code with Docker inside sandbox via SDK | [`examples/claude-code-with-docker/`](examples/claude-code-with-docker/) |
+| OpenAI Codex CLI in micro-VM with GitHub bootstrap | [`examples/codex/`](examples/codex/) |
+| Docker daemon inside sandbox with systemd | [`examples/docker-in-sandbox/`](examples/docker-in-sandbox/) |
+| Streamlit chatbot using Agent Client Protocol | [`examples/agent-client-protocol/`](examples/agent-client-protocol/) |
+| Browser automation with Kodelet and Playwright MCP | [`examples/playwright/`](examples/playwright/) |
 
 ## Architecture
 
@@ -243,22 +333,10 @@ graph LR
 | macOS | NAT (default) | Virtualization.framework built-in NAT |
 | macOS | Interception (with `--allow-host`/`--secret`) | gVisor userspace TCP/IP at L4 |
 
-### Network Plugins
-
-When the interception proxy is active, requests flow through a plugin pipeline with four phases: **Gate** (should this connection proceed?), **Route** (redirect to a different backend?), **Request** (transform outbound headers/body), and **Response** (transform inbound). Three built-in plugins handle the common cases:
-
-| Plugin | What it does | CLI flags |
-|--------|-------------|-----------|
-| `host_filter` | Allowlist-based connection gating + private IP blocking | `--allow-host`, `--allow-private-host` |
-| `secret_injector` | Replaces placeholder tokens with real secrets in-flight | `--secret` |
-| `local_model_router` | Redirects LLM API calls to a local inference backend | `--local-model-backend`, `--local-model-route` |
-
-Plugins are composable and extensible. See [Network Plugins](docs/network-plugins.md) for the full configuration reference and how to write your own.
-
 ## Docs
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
-- [Network Plugins](docs/network-plugins.md)
+- [Network Interception](docs/network-interception.md)
 - [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 

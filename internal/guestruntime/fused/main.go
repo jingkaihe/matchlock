@@ -740,21 +740,25 @@ func writeFull(fd int, buf []byte) (int, error) {
 func getWorkspaceFromCmdline() string {
 	data, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
-		return "/workspace"
+		return ""
 	}
 	for _, part := range strings.Fields(string(data)) {
 		if strings.HasPrefix(part, "matchlock.workspace=") {
 			return strings.TrimPrefix(part, "matchlock.workspace=")
 		}
 	}
-	return "/workspace"
+	return ""
 }
 
 func Run() {
-	// Get workspace from kernel cmdline or use default
+	// Get workspace from kernel cmdline.
 	mountpoint := getWorkspaceFromCmdline()
 	if len(os.Args) > 1 {
 		mountpoint = os.Args[1]
+	}
+	if mountpoint == "" {
+		fmt.Fprintln(os.Stderr, "Missing workspace mountpoint")
+		os.Exit(1)
 	}
 
 	fmt.Printf("Guest FUSE daemon (go-fuse) starting, mounting at %s...\n", mountpoint)

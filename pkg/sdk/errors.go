@@ -20,31 +20,42 @@ var (
 
 // Create / VM errors
 var (
-	ErrImageRequired     = errors.New("image is required (e.g., alpine:latest)")
-	ErrInvalidNetworkMTU = errors.New("network mtu must be > 0")
-	ErrNoNetworkConflict = errors.New("no network cannot be combined with allowed hosts or secrets")
-	ErrInvalidAddHost    = errors.New("invalid add-host mapping")
-	ErrParseCreateResult = errors.New("parse create result")
-	ErrInvalidVFSHook    = errors.New("invalid vfs hook")
-	ErrVFSHookBlocked    = errors.New("vfs hook blocked operation")
-	ErrParsePortForwards = errors.New("parse port-forward spec")
-	ErrParsePortBindings = errors.New("parse port-forward result")
+	ErrImageRequired      = errors.New("image is required (e.g., alpine:latest)")
+	ErrInvalidNetworkMTU  = errors.New("network mtu must be > 0")
+	ErrNoNetworkConflict  = errors.New("no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules")
+	ErrInvalidAddHost     = errors.New("invalid add-host mapping")
+	ErrInvalidNetworkHook = errors.New("invalid network hook")
+	ErrParseCreateResult  = errors.New("parse create result")
+	ErrInvalidVFSHook     = errors.New("invalid vfs hook")
+	ErrVFSHookBlocked     = errors.New("vfs hook blocked operation")
+	ErrParsePortForwards  = errors.New("parse port-forward spec")
+	ErrParsePortBindings  = errors.New("parse port-forward result")
 )
 
 // Exec errors
 var (
 	ErrParseExecResult       = errors.New("parse exec result")
 	ErrParseExecStreamResult = errors.New("parse exec_stream result")
+	ErrParseExecPipeResult   = errors.New("parse exec_pipe result")
+	ErrParseExecTTYResult    = errors.New("parse exec_tty result")
 )
 
 // File operation errors
 var (
 	ErrParseReadResult = errors.New("parse read result")
 	ErrParseListResult = errors.New("parse list result")
+	ErrAllowListHosts  = errors.New("allow-list hosts are required")
+	ErrParseAllowList  = errors.New("parse allow-list result")
 )
 
 // Close / Remove errors
 var (
-	ErrCloseTimeout = errors.New("close timed out, process killed")
-	ErrRemoveVM     = errors.New("matchlock rm")
+	ErrCloseTimeout            = errors.New("close timed out, process killed")
+	ErrRemoveVM                = errors.New("matchlock rm")
+	ErrBinaryPathRequired      = errors.New("matchlock binary path is required")
+	ErrVolumeNameRequired      = errors.New("volume name is required")
+	ErrInvalidVolumeSize       = errors.New("volume size must be > 0")
+	ErrVolumeCommand           = errors.New("matchlock volume command")
+	ErrParseVolumeCreateResult = errors.New("parse volume create result")
+	ErrParseVolumeListResult   = errors.New("parse volume list result")
 )

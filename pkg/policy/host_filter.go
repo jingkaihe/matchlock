@@ -89,3 +89,66 @@ func (p *hostFilterPlugin) isPrivateHostAllowed(host string) bool {
 	}
 	return false
 }
+
+// AddAllowedHosts appends hosts to the allow-list. Returns the list of newly added hosts.
+func (p *hostFilterPlugin) AddAllowedHosts(hosts ...string) []string {
+	var added []string
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		found := false
+		for _, existing := range p.config.AllowedHosts {
+			if existing == h {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Check if already in the "added" batch to avoid duplicates
+			alreadyAdded := false
+			for _, a := range added {
+				if a == h {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				p.config.AllowedHosts = append(p.config.AllowedHosts, h)
+				added = append(added, h)
+			}
+		}
+	}
+	return added
+}
+
+// RemoveAllowedHosts removes hosts from the allow-list. Returns the list of actually removed hosts (unique).
+func (p *hostFilterPlugin) RemoveAllowedHosts(hosts ...string) []string {
+	remove := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		remove[strings.TrimSpace(h)] = true
+	}
+	removedSet := make(map[string]bool)
+	filtered := p.config.AllowedHosts[:0]
+	for _, h := range p.config.AllowedHosts {
+		if remove[h] {
+			removedSet[h] = true
+		} else {
+			filtered = append(filtered, h)
+		}
+	}
+	p.config.AllowedHosts = filtered
+	var removed []string
+	for h := range removedSet {
+		removed = append(removed, h)
+	}
+	return removed
+}
+
+// AllowedHosts returns a copy of the current allow-list.
+func (p *hostFilterPlugin) AllowedHosts() []string {
+	result := make([]string, len(p.config.AllowedHosts))
+	copy(result, p.config.AllowedHosts)
+	return result
+}

@@ -19,9 +19,11 @@ RUN apt-get update && apt-get install -y \
   && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
   && update-alternatives --set iptables /usr/sbin/iptables-legacy \
   && update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy \
+  && install -d -m 0755 /etc/docker \
+  && printf '{\n  "storage-driver": "vfs",\n  "features": {\n    "containerd-snapshotter": false\n  }\n}\n' > /etc/docker/daemon.json \
   && systemctl enable containerd.service docker.service \
   && touch /etc/machine-id \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["unshare", "--pid", "--fork", "--mount-proc", "/sbin/init"]
+ENTRYPOINT ["unshare", "--pid", "--fork", "--mount-proc", "/usr/sbin/init"]

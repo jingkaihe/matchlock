@@ -7,6 +7,11 @@ VFS_HOOK_PHASE_BEFORE = "before"
 VFS_HOOK_PHASE_AFTER = "after"
 VFS_HOOK_ACTION_ALLOW = "allow"
 VFS_HOOK_ACTION_BLOCK = "block"
+NETWORK_HOOK_PHASE_BEFORE = "before"
+NETWORK_HOOK_PHASE_AFTER = "after"
+NETWORK_HOOK_ACTION_ALLOW = "allow"
+NETWORK_HOOK_ACTION_BLOCK = "block"
+NETWORK_HOOK_ACTION_MUTATE = "mutate"
 
 VFS_HOOK_OP_STAT = "stat"
 VFS_HOOK_OP_READDIR = "readdir"
@@ -45,6 +50,8 @@ VFSHookOp: TypeAlias = Literal[
     "truncate",
 ]
 VFSHookAction: TypeAlias = Literal["allow", "block"]
+NetworkHookPhase: TypeAlias = Literal["", "before", "after"]
+NetworkHookAction: TypeAlias = Literal["allow", "block", "mutate"]
 
 
 @dataclass
@@ -149,6 +156,164 @@ class VFSInterceptionConfig:
 
 
 @dataclass
+class NetworkBodyTransform:
+    """Literal replacement applied to response bodies."""
+
+    find: str
+    """Find string."""
+
+    replace: str = ""
+    """Replacement string."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"find": self.find}
+        if self.replace:
+            d["replace"] = self.replace
+        return d
+
+
+@dataclass
+class NetworkHookRequest:
+    """Input delivered to an SDK-local network callback hook."""
+
+    phase: NetworkHookPhase = ""
+    host: str = ""
+    method: str = ""
+    path: str = ""
+    query: dict[str, str] | None = None
+    request_headers: dict[str, list[str]] | None = None
+    status_code: int = 0
+    response_headers: dict[str, list[str]] | None = None
+    is_sse: bool = False
+
+
+@dataclass
+class NetworkHookRequestMutation:
+    """Request mutation returned by an SDK-local network callback hook."""
+
+    headers: dict[str, list[str]] | None = None
+    query: dict[str, str] | None = None
+    path: str = ""
+
+
+@dataclass
+class NetworkHookResponseMutation:
+    """Response mutation returned by an SDK-local network callback hook."""
+
+    headers: dict[str, list[str]] | None = None
+    body_replacements: list[NetworkBodyTransform] = field(default_factory=list)
+    set_body: bytes | str | None = None
+
+
+@dataclass
+class NetworkHookResult:
+    """Result returned by an SDK-local network callback hook."""
+
+    action: NetworkHookAction = "allow"
+    request: NetworkHookRequestMutation | None = None
+    response: NetworkHookResponseMutation | None = None
+
+
+@dataclass
+class NetworkHookRule:
+    """Single network interception rule."""
+
+    name: str = ""
+    """Optional rule name."""
+
+    phase: NetworkHookPhase = ""
+    """Rule phase: before or after (empty defaults to before server-side)."""
+
+    hosts: list[str] = field(default_factory=list)
+    """Host glob filters (empty = all hosts)."""
+
+    methods: list[str] = field(default_factory=list)
+    """HTTP method filters (empty = all methods)."""
+
+    path: str = ""
+    """URL path glob (empty = all paths)."""
+
+    action: NetworkHookAction = "allow"
+    """Rule action: allow, block, or mutate."""
+
+    set_headers: dict[str, str] = field(default_factory=dict)
+    """Before-phase request header upserts."""
+
+    delete_headers: list[str] = field(default_factory=list)
+    """Before-phase request headers to delete."""
+
+    set_query: dict[str, str] = field(default_factory=dict)
+    """Before-phase query key upserts."""
+
+    delete_query: list[str] = field(default_factory=list)
+    """Before-phase query keys to delete."""
+
+    rewrite_path: str = ""
+    """Before-phase request path rewrite target."""
+
+    set_response_headers: dict[str, str] = field(default_factory=dict)
+    """After-phase response header upserts."""
+
+    delete_response_headers: list[str] = field(default_factory=list)
+    """After-phase response headers to delete."""
+
+    body_replacements: list[NetworkBodyTransform] = field(default_factory=list)
+    """After-phase literal response-body replacements."""
+
+    timeout_ms: int = 0
+    """Timeout for SDK-local callback hooks in milliseconds."""
+
+    hook: Callable[[NetworkHookRequest], NetworkHookResult | None] | None = None
+    """SDK-local callback hook."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"action": self.action}
+        if self.name:
+            d["name"] = self.name
+        if self.phase:
+            d["phase"] = self.phase
+        if self.hosts:
+            d["hosts"] = self.hosts
+        if self.methods:
+            d["methods"] = self.methods
+        if self.path:
+            d["path"] = self.path
+        if self.set_headers:
+            d["set_headers"] = self.set_headers
+        if self.delete_headers:
+            d["delete_headers"] = self.delete_headers
+        if self.set_query:
+            d["set_query"] = self.set_query
+        if self.delete_query:
+            d["delete_query"] = self.delete_query
+        if self.rewrite_path:
+            d["rewrite_path"] = self.rewrite_path
+        if self.set_response_headers:
+            d["set_response_headers"] = self.set_response_headers
+        if self.delete_response_headers:
+            d["delete_response_headers"] = self.delete_response_headers
+        if self.body_replacements:
+            d["body_replacements"] = [x.to_dict() for x in self.body_replacements]
+        if self.timeout_ms > 0:
+            d["timeout_ms"] = self.timeout_ms
+        return d
+
+
+@dataclass
+class NetworkInterceptionConfig:
+    """Host-side network interception configuration."""
+
+    rules: list[NetworkHookRule] = field(default_factory=list)
+    """Interception rules."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.rules:
+            d["rules"] = [r.to_dict() for r in self.rules]
+        return d
+
+
+@dataclass
 class VFSMutateRequest:
     """Input to SDK-local mutate hooks."""
 
@@ -243,6 +408,9 @@ class CreateOptions:
     image: str = ""
     """Container image reference (required, e.g., alpine:latest)."""
 
+    privileged: bool = False
+    """Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)."""
+
     cpus: int = 0
     """Number of vCPUs (0 = use default)."""
 
@@ -266,6 +434,12 @@ class CreateOptions:
 
     no_network: bool = False
     """Disable guest network egress entirely (no guest NIC)."""
+
+    force_interception: bool = False
+    """Force network interception even when allow-list/secrets are empty."""
+
+    network_interception: NetworkInterceptionConfig | None = None
+    """Host-side network interception rules."""
 
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
@@ -293,6 +467,9 @@ class CreateOptions:
 
     image_config: ImageConfig | None = None
     """OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)."""
+
+    launch_entrypoint: bool = False
+    """Start image ENTRYPOINT/CMD in detached mode during create."""
 
 
 @dataclass
@@ -328,6 +505,28 @@ class ExecStreamResult:
 
 
 @dataclass
+class ExecPipeResult:
+    """Result of pipe-mode command execution."""
+
+    exit_code: int
+    """The command's exit code."""
+
+    duration_ms: int
+    """Execution time in milliseconds."""
+
+
+@dataclass
+class ExecInteractiveResult:
+    """Result of interactive TTY command execution."""
+
+    exit_code: int
+    """The command's exit code."""
+
+    duration_ms: int
+    """Execution time in milliseconds."""
+
+
+@dataclass
 class FileInfo:
     """File metadata."""
 
@@ -342,6 +541,20 @@ class FileInfo:
 
     is_dir: bool
     """Whether this is a directory."""
+
+
+@dataclass
+class VolumeInfo:
+    """Named volume metadata."""
+
+    name: str
+    """Volume name."""
+
+    size: str
+    """Human-readable volume size (for example, ``16.0 MB``)."""
+
+    path: str
+    """Host filesystem path to the backing ext4 image."""
 
 
 class MatchlockError(Exception):

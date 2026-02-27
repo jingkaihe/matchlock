@@ -366,14 +366,19 @@ ARTIFACTS=()
 for f in bin/matchlock-linux-amd64 bin/matchlock-linux-arm64 bin/matchlock-darwin-* bin/guest-init-linux-*; do
   [ -f "$f" ] && ARTIFACTS+=("$f")
 done
+set -- "${ARTIFACTS[@]}"
 
-if [ ${#ARTIFACTS[@]} -eq 0 ]; then
+if [ "$#" -eq 0 ]; then
   echo "Error: no release artifacts found in bin/"
   exit 1
 fi
 
-echo "Uploading ${#ARTIFACTS[@]} artifacts..."
-gh release create "v$VERSION" --title "v$VERSION" --generate-notes "${ARTIFACTS[@]}"
+NOTES_FILE="$(mktemp)"
+trap 'rm -f "$NOTES_FILE"' EXIT
+bash ./scripts/extract-release-notes.sh > "$NOTES_FILE"
+
+echo "Uploading $# artifacts..."
+gh release create "v$VERSION" --title "v$VERSION" --notes-file "$NOTES_FILE" "$@"
 echo "GitHub release v$VERSION created successfully!"
 """
 

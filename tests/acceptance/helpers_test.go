@@ -29,6 +29,11 @@ func launchAlpine(t *testing.T) *sdk.Client {
 	return launchWithBuilder(t, sdk.New("alpine:latest"))
 }
 
+func launchAlpineWithWorkspace(t *testing.T) *sdk.Client {
+	t.Helper()
+	return launchWithBuilder(t, sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace"))
+}
+
 func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	t.Helper()
 	client, err := sdk.NewClient(matchlockConfig(t))

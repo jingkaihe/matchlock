@@ -59,6 +59,26 @@ func TestEngine_IsHostAllowed_Allowlist(t *testing.T) {
 	}
 }
 
+func TestEngine_AddAllowedHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		AllowedHosts: []string{"api.openai.com"},
+	}, nil, nil)
+
+	added := engine.AddAllowedHosts(" api.openai.com ", "api.anthropic.com", "", "api.anthropic.com")
+	assert.Equal(t, []string{"api.anthropic.com"}, added)
+	assert.Equal(t, []string{"api.openai.com", "api.anthropic.com"}, engine.AllowedHosts())
+}
+
+func TestEngine_RemoveAllowedHosts(t *testing.T) {
+	engine := NewEngine(&api.NetworkConfig{
+		AllowedHosts: []string{"api.openai.com", "api.anthropic.com", "api.openai.com"},
+	}, nil, nil)
+
+	removed := engine.RemoveAllowedHosts(" api.openai.com ", "missing.example.com")
+	assert.Equal(t, []string{"api.openai.com"}, removed)
+	assert.Equal(t, []string{"api.anthropic.com"}, engine.AllowedHosts())
+}
+
 func TestEngine_IsHostAllowed_BlockPrivateIPs(t *testing.T) {
 	engine := NewEngine(&api.NetworkConfig{
 		BlockPrivateIPs: true,

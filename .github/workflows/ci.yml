@@ -47,8 +47,8 @@ jobs:
       - name: Vet
         run: mise run vet
 
-#      - name: Lint
-#        run: mise run lint
+      - name: Lint
+        run: mise run lint
 
   test-darwin:
     name: Test (macOS arm64)

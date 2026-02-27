@@ -45,6 +45,7 @@ from matchlock import Client, Sandbox
 
 sandbox = (
     Sandbox("python:3.12-alpine")
+    .with_privileged()
     .with_cpus(2)
     .with_memory(512)
     .with_disk_size(2048)
@@ -150,6 +151,70 @@ For fully offline sandboxes (no guest NIC / no egress), use:
 - Builder: `.with_no_network()`
 - Direct options: `CreateOptions(no_network=True)`
 
+### Network Interception Rules
+
+Use typed network hook rules for host-side request/response mutation:
+
+```python
+from matchlock import (
+    NetworkBodyTransform,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
+    Sandbox,
+)
+
+sandbox = Sandbox("alpine:latest").with_network_interception(
+    NetworkInterceptionConfig(
+        rules=[
+            NetworkHookRule(
+                phase="after",
+                hosts=["api.example.com"],
+                action="mutate",
+                set_response_headers={"X-Intercepted": "true"},
+                body_replacements=[NetworkBodyTransform(find="foo", replace="bar")],
+            )
+        ]
+    )
+)
+```
+
+Callback-based interception:
+
+```python
+from matchlock import (
+    NetworkHookRequest,
+    NetworkHookResult,
+    NetworkHookResponseMutation,
+    NetworkHookRule,
+    NetworkInterceptionConfig,
+    Sandbox,
+)
+
+def after_hook(req: NetworkHookRequest) -> NetworkHookResult | None:
+    if req.status_code != 200:
+        return None
+    return NetworkHookResult(
+        action="mutate",
+        response=NetworkHookResponseMutation(
+            headers={"X-Intercepted": ["callback"]},
+            set_body=b'{"msg":"from-callback"}',
+        ),
+    )
+
+sandbox = Sandbox("alpine:latest").with_network_interception(
+    NetworkInterceptionConfig(
+        rules=[
+            NetworkHookRule(
+                phase="after",
+                hosts=["api.example.com"],
+                hook=after_hook,
+                timeout_ms=1500,
+            )
+        ]
+    )
+)
+```
+
 ### Filesystem Mounts
 
 Mount host directories or use in-memory/snapshot filesystems:
@@ -236,6 +301,7 @@ Fluent builder for sandbox configuration.
 | Method | Description |
 |---|---|
 | `.with_cpus(n)` | Set number of vCPUs |
+| `.with_privileged()` | Enable privileged mode (skip in-guest seccomp/cap-drop/no_new_privs) |
 | `.with_memory(mb)` | Set memory in MB |
 | `.with_disk_size(mb)` | Set disk size in MB |
 | `.with_timeout(seconds)` | Set max execution time |
@@ -247,6 +313,7 @@ Fluent builder for sandbox configuration.
 | `.unset_block_private_ips()` | Reset private IP behavior to SDK default semantics |
 | `.with_network_mtu(mtu)` | Override guest network stack/interface MTU |
 | `.with_no_network()` | Disable guest network egress entirely |
+| `.with_network_interception(config=None)` | Force interception and optionally apply typed network hook rules |
 | `.add_secret(name, value, *hosts)` | Inject a secret for specific hosts |
 | `.mount(guest_path, config)` | Add a VFS mount with custom `MountConfig` |
 | `.mount_host_dir(guest, host)` | Mount a host directory (read-write) |
@@ -262,10 +329,12 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Method | Description |
 |---|---|
 | `.start()` | Start the matchlock RPC subprocess |
-| `.launch(sandbox)` | Create a VM from a `Sandbox` builder — returns VM ID |
-| `.create(opts)` | Create a VM from `CreateOptions` — returns VM ID |
+| `.launch(sandbox)` | Create a VM and start image ENTRYPOINT/CMD in detached mode — returns VM ID |
+| `.create(opts)` | Create a VM from `CreateOptions` (does not auto-start ENTRYPOINT unless `launch_entrypoint=True`) — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
 | `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
+| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="")` | Bidirectional pipe-mode exec (no PTY), returns `ExecPipeResult` |
+| `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None)` | Interactive PTY exec, returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
@@ -278,9 +347,11 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config` |
+| `CreateOptions` | `image`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config`, `launch_entrypoint` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
+| `ExecPipeResult` | `exit_code: int`, `duration_ms: int` |
+| `ExecInteractiveResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |
 | `MountConfig` | `type: str`, `host_path: str`, `readonly: bool` |
 | `Secret` | `name: str`, `value: str`, `hosts: list[str]` |

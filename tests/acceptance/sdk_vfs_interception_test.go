@@ -19,7 +19,7 @@ func TestVFSInterceptionBlockCreate(t *testing.T) {
 	t.Parallel()
 
 	client := launchWithBuilder(t,
-		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
+		sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
 					Phase:  sdk.VFSHookPhaseBefore,
@@ -42,7 +42,7 @@ func TestVFSInterceptionMutateWrite(t *testing.T) {
 	t.Parallel()
 
 	client := launchWithBuilder(t,
-		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
+		sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
 					Phase: sdk.VFSHookPhaseBefore,
@@ -68,7 +68,7 @@ func TestVFSInterceptionDangerousHookAllowsReentry(t *testing.T) {
 	t.Parallel()
 
 	client := launchWithBuilder(t,
-		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
+		sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
 					Phase:     sdk.VFSHookPhaseAfter,
@@ -111,7 +111,7 @@ func TestVFSInterceptionAfterCallbackSuppressesRecursion(t *testing.T) {
 	var clientRef *sdk.Client
 
 	client := launchWithBuilder(t,
-		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
+		sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace").WithVFSInterception(&sdk.VFSInterceptionConfig{
 			Rules: []sdk.VFSHookRule{
 				{
 					Name:      "callback-after-write",
