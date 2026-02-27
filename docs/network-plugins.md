@@ -100,6 +100,7 @@ Blocks all outbound requests when cumulative API costs exceed a configured USD l
 - **File:** `pkg/policy/budget_gate.go`
 - **Flat config field:** `budget_limit_usd`
 - **Depends on:** `usage_logger` (via `CostProvider` interface)
+- **Note:** Not registered in the plugin registry. Only configurable via the `budget_limit_usd` flat field, not via the explicit `plugins` array.
 
 Requires `usage_logger` to be active. See [Budget Enforcement](usage/budget-enforcement.md) for full details.
 
@@ -292,17 +293,44 @@ type GateVerdict struct {
 
 type RoutePlugin interface {
     Plugin
-    Route(req *http.Request, host string) (*RouteDirective, error)
+    Route(req *http.Request, host string) (*RouteDecision, error)
+}
+
+// RouteDecision wraps a routing directive with a reason for logging.
+// Directive is nil for passthrough (use original destination).
+type RouteDecision struct {
+    Directive *RouteDirective
+    Reason    string
+}
+
+type RouteDirective struct {
+    Host   string // e.g., "127.0.0.1"
+    Port   int    // e.g., 11434
+    UseTLS bool
 }
 
 type RequestPlugin interface {
     Plugin
-    TransformRequest(req *http.Request, host string) (*http.Request, error)
+    TransformRequest(req *http.Request, host string) (*RequestDecision, error)
+}
+
+// RequestDecision wraps a transformed request with action/reason for logging.
+type RequestDecision struct {
+    Request *http.Request
+    Action  string // "injected", "skipped", "leak_blocked", "no_op", "rewritten"
+    Reason  string
 }
 
 type ResponsePlugin interface {
     Plugin
-    TransformResponse(resp *http.Response, req *http.Request, host string) (*http.Response, error)
+    TransformResponse(resp *http.Response, req *http.Request, host string) (*ResponseDecision, error)
+}
+
+// ResponseDecision wraps a transformed response with action/reason for logging.
+type ResponseDecision struct {
+    Response *http.Response
+    Action   string // "logged_usage", "no_op", "modified"
+    Reason   string
 }
 ```
 
@@ -361,10 +389,10 @@ func NewYourPluginFromConfig(raw json.RawMessage, logger *slog.Logger) (Plugin, 
 
 func (p *yourPlugin) Name() string { return "your_plugin" }
 
-func (p *yourPlugin) TransformRequest(req *http.Request, host string) (*http.Request, error) {
+func (p *yourPlugin) TransformRequest(req *http.Request, host string) (*RequestDecision, error) {
     p.logger.Debug("processing request", "host", host, "setting", p.config.SomeSetting)
     // Your logic here
-    return req, nil
+    return &RequestDecision{Request: req, Action: "no_op", Reason: "nothing to do"}, nil
 }
 ```
 
