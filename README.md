@@ -257,9 +257,15 @@ Plugins are composable and extensible. See [Network Plugins](docs/network-plugin
 
 ## Docs
 
+- [Setup Guide](docs/setup.md) -- Building from source, macOS/Linux setup, prerequisites
+- [Usage Guide](docs/usage.md) -- Running sandboxes, volumes, secrets, network policy, SDKs, CLI reference
+- [Extensions and Architecture](docs/extensions.md) -- Package map, extension points, how to add features
+- [Troubleshooting](docs/troubleshooting.md) -- Common issues and recovery procedures
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
 - [Network Plugins](docs/network-plugins.md)
 - [VFS Interception](docs/vfs-interception.md)
+- [Event Logging](docs/event-logging.md)
+- [Budget Enforcement](docs/usage/budget-enforcement.md)
 - [Developer Reference](AGENTS.md)
 
 ## License
