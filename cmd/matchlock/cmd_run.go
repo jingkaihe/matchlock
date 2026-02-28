@@ -25,8 +25,7 @@ import (
 )
 
 const (
-	detachedVMDiscoveryTimeout = 10 * time.Second
-	detachedVMPollInterval     = 100 * time.Millisecond
+	detachedVMPollInterval = 100 * time.Millisecond
 )
 
 var runCmd = &cobra.Command{
@@ -553,7 +552,7 @@ func startDetachedRun() error {
 	pid := child.Process.Pid
 	_ = child.Process.Release()
 
-	vmID, err := waitDetachedVMID(pid, detachedVMDiscoveryTimeout)
+	vmID, err := waitDetachedVMID(pid)
 	if err != nil {
 		return err
 	}
@@ -573,49 +572,18 @@ func detachedChildArgs(args []string) []string {
 	cliArgs := args[:splitAt]
 	tail := args[splitAt:]
 
-	filtered := make([]string, 0, len(cliArgs)+1)
-	for _, arg := range cliArgs {
-		switch {
-		case arg == "-d", arg == "--detach", strings.HasPrefix(arg, "--detach="):
-			continue
-		default:
-			if stripped, changed := stripDetachFromShortFlags(arg); changed {
-				if stripped != "" {
-					filtered = append(filtered, stripped)
-				}
-				continue
-			}
-			filtered = append(filtered, arg)
-		}
-	}
-
-	out := make([]string, 0, len(filtered)+1+len(tail))
-	out = append(out, filtered...)
+	out := make([]string, 0, len(cliArgs)+2+len(tail))
+	out = append(out, cliArgs...)
+	out = append(out, "--detach=false")
 	out = append(out, "--rm=false")
 	out = append(out, tail...)
 	return out
 }
 
-func stripDetachFromShortFlags(arg string) (string, bool) {
-	if len(arg) < 2 || !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
-		return "", false
-	}
-	flags := arg[1:]
-	if !strings.ContainsRune(flags, 'd') {
-		return "", false
-	}
-	flags = strings.ReplaceAll(flags, "d", "")
-	if flags == "" {
-		return "", true
-	}
-	return "-" + flags, true
-}
-
-func waitDetachedVMID(pid int, timeout time.Duration) (string, error) {
+func waitDetachedVMID(pid int) (string, error) {
 	mgr := state.NewManager()
 	ticker := time.NewTicker(detachedVMPollInterval)
 	defer ticker.Stop()
-	timeoutCh := time.After(timeout)
 
 	for {
 		states, err := mgr.List()
@@ -626,13 +594,20 @@ func waitDetachedVMID(pid int, timeout time.Duration) (string, error) {
 				}
 			}
 		}
-
-		select {
-		case <-ticker.C:
-		case <-timeoutCh:
+		if !isProcessRunning(pid) {
 			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
 		}
+
+		<-ticker.C
 	}
+}
+
+func isProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir string) int {

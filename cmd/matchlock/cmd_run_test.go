@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
 func TestParseDiskMountSpec(t *testing.T) {
@@ -118,43 +120,57 @@ func TestValidateDetachFlags(t *testing.T) {
 func TestDetachedChildArgs(t *testing.T) {
 	assert.Equal(
 		t,
-		[]string{"run", "--image", "alpine:latest", "--rm=false"},
+		[]string{"run", "--image", "alpine:latest", "-d", "--detach=false", "--rm=false"},
 		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d"}),
 	)
 
 	assert.Equal(
 		t,
-		[]string{"run", "--image", "alpine:latest", "--rm=false", "--", "sh", "-c", "echo hi"},
+		[]string{"run", "--image", "alpine:latest", "-d", "--detach=false", "--rm=false", "--", "sh", "-c", "echo hi"},
 		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d", "--", "sh", "-c", "echo hi"}),
 	)
 
 	assert.Equal(
 		t,
-		[]string{"run", "-it", "--rm=false"},
+		[]string{"run", "-dit", "--detach=false", "--rm=false"},
 		detachedChildArgs([]string{"run", "-dit"}),
 	)
 
 	assert.Equal(
 		t,
-		[]string{"run", "-it", "--rm=false"},
+		[]string{"run", "-itd", "--detach=false", "--rm=false"},
 		detachedChildArgs([]string{"run", "-itd"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "-w/tmp/data", "-eMODE=prod", "--detach=false", "--rm=false"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-w/tmp/data", "-eMODE=prod"}),
 	)
 }
 
-func TestStripDetachFromShortFlags(t *testing.T) {
-	stripped, changed := stripDetachFromShortFlags("-d")
-	assert.True(t, changed)
-	assert.Equal(t, "", stripped)
+func TestWaitDetachedVMIDFindsRunningState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	stripped, changed = stripDetachFromShortFlags("-dit")
-	assert.True(t, changed)
-	assert.Equal(t, "-it", stripped)
+	mgr := state.NewManager()
+	vmID := "vm-detached-find"
+	require.NoError(t, mgr.Register(vmID, map[string]any{"image": "alpine:latest"}))
+	t.Cleanup(func() {
+		_ = mgr.Unregister(vmID)
+		_ = mgr.Remove(vmID)
+	})
 
-	stripped, changed = stripDetachFromShortFlags("-itd")
-	assert.True(t, changed)
-	assert.Equal(t, "-it", stripped)
+	got, err := waitDetachedVMID(os.Getpid())
+	require.NoError(t, err)
+	assert.Equal(t, vmID, got)
+}
 
-	stripped, changed = stripDetachFromShortFlags("--detach")
-	assert.False(t, changed)
-	assert.Equal(t, "", stripped)
+func TestWaitDetachedVMIDReturnsErrorWhenProcessIsNotRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, err := waitDetachedVMID(0)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrFindDetachedVM)
 }
