@@ -165,6 +165,77 @@ func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 	}
 }
 
+func TestCLIRunDetachRejectsInteractiveFlags(t *testing.T) {
+	_, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "-d", "-it", "sh")
+	require.NotEqual(t, 0, exitCode)
+	require.Contains(t, stderr, "--detach cannot be combined")
+
+	_, stderr, exitCode = runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "-dit", "sh")
+	require.NotEqual(t, 0, exitCode)
+	require.Contains(t, stderr, "--detach cannot be combined")
+
+	_, stderr, exitCode = runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "-d", "-i", "--", "sh", "-c", "echo hi")
+	require.NotEqual(t, 0, exitCode)
+	require.Contains(t, stderr, "--detach cannot be combined")
+}
+
+func TestCLIRunDetachPrintsVMIDAndReturns(t *testing.T) {
+	stdout, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "-d")
+	require.Equal(t, 0, exitCode, "stderr: %s", stderr)
+	vmID := strings.TrimSpace(stdout)
+	require.NotEmpty(t, vmID, "stdout: %q stderr: %q", stdout, stderr)
+	require.True(t, strings.HasPrefix(vmID, "vm-"), "stdout: %q stderr: %q", stdout, stderr)
+
+	t.Cleanup(func() {
+		_, _, _ = runCLI(t, "kill", vmID)
+		_, _, _ = runCLI(t, "rm", vmID)
+	})
+
+	deadline := time.Now().Add(30 * time.Second)
+	ready := false
+	for time.Now().Before(deadline) {
+		_, _, execExit := runCLIWithTimeout(t, 10*time.Second, "exec", vmID, "true")
+		if execExit == 0 {
+			ready = true
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	require.True(t, ready, "timed out waiting for detached sandbox exec readiness")
+}
+
+func TestCLIRunDetachPrintsVMIDAndReturnsWithCommand(t *testing.T) {
+	stdout, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"-d",
+		"--",
+		"sh", "-c", "echo started > /tmp/detach-marker; sleep 300",
+	)
+	require.Equal(t, 0, exitCode, "stderr: %s", stderr)
+	vmID := strings.TrimSpace(stdout)
+	require.NotEmpty(t, vmID, "stdout: %q stderr: %q", stdout, stderr)
+
+	t.Cleanup(func() {
+		_, _, _ = runCLI(t, "kill", vmID)
+		_, _, _ = runCLI(t, "rm", vmID)
+	})
+
+	deadline := time.Now().Add(30 * time.Second)
+	started := false
+	for time.Now().Before(deadline) {
+		out, _, code := runCLIWithTimeout(t, 10*time.Second, "exec", vmID, "--", "sh", "-c", "test -f /tmp/detach-marker && echo ok")
+		if code == 0 && strings.Contains(out, "ok") {
+			started = true
+			break
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	require.True(t, started, "timed out waiting for detached command marker")
+}
+
 func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
 	hostDir := t.TempDir()
 

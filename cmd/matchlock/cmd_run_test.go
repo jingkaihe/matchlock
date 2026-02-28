@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
 func TestParseDiskMountSpec(t *testing.T) {
@@ -96,4 +98,79 @@ func TestDiskMountShadowedByWorkspaceOutsideWorkspace(t *testing.T) {
 	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", "/workspace"))
 	assert.False(t, diskMountShadowedByWorkspace("/workspace-cache", "/workspace"))
 	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", ""))
+}
+
+func TestValidateDetachFlags(t *testing.T) {
+	assert.NoError(t, validateDetachFlags(false, false, false))
+	assert.NoError(t, validateDetachFlags(true, false, false))
+
+	err := validateDetachFlags(true, true, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+
+	err = validateDetachFlags(true, false, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+
+	err = validateDetachFlags(true, true, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+}
+
+func TestDetachedChildArgs(t *testing.T) {
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "-d", "--detach=false", "--rm=false"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "-d", "--detach=false", "--rm=false", "--", "sh", "-c", "echo hi"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d", "--", "sh", "-c", "echo hi"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "-dit", "--detach=false", "--rm=false"},
+		detachedChildArgs([]string{"run", "-dit"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "-itd", "--detach=false", "--rm=false"},
+		detachedChildArgs([]string{"run", "-itd"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "-w/tmp/data", "-eMODE=prod", "--detach=false", "--rm=false"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-w/tmp/data", "-eMODE=prod"}),
+	)
+}
+
+func TestWaitDetachedVMIDFindsRunningState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	mgr := state.NewManager()
+	vmID := "vm-detached-find"
+	require.NoError(t, mgr.Register(vmID, map[string]any{"image": "alpine:latest"}))
+	t.Cleanup(func() {
+		_ = mgr.Unregister(vmID)
+		_ = mgr.Remove(vmID)
+	})
+
+	got, err := waitDetachedVMID(os.Getpid())
+	require.NoError(t, err)
+	assert.Equal(t, vmID, got)
+}
+
+func TestWaitDetachedVMIDReturnsErrorWhenProcessIsNotRunning(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	_, err := waitDetachedVMID(0)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrFindDetachedVM)
 }
