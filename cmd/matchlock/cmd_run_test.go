@@ -97,3 +97,64 @@ func TestDiskMountShadowedByWorkspaceOutsideWorkspace(t *testing.T) {
 	assert.False(t, diskMountShadowedByWorkspace("/workspace-cache", "/workspace"))
 	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", ""))
 }
+
+func TestValidateDetachFlags(t *testing.T) {
+	assert.NoError(t, validateDetachFlags(false, false, false))
+	assert.NoError(t, validateDetachFlags(true, false, false))
+
+	err := validateDetachFlags(true, true, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+
+	err = validateDetachFlags(true, false, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+
+	err = validateDetachFlags(true, true, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--detach cannot be combined")
+}
+
+func TestDetachedChildArgs(t *testing.T) {
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "--rm=false"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "--image", "alpine:latest", "--rm=false", "--", "sh", "-c", "echo hi"},
+		detachedChildArgs([]string{"run", "--image", "alpine:latest", "-d", "--", "sh", "-c", "echo hi"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "-it", "--rm=false"},
+		detachedChildArgs([]string{"run", "-dit"}),
+	)
+
+	assert.Equal(
+		t,
+		[]string{"run", "-it", "--rm=false"},
+		detachedChildArgs([]string{"run", "-itd"}),
+	)
+}
+
+func TestStripDetachFromShortFlags(t *testing.T) {
+	stripped, changed := stripDetachFromShortFlags("-d")
+	assert.True(t, changed)
+	assert.Equal(t, "", stripped)
+
+	stripped, changed = stripDetachFromShortFlags("-dit")
+	assert.True(t, changed)
+	assert.Equal(t, "-it", stripped)
+
+	stripped, changed = stripDetachFromShortFlags("-itd")
+	assert.True(t, changed)
+	assert.Equal(t, "-it", stripped)
+
+	stripped, changed = stripDetachFromShortFlags("--detach")
+	assert.False(t, changed)
+	assert.Equal(t, "", stripped)
+}

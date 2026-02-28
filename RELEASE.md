@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.1.28
+
+* Added Docker-style `matchlock run -d/--detach` support for starting long-lived sandboxes in background mode with VM ID output.
+
 ## 0.1.27
 
 * added entrypoint support for sdkk

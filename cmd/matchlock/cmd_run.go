@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,11 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
 	"github.com/jingkaihe/matchlock/pkg/vm"
+)
+
+const (
+	detachedVMDiscoveryTimeout = 10 * time.Second
+	detachedVMPollInterval     = 100 * time.Millisecond
 )
 
 var runCmd = &cobra.Command{
@@ -71,9 +77,10 @@ Custom hosts with --add-host:
   --add-host api.internal:10.0.0.10
   --add-host db.internal:10.0.0.11`,
 	Example: `  matchlock run --image alpine:latest -it sh
-  matchlock run --image python:3.12-alpine python3 -c 'print(42)'
-  matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
-  matchlock exec <vm-id> echo hello                # exec into running VM
+	  matchlock run --image python:3.12-alpine python3 -c 'print(42)'
+	  matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
+	  matchlock run --image nginx:latest -d            # detached (same lifecycle as --rm=false)
+	  matchlock exec <vm-id> echo hello                # exec into running VM
 
   # With non-secret env vars
   matchlock run --image alpine:latest -e FOO=bar -- sh -c 'echo $FOO'
@@ -109,6 +116,7 @@ func init() {
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
 	runCmd.Flags().Int("disk-size", api.DefaultDiskSizeMB, "Disk size in MB")
+	runCmd.Flags().BoolP("detach", "d", false, "Run sandbox in detached mode (implies --rm=false; incompatible with -t/-i)")
 	runCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
@@ -139,6 +147,7 @@ func init() {
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
 	viper.BindPFlag("run.disk-size", runCmd.Flags().Lookup("disk-size"))
+	viper.BindPFlag("run.detach", runCmd.Flags().Lookup("detach"))
 	viper.BindPFlag("run.tty", runCmd.Flags().Lookup("tty"))
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
 	viper.BindPFlag("run.pull", runCmd.Flags().Lookup("pull"))
@@ -161,9 +170,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 	timeout, _ := cmd.Flags().GetInt("timeout")
 
 	// Exec options
+	detach, _ := cmd.Flags().GetBool("detach")
 	tty, _ := cmd.Flags().GetBool("tty")
 	interactive, _ := cmd.Flags().GetBool("interactive")
 	interactiveMode := tty && interactive
+	if err := validateDetachFlags(detach, tty, interactive); err != nil {
+		return err
+	}
+	if detach {
+		rm = false
+	}
+	if detach {
+		return startDetachedRun()
+	}
 	workspace, _ := cmd.Flags().GetString("workspace")
 	workspaceSet := cmd.Flags().Changed("workspace")
 	workdir, _ := cmd.Flags().GetString("workdir")
@@ -499,6 +518,121 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func validateDetachFlags(detach, tty, interactive bool) error {
+	if detach && (tty || interactive) {
+		return fmt.Errorf("--detach cannot be combined with -t/--tty or -i/--interactive")
+	}
+	return nil
+}
+
+func startDetachedRun() error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return errx.Wrap(ErrResolveExecutable, err)
+	}
+	childArgs := detachedChildArgs(os.Args[1:])
+
+	nullFile, err := os.OpenFile(os.DevNull, os.O_RDWR, 0600)
+	if err != nil {
+		return errx.Wrap(ErrPrepareDetachedIO, err)
+	}
+	defer nullFile.Close()
+
+	child := exec.Command(exePath, childArgs...)
+	child.Stdin = nullFile
+	child.Stdout = nullFile
+	child.Stderr = nullFile
+	child.Env = os.Environ()
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := child.Start(); err != nil {
+		return errx.Wrap(ErrStartDetachedRun, err)
+	}
+	pid := child.Process.Pid
+	_ = child.Process.Release()
+
+	vmID, err := waitDetachedVMID(pid, detachedVMDiscoveryTimeout)
+	if err != nil {
+		return err
+	}
+	fmt.Println(vmID)
+	return nil
+}
+
+func detachedChildArgs(args []string) []string {
+	splitAt := len(args)
+	for i, arg := range args {
+		if arg == "--" {
+			splitAt = i
+			break
+		}
+	}
+
+	cliArgs := args[:splitAt]
+	tail := args[splitAt:]
+
+	filtered := make([]string, 0, len(cliArgs)+1)
+	for _, arg := range cliArgs {
+		switch {
+		case arg == "-d", arg == "--detach", strings.HasPrefix(arg, "--detach="):
+			continue
+		default:
+			if stripped, changed := stripDetachFromShortFlags(arg); changed {
+				if stripped != "" {
+					filtered = append(filtered, stripped)
+				}
+				continue
+			}
+			filtered = append(filtered, arg)
+		}
+	}
+
+	out := make([]string, 0, len(filtered)+1+len(tail))
+	out = append(out, filtered...)
+	out = append(out, "--rm=false")
+	out = append(out, tail...)
+	return out
+}
+
+func stripDetachFromShortFlags(arg string) (string, bool) {
+	if len(arg) < 2 || !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
+		return "", false
+	}
+	flags := arg[1:]
+	if !strings.ContainsRune(flags, 'd') {
+		return "", false
+	}
+	flags = strings.ReplaceAll(flags, "d", "")
+	if flags == "" {
+		return "", true
+	}
+	return "-" + flags, true
+}
+
+func waitDetachedVMID(pid int, timeout time.Duration) (string, error) {
+	mgr := state.NewManager()
+	ticker := time.NewTicker(detachedVMPollInterval)
+	defer ticker.Stop()
+	timeoutCh := time.After(timeout)
+
+	for {
+		states, err := mgr.List()
+		if err == nil {
+			for _, vmState := range states {
+				if vmState.PID == pid && vmState.Status == "running" {
+					return vmState.ID, nil
+				}
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-timeoutCh:
+			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
+		}
+	}
 }
 
 func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir string) int {

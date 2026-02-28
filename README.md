@@ -49,6 +49,7 @@ matchlock run --image python:3.12-alpine \
 
 # Long-lived sandboxes
 matchlock run --image alpine:latest --rm=false   # prints VM ID
+matchlock run --image nginx:latest -d             # same as above, detached
 matchlock exec vm-abc12345 -it sh                # attach to it
 matchlock port-forward vm-abc12345 8080:8080     # forward host:8080 -> guest:8080
 
