@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -111,7 +112,7 @@ func init() {
 	runCmd.Flags().Bool("network-intercept", false, "Force network interception proxy/stack even when allow-list and secrets are empty")
 	runCmd.Flags().StringArrayP("publish", "p", nil, "Publish a host port to a sandbox port ([LOCAL_PORT:]REMOTE_PORT)")
 	runCmd.Flags().StringSlice("address", []string{"127.0.0.1"}, "Address to bind published ports on the host (can be repeated)")
-	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
+	runCmd.Flags().Float64("cpus", float64(api.DefaultCPUs), "Number of CPUs (supports fractional values, e.g. 0.5)")
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
 	runCmd.Flags().Int("disk-size", api.DefaultDiskSizeMB, "Disk size in MB")
@@ -163,7 +164,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	privileged, _ := cmd.Flags().GetBool("privileged")
 
 	// Resources
-	cpus, _ := cmd.Flags().GetInt("cpus")
+	cpus, _ := cmd.Flags().GetFloat64("cpus")
 	memory, _ := cmd.Flags().GetInt("memory")
 	diskSize, _ := cmd.Flags().GetInt("disk-size")
 	timeout, _ := cmd.Flags().GetInt("timeout")
@@ -204,6 +205,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	if networkMTU <= 0 {
 		return fmt.Errorf("--mtu must be > 0")
+	}
+	vcpuCount, ok := api.VCPUCount(cpus)
+	if !ok {
+		return fmt.Errorf("--cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpuCount > hostCPUs {
+		return fmt.Errorf("--cpus must be <= host cpus (%d)", hostCPUs)
 	}
 	if noNetwork {
 		if len(allowHosts) > 0 {

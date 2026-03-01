@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Code-Hex/vz/v3"
@@ -33,6 +34,15 @@ func (b *DarwinBackend) Name() string {
 }
 
 func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	vcpus, ok := api.VCPUCount(config.CPUs)
+	if !ok {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpus > hostCPUs {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= host cpus (%d)", hostCPUs)
+	}
+
 	// Verify files exist
 	if _, err := os.Stat(config.KernelPath); err != nil {
 		return nil, errx.With(ErrKernelNotFound, ": %s: %w", config.KernelPath, err)
@@ -94,7 +104,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 
 	vzConfig, err := vz.NewVirtualMachineConfiguration(
 		bootLoader,
-		uint(config.CPUs),
+		uint(vcpus),
 		uint64(config.MemoryMB)*1024*1024,
 	)
 	if err != nil {
@@ -227,8 +237,8 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 
 	if config.NoNetwork {
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s%s matchlock.dns=%s matchlock.no_network=1%s%s",
-			hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s%s matchlock.dns=%s matchlock.no_network=1%s%s matchlock.cpus=%g",
+			hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs, config.CPUs,
 		)
 	}
 
@@ -242,14 +252,14 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s",
-		hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
+		hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
 	)
 }
 

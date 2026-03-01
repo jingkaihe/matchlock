@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.1.29
+
+* Added fractional CPU support across CLI and SDK create flows (`cpus` now accepts values like `0.5`).
+* Hardened CPU validation before VM creation: CPU count must be finite, greater than zero, and not exceed host CPU capacity.
+* Added Python SDK port-forward parity with Go/TypeScript:
+  * `Sandbox.with_port_forward(...)` and `Sandbox.with_port_forward_addresses(...)`
+  * `Client.port_forward(...)` and `Client.port_forward_with_addresses(...)`
+  * create-time auto-application of configured port-forwards
+
 ## 0.1.28
 
 * Added Docker-style `matchlock run -d/--detach` support for starting long-lived sandboxes in background mode with VM ID output.

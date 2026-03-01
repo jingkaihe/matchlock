@@ -42,6 +42,8 @@ from .types import (
     NetworkHookResult,
     NetworkInterceptionConfig,
     NETWORK_HOOK_ACTION_ALLOW,
+    PortForward,
+    PortForwardBinding,
     RPCError,
     VFSActionRequest,
     VFSHookEvent,
@@ -1160,6 +1162,8 @@ class Client:
             raise MatchlockError("invalid create response: missing id")
         self._vm_id = result["id"]
         self._set_local_vfs_hooks(local_hooks, local_mutate_hooks, local_action_hooks)
+        if opts.port_forwards:
+            self._port_forward_mappings(opts.port_forward_addresses, opts.port_forwards)
         return self._vm_id
 
     def _build_create_network_params(
@@ -1242,6 +1246,112 @@ class Client:
         opts = copy.deepcopy(sandbox.options())
         opts.launch_entrypoint = True
         return self.create(opts)
+
+    def port_forward(self, *specs: str) -> list[PortForwardBinding]:
+        """Apply one or more [LOCAL_PORT:]REMOTE_PORT mappings."""
+        return self.port_forward_with_addresses(None, *specs)
+
+    def port_forward_with_addresses(
+        self, addresses: list[str] | None, *specs: str
+    ) -> list[PortForwardBinding]:
+        """Apply port-forward mappings bound on specific host addresses."""
+        forwards = self._parse_port_forwards(specs)
+        return self._port_forward_mappings(addresses, forwards)
+
+    def _port_forward_mappings(
+        self, addresses: list[str] | None, forwards: list[PortForward]
+    ) -> list[PortForwardBinding]:
+        if not forwards:
+            return []
+
+        wire_forwards = [
+            {
+                "local_port": int(forward.local_port),
+                "remote_port": int(forward.remote_port),
+            }
+            for forward in forwards
+        ]
+        result = self._send_request(
+            "port_forward",
+            {
+                "forwards": wire_forwards,
+                "addresses": list(addresses) if addresses else ["127.0.0.1"],
+            },
+        )
+        if not isinstance(result, dict):
+            raise MatchlockError("invalid port_forward response: expected object")
+
+        raw_bindings = result.get("bindings")
+        if not isinstance(raw_bindings, list):
+            raise MatchlockError(
+                "invalid port_forward response: bindings must be a list"
+            )
+
+        bindings: list[PortForwardBinding] = []
+        for binding in raw_bindings:
+            if not isinstance(binding, dict):
+                raise MatchlockError(
+                    "invalid port_forward response: binding entry must be an object"
+                )
+
+            address = str(binding.get("address", "")).strip()
+            if not address:
+                raise MatchlockError(
+                    "invalid port_forward response: binding address is required"
+                )
+
+            local_port = int(binding.get("local_port") or 0)
+            remote_port = int(binding.get("remote_port") or 0)
+            if local_port < 1 or local_port > 65535:
+                raise MatchlockError(
+                    "invalid port_forward response: local_port must be in range 1-65535"
+                )
+            if remote_port < 1 or remote_port > 65535:
+                raise MatchlockError(
+                    "invalid port_forward response: remote_port must be in range 1-65535"
+                )
+
+            bindings.append(
+                PortForwardBinding(
+                    address=address,
+                    local_port=local_port,
+                    remote_port=remote_port,
+                )
+            )
+
+        return bindings
+
+    def _parse_port_forwards(self, specs: Iterable[str]) -> list[PortForward]:
+        return [self._parse_port_forward(spec) for spec in specs]
+
+    def _parse_port_forward(self, spec: str) -> PortForward:
+        value = str(spec).strip()
+        if not value:
+            raise MatchlockError("invalid port-forward spec: empty spec")
+
+        parts = value.split(":")
+        if len(parts) == 1:
+            remote_port = self._parse_port(parts[0], "remote")
+            return PortForward(local_port=remote_port, remote_port=remote_port)
+        if len(parts) == 2:
+            local_port = self._parse_port(parts[0], "local")
+            remote_port = self._parse_port(parts[1], "remote")
+            return PortForward(local_port=local_port, remote_port=remote_port)
+        raise MatchlockError(
+            f"invalid port-forward spec: {value!r} (expected [LOCAL_PORT:]REMOTE_PORT)"
+        )
+
+    def _parse_port(self, raw: str, role: str) -> int:
+        value = raw.strip()
+        if not value:
+            raise MatchlockError(f"invalid port-forward spec: empty {role} port")
+        try:
+            port = int(value, 10)
+        except ValueError as e:
+            raise MatchlockError(f"invalid port value {value!r}") from e
+        if port < 1 or port > 65535:
+            raise MatchlockError(f"invalid port value {port}: must be in range 1-65535")
+        return port
 
     def exec(
         self,

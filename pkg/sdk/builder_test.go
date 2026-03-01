@@ -23,7 +23,7 @@ func TestBuilderResources(t *testing.T) {
 		WithTimeout(600).
 		Options()
 
-	require.Equal(t, 4, opts.CPUs)
+	require.Equal(t, 4.0, opts.CPUs)
 	require.Equal(t, 2048, opts.MemoryMB)
 	require.Equal(t, 10240, opts.DiskSizeMB)
 	require.Equal(t, 600, opts.TimeoutSeconds)
@@ -250,7 +250,7 @@ func TestBuilderFullChain(t *testing.T) {
 		Options()
 
 	require.Equal(t, "python:3.12-alpine", opts.Image)
-	require.Equal(t, 2, opts.CPUs)
+	require.Equal(t, 2.0, opts.CPUs)
 	require.Equal(t, 1024, opts.MemoryMB)
 	require.Len(t, opts.AllowedHosts, 2)
 	require.Len(t, opts.AddHosts, 1)
@@ -261,6 +261,11 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Equal(t, "/code", opts.Workspace)
 	require.Len(t, opts.Mounts, 1)
 	require.Equal(t, 120, opts.TimeoutSeconds)
+}
+
+func TestBuilderFractionalCPUs(t *testing.T) {
+	opts := New("alpine:latest").WithCPUs(0.5).Options()
+	require.Equal(t, 0.5, opts.CPUs)
 }
 
 func TestBuilderVFSInterception(t *testing.T) {

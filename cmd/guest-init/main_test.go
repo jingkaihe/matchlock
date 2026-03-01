@@ -5,6 +5,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,7 +15,7 @@ import (
 func TestParseBootConfig(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
-	content := "console=hvc0 matchlock.workspace=/workspace/project matchlock.dns=1.1.1.1,8.8.8.8 matchlock.mtu=1200 matchlock.disk.vdb=/var/lib/buildkit matchlock.add_host.0=api.internal,10.0.0.10"
+	content := "console=hvc0 matchlock.workspace=/workspace/project matchlock.dns=1.1.1.1,8.8.8.8 matchlock.mtu=1200 matchlock.cpus=0.5 matchlock.disk.vdb=/var/lib/buildkit matchlock.add_host.0=api.internal,10.0.0.10"
 	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
@@ -24,6 +25,7 @@ func TestParseBootConfig(t *testing.T) {
 	assert.Equal(t, "/workspace/project", cfg.Workspace)
 	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, cfg.DNSServers)
 	assert.Equal(t, 1200, cfg.MTU)
+	assert.Equal(t, 0.5, cfg.CPUs)
 	require.Len(t, cfg.Disks, 1)
 	assert.Equal(t, "vdb", cfg.Disks[0].Device)
 	assert.Equal(t, "/var/lib/buildkit", cfg.Disks[0].Path)
@@ -41,6 +43,7 @@ func TestParseBootConfigDefaultsWithoutWorkspace(t *testing.T) {
 	assert.Empty(t, cfg.Workspace)
 	assert.Equal(t, []string{"9.9.9.9"}, cfg.DNSServers)
 	assert.Equal(t, defaultNetworkMTU, cfg.MTU)
+	assert.Equal(t, 1.0, cfg.CPUs)
 }
 
 func TestParseBootConfigRequiresDNS(t *testing.T) {
@@ -63,6 +66,42 @@ func TestParseBootConfigRejectsInvalidMTU(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, cfg)
 	assert.ErrorIs(t, err, ErrInvalidMTU)
+}
+
+func TestParseBootConfigRejectsInvalidCPUs(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1 matchlock.cpus=0"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidCPUs)
+}
+
+func TestParseBootConfigRejectsNonFiniteCPUs(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "NaN", value: "NaN"},
+		{name: "PositiveInf", value: "Inf"},
+		{name: "NegativeInf", value: "-Inf"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.cpus=" + tc.value
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidCPUs)
+		})
+	}
 }
 
 func TestParseBootConfigRejectsInvalidAddHost(t *testing.T) {
@@ -187,4 +226,25 @@ func TestWriteEtcHostsCreatesFile(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, renderEtcHosts("vm-12345678", []hostIPMapping{{Host: "api.internal", IP: "10.0.0.10"}}), string(data))
+}
+
+func TestConfigureCPULimitWritesInitCgroupFirst(t *testing.T) {
+	base := t.TempDir()
+	initDir := filepath.Join(base, "sys", "fs", "cgroup", "init")
+	rootDir := filepath.Join(base, "sys", "fs", "cgroup")
+	require.NoError(t, os.MkdirAll(initDir, 0755))
+	require.NoError(t, os.MkdirAll(rootDir, 0755))
+
+	oldPaths := cpuMaxPaths
+	cpuMaxPaths = []string{
+		filepath.Join(initDir, "cpu.max"),
+		filepath.Join(rootDir, "cpu.max"),
+	}
+	t.Cleanup(func() { cpuMaxPaths = oldPaths })
+
+	configureCPULimit(0.1)
+
+	data, err := os.ReadFile(filepath.Join(initDir, "cpu.max"))
+	require.NoError(t, err)
+	assert.Equal(t, "10000 100000", strings.TrimSpace(string(data)))
 }

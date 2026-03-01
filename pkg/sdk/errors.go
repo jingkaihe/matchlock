@@ -21,6 +21,7 @@ var (
 // Create / VM errors
 var (
 	ErrImageRequired      = errors.New("image is required (e.g., alpine:latest)")
+	ErrInvalidCPUCount    = errors.New("cpu count must be > 0")
 	ErrInvalidNetworkMTU  = errors.New("network mtu must be > 0")
 	ErrNoNetworkConflict  = errors.New("no network cannot be combined with allowed hosts, secrets, forced interception, or network interception rules")
 	ErrInvalidAddHost     = errors.New("invalid add-host mapping")

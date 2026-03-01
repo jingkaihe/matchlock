@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -385,6 +387,77 @@ func TestCreateRejectsNegativeNetworkMTU(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrInvalidNetworkMTU)
 	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsInvalidCPUCount(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		CPUs:  -0.5,
+	})
+	require.ErrorIs(t, err, ErrInvalidCPUCount)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsNonFiniteCPUCount(t *testing.T) {
+	tests := []struct {
+		name string
+		cpus float64
+	}{
+		{name: "NaN", cpus: math.NaN()},
+		{name: "PositiveInf", cpus: math.Inf(1)},
+		{name: "NegativeInf", cpus: math.Inf(-1)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &Client{}
+			vmID, err := client.Create(CreateOptions{
+				Image: "alpine:latest",
+				CPUs:  tc.cpus,
+			})
+			require.ErrorIs(t, err, ErrInvalidCPUCount)
+			assert.Empty(t, vmID)
+		})
+	}
+}
+
+func TestCreateRejectsCPUCountAboveHost(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		CPUs:  float64(runtime.NumCPU()) + 0.1,
+	})
+	require.ErrorIs(t, err, ErrInvalidCPUCount)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateSendsFractionalCPUs(t *testing.T) {
+	var capturedCPUs float64
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if resources, ok := params["resources"].(map[string]interface{}); ok {
+						if cpus, ok := resources["cpus"].(float64); ok {
+							capturedCPUs = cpus
+						}
+					}
+				}
+			}
+			return response{JSONRPC: "2.0", Result: json.RawMessage(`{"id":"vm-cpu"}`), ID: &req.ID}
+		default:
+			return response{JSONRPC: "2.0", Error: &rpcError{Code: ErrCodeMethodNotFound, Message: "Method not found"}, ID: &req.ID}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{Image: "alpine:latest", CPUs: 0.5})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-cpu", vmID)
+	assert.Equal(t, 0.5, capturedCPUs)
 }
 
 func TestCreateSendsNoNetwork(t *testing.T) {

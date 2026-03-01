@@ -44,7 +44,13 @@ func (b *lockedBuffer) String() string {
 
 func startPersistentRun(t *testing.T, bin string) (*exec.Cmd, <-chan error, *lockedBuffer) {
 	t.Helper()
-	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false", "-e", "VISIBLE_ENV=from-run")
+	args := withAcceptanceRunCPUs([]string{
+		"run",
+		"--image", "alpine:latest",
+		"--rm=false",
+		"-e", "VISIBLE_ENV=from-run",
+	})
+	cmd := exec.Command(bin, args...)
 	stderr := &lockedBuffer{}
 	cmd.Stderr = stderr
 	require.NoError(t, cmd.Start(), "failed to start run")

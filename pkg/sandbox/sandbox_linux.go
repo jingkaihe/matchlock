@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -144,6 +145,19 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			stateMgr.Unregister(id)
 			return nil, err
 		}
+	}
+	if config.Resources == nil {
+		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
+	}
+	vcpus, ok := api.VCPUCount(config.Resources.CPUs)
+	if !ok {
+		stateMgr.Unregister(id)
+		return nil, errx.With(ErrCreateVM, ": cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpus > hostCPUs {
+		stateMgr.Unregister(id)
+		return nil, errx.With(ErrCreateVM, ": cpus must be <= host cpus (%d)", hostCPUs)
 	}
 
 	// Create CAPool early and inject cert into writable upper before VM creation

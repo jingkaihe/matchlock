@@ -48,7 +48,10 @@ def parse_args() -> argparse.Namespace:
         help="Sandbox image to run (default: %(default)s)",
     )
     parser.add_argument(
-        "--cpus", type=int, default=2, help="vCPU count (default: %(default)s)"
+        "--cpus",
+        type=float,
+        default=2.0,
+        help="vCPU count (supports fractional values, default: %(default)s)",
     )
     parser.add_argument(
         "--memory", type=int, default=4096, help="Memory in MB (default: %(default)s)"

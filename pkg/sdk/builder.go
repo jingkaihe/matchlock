@@ -32,7 +32,7 @@ func (b *SandboxBuilder) WithPrivileged() *SandboxBuilder {
 }
 
 // WithCPUs sets the number of vCPUs.
-func (b *SandboxBuilder) WithCPUs(cpus int) *SandboxBuilder {
+func (b *SandboxBuilder) WithCPUs(cpus float64) *SandboxBuilder {
 	b.opts.CPUs = cpus
 	return b
 }

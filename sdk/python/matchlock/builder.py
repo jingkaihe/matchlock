@@ -15,6 +15,7 @@ from .types import (
     ImageConfig,
     MountConfig,
     NetworkInterceptionConfig,
+    PortForward,
     Secret,
     VFSInterceptionConfig,
 )
@@ -30,7 +31,7 @@ class Sandbox:
         self._opts.privileged = True
         return self
 
-    def with_cpus(self, cpus: int) -> Sandbox:
+    def with_cpus(self, cpus: float) -> Sandbox:
         self._opts.cpus = cpus
         return self
 
@@ -95,6 +96,16 @@ class Sandbox:
 
     def with_no_network(self) -> Sandbox:
         self._opts.no_network = True
+        return self
+
+    def with_port_forward(self, local_port: int, remote_port: int) -> Sandbox:
+        self._opts.port_forwards.append(
+            PortForward(local_port=local_port, remote_port=remote_port)
+        )
+        return self
+
+    def with_port_forward_addresses(self, *addresses: str) -> Sandbox:
+        self._opts.port_forward_addresses.extend(addresses)
         return self
 
     def add_secret(self, name: str, value: str, *hosts: str) -> Sandbox:

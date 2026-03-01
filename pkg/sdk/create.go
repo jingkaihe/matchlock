@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -14,6 +15,13 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	}
 	if opts.CPUs == 0 {
 		opts.CPUs = api.DefaultCPUs
+	}
+	vcpus, ok := api.VCPUCount(opts.CPUs)
+	if !ok {
+		return "", ErrInvalidCPUCount
+	}
+	if vcpus > runtime.NumCPU() {
+		return "", ErrInvalidCPUCount
 	}
 	if opts.MemoryMB == 0 {
 		opts.MemoryMB = api.DefaultMemoryMB

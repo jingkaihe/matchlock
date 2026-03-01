@@ -33,6 +33,10 @@ class TestSandboxResources:
         opts = Sandbox("img").with_cpus(4).options()
         assert opts.cpus == 4
 
+    def test_with_fractional_cpus(self):
+        opts = Sandbox("img").with_cpus(0.5).options()
+        assert opts.cpus == 0.5
+
     def test_with_memory(self):
         opts = Sandbox("img").with_memory(1024).options()
         assert opts.memory_mb == 1024
@@ -89,6 +93,8 @@ class TestSandboxChaining:
         assert isinstance(s.with_dns_servers("1.1.1.1"), Sandbox)
         assert isinstance(s.with_network_mtu(1200), Sandbox)
         assert isinstance(s.with_no_network(), Sandbox)
+        assert isinstance(s.with_port_forward(18080, 8080), Sandbox)
+        assert isinstance(s.with_port_forward_addresses("127.0.0.1"), Sandbox)
         assert isinstance(s.mount("/p", MountConfig()), Sandbox)
         assert isinstance(s.mount_host_dir("/g", "/h"), Sandbox)
         assert isinstance(s.mount_host_dir_readonly("/g", "/h"), Sandbox)
@@ -197,6 +203,21 @@ class TestSandboxNetwork:
     def test_no_network(self):
         opts = Sandbox("img").with_no_network().options()
         assert opts.no_network is True
+
+    def test_port_forwards(self):
+        opts = (
+            Sandbox("img")
+            .with_port_forward(18080, 8080)
+            .with_port_forward(18443, 8443)
+            .with_port_forward_addresses("127.0.0.1", "0.0.0.0")
+            .options()
+        )
+        assert len(opts.port_forwards) == 2
+        assert opts.port_forwards[0].local_port == 18080
+        assert opts.port_forwards[0].remote_port == 8080
+        assert opts.port_forwards[1].local_port == 18443
+        assert opts.port_forwards[1].remote_port == 8443
+        assert opts.port_forward_addresses == ["127.0.0.1", "0.0.0.0"]
 
 
 class TestSandboxSecrets:

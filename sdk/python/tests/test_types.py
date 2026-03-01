@@ -22,6 +22,8 @@ from matchlock.types import (
     NETWORK_HOOK_ACTION_MUTATE,
     NETWORK_HOOK_PHASE_AFTER,
     NETWORK_HOOK_PHASE_BEFORE,
+    PortForward,
+    PortForwardBinding,
     RPCError,
     Secret,
     VFSActionRequest,
@@ -114,10 +116,29 @@ class TestCreateOptions:
         assert opts.workspace == ""
         assert opts.dns_servers == []
         assert opts.network_mtu == 0
+        assert opts.port_forwards == []
+        assert opts.port_forward_addresses == []
 
     def test_with_image(self):
         opts = CreateOptions(image="alpine:latest")
         assert opts.image == "alpine:latest"
+
+
+class TestPortForwardTypes:
+    def test_port_forward_fields(self):
+        pf = PortForward(local_port=18080, remote_port=8080)
+        assert pf.local_port == 18080
+        assert pf.remote_port == 8080
+
+    def test_port_forward_binding_fields(self):
+        binding = PortForwardBinding(
+            address="127.0.0.1",
+            local_port=18080,
+            remote_port=8080,
+        )
+        assert binding.address == "127.0.0.1"
+        assert binding.local_port == 18080
+        assert binding.remote_port == 8080
 
     def test_mutable_defaults_are_independent(self):
         a = CreateOptions()

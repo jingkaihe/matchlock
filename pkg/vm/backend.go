@@ -25,7 +25,7 @@ type VMConfig struct {
 	OverlayLowerPaths   []string // Host paths to read-only lower images attached as extra disks
 	OverlayLowerFSTypes []string // Filesystem type per lower image (erofs)
 	OverlayUpperPath    string   // Host path to writable upper image attached as extra disk
-	CPUs                int
+	CPUs                float64
 	MemoryMB            int
 	NetworkFD           int
 	VsockCID            uint32
