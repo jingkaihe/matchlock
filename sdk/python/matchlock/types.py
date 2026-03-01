@@ -402,6 +402,31 @@ class ImageConfig:
 
 
 @dataclass
+class PortForward:
+    """Port mapping from host to guest."""
+
+    local_port: int
+    """Local host port."""
+
+    remote_port: int
+    """Remote guest port."""
+
+
+@dataclass
+class PortForwardBinding:
+    """Realized local listener binding."""
+
+    address: str
+    """Host bind address."""
+
+    local_port: int
+    """Local host port."""
+
+    remote_port: int
+    """Remote guest port."""
+
+
+@dataclass
 class CreateOptions:
     """Options for creating a sandbox."""
 
@@ -464,6 +489,12 @@ class CreateOptions:
 
     network_mtu: int = 0
     """Network MTU override (0 = use default)."""
+
+    port_forwards: list[PortForward] = field(default_factory=list)
+    """Host-to-guest port mappings applied after VM creation."""
+
+    port_forward_addresses: list[str] = field(default_factory=list)
+    """Host bind addresses for port forwards (default: 127.0.0.1)."""
 
     image_config: ImageConfig | None = None
     """OCI image metadata (USER, ENTRYPOINT, CMD, WORKDIR, ENV)."""

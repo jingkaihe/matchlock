@@ -52,6 +52,8 @@ sandbox = (
     .with_timeout(300)
     .with_workspace("/home/user/code")
     .allow_host("api.openai.com", "pypi.org")
+    .with_port_forward(18080, 8080)
+    .with_port_forward_addresses("127.0.0.1")
     .with_network_mtu(1200)
     .block_private_ips()
     .add_secret("API_KEY", os.environ["API_KEY"], "api.openai.com")
@@ -132,6 +134,10 @@ sandbox = (
 with Client() as client:
     client.launch(sandbox)
     result = client.exec("python3 call_api.py")
+
+    # Optional: forward local 18080 -> guest 8080 after VM creation
+    bindings = client.port_forward("18080:8080")
+    print(bindings[0].address, bindings[0].local_port, bindings[0].remote_port)
 ```
 
 Private-IP behavior in the Python SDK:
@@ -313,6 +319,8 @@ Fluent builder for sandbox configuration.
 | `.unset_block_private_ips()` | Reset private IP behavior to SDK default semantics |
 | `.with_network_mtu(mtu)` | Override guest network stack/interface MTU |
 | `.with_no_network()` | Disable guest network egress entirely |
+| `.with_port_forward(local_port, remote_port)` | Add a host-to-guest port mapping |
+| `.with_port_forward_addresses(*addresses)` | Set bind addresses for configured port mappings |
 | `.with_network_interception(config=None)` | Force interception and optionally apply typed network hook rules |
 | `.add_secret(name, value, *hosts)` | Inject a secret for specific hosts |
 | `.mount(guest_path, config)` | Add a VFS mount with custom `MountConfig` |
@@ -338,6 +346,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
+| `.port_forward(*specs)` | Apply one or more `[LOCAL_PORT:]REMOTE_PORT` mappings |
+| `.port_forward_with_addresses(addresses, *specs)` | Apply port mappings bound on specific host addresses |
 | `.close(timeout=0)` | Shut down the sandbox VM. `timeout` in seconds; 0 = kill immediately |
 | `.remove()` | Remove the stopped VM's state directory |
 | `.vm_id` | The current VM ID (property) |
@@ -347,13 +357,15 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `image_config`, `launch_entrypoint` |
+| `CreateOptions` | `image`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `port_forwards`, `port_forward_addresses`, `image_config`, `launch_entrypoint` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
 | `ExecPipeResult` | `exit_code: int`, `duration_ms: int` |
 | `ExecInteractiveResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |
 | `MountConfig` | `type: str`, `host_path: str`, `readonly: bool` |
+| `PortForward` | `local_port: int`, `remote_port: int` |
+| `PortForwardBinding` | `address: str`, `local_port: int`, `remote_port: int` |
 | `Secret` | `name: str`, `value: str`, `hosts: list[str]` |
 | `MatchlockError` | Base exception for all Matchlock errors |
 | `RPCError` | RPC error with `code: int` and `message: str` |

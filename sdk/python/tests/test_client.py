@@ -32,6 +32,8 @@ from matchlock.types import (
     NetworkBodyTransform,
     NetworkHookRule,
     NetworkInterceptionConfig,
+    PortForward,
+    PortForwardBinding,
     RPCError,
     VolumeInfo,
     VFS_HOOK_ACTION_ALLOW,
@@ -1140,6 +1142,103 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_returns_vm_id_when_post_create_port_forward_fails(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-created"},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "error": {
+                            "code": -32000,
+                            "message": "bind: address already in use",
+                        },
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            with pytest.raises(RPCError) as exc_info:
+                client.create(
+                    CreateOptions(
+                        image="alpine:latest",
+                        port_forwards=[PortForward(local_port=18080, remote_port=8080)],
+                    )
+                )
+            assert exc_info.value.code == -32000
+            assert "address already in use" in exc_info.value.message
+            assert client.vm_id == "vm-created"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_create_applies_port_forwards(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-created"},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "result": {
+                            "bindings": [
+                                {
+                                    "address": "127.0.0.1",
+                                    "local_port": 18080,
+                                    "remote_port": 8080,
+                                }
+                            ]
+                        },
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(
+                CreateOptions(
+                    image="alpine:latest",
+                    port_forwards=[PortForward(local_port=18080, remote_port=8080)],
+                )
+            )
+            assert vm_id == "vm-created"
+
+            reqs = [json.loads(line) for line in fake.stdin.getvalue().splitlines()]
+            assert len(reqs) == 2
+            assert reqs[0]["method"] == "create"
+            assert reqs[1]["method"] == "port_forward"
+            assert reqs[1]["params"] == {
+                "forwards": [{"local_port": 18080, "remote_port": 8080}],
+                "addresses": ["127.0.0.1"],
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
 
 class TestClientLaunch:
     def test_launch_delegates_to_create(self):
@@ -1167,6 +1266,124 @@ class TestClientLaunch:
             create_req = next(req for req in reqs if req["method"] == "create")
             assert create_req["params"]["launch_entrypoint"] is True
             t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestClientPortForward:
+    def test_port_forward_parses_specs_and_returns_bindings(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "bindings": [
+                                {
+                                    "address": "127.0.0.1",
+                                    "local_port": 8080,
+                                    "remote_port": 8080,
+                                },
+                                {
+                                    "address": "127.0.0.1",
+                                    "local_port": 19090,
+                                    "remote_port": 9090,
+                                },
+                            ]
+                        },
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            bindings = client.port_forward("8080", "19090:9090")
+            assert bindings == [
+                PortForwardBinding(
+                    address="127.0.0.1",
+                    local_port=8080,
+                    remote_port=8080,
+                ),
+                PortForwardBinding(
+                    address="127.0.0.1",
+                    local_port=19090,
+                    remote_port=9090,
+                ),
+            ]
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "port_forward"
+            assert req["params"] == {
+                "forwards": [
+                    {"local_port": 8080, "remote_port": 8080},
+                    {"local_port": 19090, "remote_port": 9090},
+                ],
+                "addresses": ["127.0.0.1"],
+            }
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_port_forward_with_addresses(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "bindings": [
+                                {
+                                    "address": "0.0.0.0",
+                                    "local_port": 18080,
+                                    "remote_port": 8080,
+                                }
+                            ]
+                        },
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            bindings = client.port_forward_with_addresses(
+                ["0.0.0.0"],
+                "18080:8080",
+            )
+            assert bindings == [
+                PortForwardBinding(
+                    address="0.0.0.0",
+                    local_port=18080,
+                    remote_port=8080,
+                )
+            ]
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "port_forward"
+            assert req["params"]["addresses"] == ["0.0.0.0"]
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_port_forward_rejects_invalid_spec(self):
+        client, fake = make_client_with_fake()
+        try:
+            with pytest.raises(
+                MatchlockError,
+                match="invalid port-forward spec",
+            ):
+                client.port_forward("1:2:3")
         finally:
             fake.close_stdout()
 
