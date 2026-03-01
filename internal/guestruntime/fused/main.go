@@ -334,6 +334,15 @@ func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	if resp.Err != 0 {
 		return syscall.Errno(-resp.Err)
 	}
+
+	// Update cached child path so subsequent Open/Read use the new path
+	if child := r.GetChild(name); child != nil {
+		if node, ok := child.Operations().(*VFSNode); ok {
+			node.path = newPath
+		}
+	}
+	r.MvChild(name, newParent.EmbeddedInode(), newName, true)
+
 	return 0
 }
 
@@ -535,6 +544,15 @@ func (n *VFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	if resp.Err != 0 {
 		return syscall.Errno(-resp.Err)
 	}
+
+	// Update cached child path so subsequent Open/Read use the new path
+	if child := n.GetChild(name); child != nil {
+		if node, ok := child.Operations().(*VFSNode); ok {
+			node.path = newPath
+		}
+	}
+	n.MvChild(name, newParent.EmbeddedInode(), newName, true)
+
 	return 0
 }
 
