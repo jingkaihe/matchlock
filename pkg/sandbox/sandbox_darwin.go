@@ -73,6 +73,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			return nil, err
 		}
 	}
+	if config.Resources == nil {
+		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
+	}
+	if config.Resources.CPUs <= 0 {
+		return nil, errx.With(ErrCreateVM, ": cpus must be > 0")
+	}
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {

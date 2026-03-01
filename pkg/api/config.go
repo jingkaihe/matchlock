@@ -66,7 +66,7 @@ func ValidateGuestMount(path string) error {
 }
 
 type Resources struct {
-	CPUs           int           `json:"cpus,omitempty"`
+	CPUs           float64       `json:"cpus,omitempty"`
 	MemoryMB       int           `json:"memory_mb,omitempty"`
 	DiskSizeMB     int           `json:"disk_size_mb,omitempty"`
 	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`

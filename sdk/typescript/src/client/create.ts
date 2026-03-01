@@ -39,7 +39,7 @@ export function buildCreateParams(
   wireNetworkInterception: WireNetworkInterceptionConfig | undefined,
 ): JSONObject {
   const resources = {
-    cpus: options.cpus || DEFAULT_CPUS,
+    cpus: options.cpus ?? DEFAULT_CPUS,
     memory_mb: options.memoryMb || DEFAULT_MEMORY_MB,
     disk_size_mb: options.diskSizeMb || DEFAULT_DISK_SIZE_MB,
     timeout_seconds: options.timeoutSeconds || DEFAULT_TIMEOUT_SECONDS,

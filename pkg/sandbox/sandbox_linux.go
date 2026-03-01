@@ -145,6 +145,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			return nil, err
 		}
 	}
+	if config.Resources == nil {
+		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
+	}
+	if config.Resources.CPUs <= 0 {
+		stateMgr.Unregister(id)
+		return nil, errx.With(ErrCreateVM, ": cpus must be > 0")
+	}
 
 	// Create CAPool early and inject cert into writable upper before VM creation
 	needsProxy := !noNetwork && config.Network != nil && (config.Network.Intercept || config.Network.Interception != nil || len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)

@@ -48,6 +48,11 @@ const (
 	overlayPutOldDir  = ".old-root"
 )
 
+var cpuMaxPaths = []string{
+	"/sys/fs/cgroup/init/cpu.max",
+	"/sys/fs/cgroup/cpu.max",
+}
+
 type diskMount struct {
 	Device   string
 	Path     string
@@ -64,6 +69,7 @@ type bootConfig struct {
 	Hostname   string
 	AddHosts   []hostIPMapping
 	Workspace  string
+	CPUs       float64
 	MTU        int
 	NoNetwork  bool
 	Disks      []diskMount
@@ -115,6 +121,7 @@ func runInit() {
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
+	configureCPULimit(cfg.CPUs)
 
 	if err := configureHostname(cfg.Hostname, cfg.AddHosts); err != nil {
 		fatal(err)
@@ -162,7 +169,8 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	}
 
 	cfg := &bootConfig{
-		MTU: defaultNetworkMTU,
+		CPUs: 1,
+		MTU:  defaultNetworkMTU,
 	}
 	for _, field := range strings.Fields(string(data)) {
 		switch {
@@ -194,6 +202,14 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				return nil, errx.With(ErrInvalidMTU, ": %q", v)
 			}
 			cfg.MTU = mtu
+
+		case strings.HasPrefix(field, "matchlock.cpus="):
+			v := strings.TrimPrefix(field, "matchlock.cpus=")
+			cpus, convErr := strconv.ParseFloat(v, 64)
+			if convErr != nil || cpus <= 0 {
+				return nil, errx.With(ErrInvalidCPUs, ": %q", v)
+			}
+			cfg.CPUs = cpus
 
 		case strings.HasPrefix(field, "matchlock.no_network="):
 			v := strings.TrimPrefix(field, "matchlock.no_network=")
@@ -398,6 +414,23 @@ func configureCgroupDelegation() {
 	for _, c := range strings.Fields(string(data)) {
 		_ = os.WriteFile(subtree, []byte("+"+c), 0644)
 	}
+}
+
+func configureCPULimit(cpus float64) {
+	if cpus <= 0 {
+		return
+	}
+	quota := int(cpus * 100000.0)
+	if quota < 1000 {
+		quota = 1000
+	}
+	limit := []byte(fmt.Sprintf("%d 100000", quota))
+	for _, p := range cpuMaxPaths {
+		if err := os.WriteFile(p, limit, 0644); err == nil {
+			return
+		}
+	}
+	warnf("apply cpu quota failed: %s", strings.TrimSpace(string(limit)))
 }
 
 func parseAddHostField(value string) (hostIPMapping, error) {

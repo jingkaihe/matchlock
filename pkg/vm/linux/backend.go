@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -44,6 +45,10 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	if config.CPUs <= 0 {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be > 0")
+	}
+
 	tapName := ""
 	tapFD := -1
 	if !config.NoNetwork {
@@ -293,6 +298,7 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
+		kernelArgs += fmt.Sprintf(" matchlock.cpus=%g", m.config.CPUs)
 		devLetter := 'b' // vda is rootfs
 		if m.config.OverlayEnabled {
 			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))
@@ -389,7 +395,7 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	cfg.BootSource.KernelImagePath = m.config.KernelPath
 	cfg.BootSource.BootArgs = kernelArgs
 	cfg.Drives = drives
-	cfg.MachineConfig.VCPUCount = m.config.CPUs
+	cfg.MachineConfig.VCPUCount = int(math.Ceil(m.config.CPUs))
 	cfg.MachineConfig.MemSizeMiB = m.config.MemoryMB
 	cfg.NetworkInterfaces = make([]struct {
 		IfaceID     string `json:"iface_id"`

@@ -15,6 +15,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.CPUs == 0 {
 		opts.CPUs = api.DefaultCPUs
 	}
+	if opts.CPUs <= 0 {
+		return "", ErrInvalidCPUCount
+	}
 	if opts.MemoryMB == 0 {
 		opts.MemoryMB = api.DefaultMemoryMB
 	}

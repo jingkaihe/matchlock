@@ -30,6 +30,7 @@ var (
 	ErrStartFirecracker = errors.New("start firecracker")
 	ErrVMNotReady       = errors.New("VM failed to become ready")
 	ErrVMReadyTimeout   = errors.New("timeout waiting for VM ready signal")
+	ErrInvalidCPUCount  = errors.New("invalid cpu count")
 )
 
 // Vsock errors

@@ -13,7 +13,7 @@ type CreateOptions struct {
 	// Privileged skips in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	Privileged bool
 	// CPUs is the number of vCPUs
-	CPUs int
+	CPUs float64
 	// MemoryMB is the memory in megabytes
 	MemoryMB int
 	// DiskSizeMB is the disk size in megabytes (default: 5120)

@@ -37,7 +37,7 @@ To pull a pre-built container image, use "matchlock pull" instead.`,
 func init() {
 	buildCmd.Flags().StringP("tag", "t", "", "Tag the built image locally")
 	buildCmd.Flags().StringP("file", "f", "Dockerfile", "Path to Dockerfile")
-	buildCmd.Flags().Int("build-cpus", 0, "Number of CPUs for BuildKit VM (0 = all available)")
+	buildCmd.Flags().Float64("build-cpus", 0, "Number of CPUs for BuildKit VM (supports fractional values, 0 = all available)")
 	buildCmd.Flags().Int("build-memory", 0, "Memory in MB for BuildKit VM (0 = all available)")
 	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
 	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
@@ -161,7 +161,7 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return fmt.Errorf("-t/--tag is required when building from a Dockerfile")
 	}
 
-	cpus, _ := cmd.Flags().GetInt("build-cpus")
+	cpus, _ := cmd.Flags().GetFloat64("build-cpus")
 	memory, _ := cmd.Flags().GetInt("build-memory")
 
 	disk, _ := cmd.Flags().GetInt("build-disk")
@@ -174,7 +174,10 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	}
 
 	if cpus == 0 {
-		cpus = runtime.NumCPU()
+		cpus = float64(runtime.NumCPU())
+	}
+	if cpus < 0 {
+		return fmt.Errorf("--build-cpus must be >= 0")
 	}
 	if memory == 0 {
 		mem, err := totalMemoryMB()

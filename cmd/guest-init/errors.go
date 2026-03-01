@@ -8,6 +8,7 @@ var (
 	ErrReadCmdline        = errors.New("read cmdline")
 	ErrMissingDNS         = errors.New("missing matchlock.dns")
 	ErrInvalidMTU         = errors.New("invalid matchlock.mtu")
+	ErrInvalidCPUs        = errors.New("invalid matchlock.cpus")
 	ErrInvalidAddHost     = errors.New("invalid matchlock.add_host")
 	ErrInvalidDiskMount   = errors.New("invalid matchlock.disk")
 	ErrMountExtraDisk     = errors.New("mount extra disk")
