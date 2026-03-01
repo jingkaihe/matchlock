@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -76,8 +77,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if config.Resources == nil {
 		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
 	}
-	if config.Resources.CPUs <= 0 {
-		return nil, errx.With(ErrCreateVM, ": cpus must be > 0")
+	vcpus, ok := api.VCPUCount(config.Resources.CPUs)
+	if !ok {
+		return nil, errx.With(ErrCreateVM, ": cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpus > hostCPUs {
+		return nil, errx.With(ErrCreateVM, ": cpus must be <= host cpus (%d)", hostCPUs)
 	}
 
 	stateMgr := state.NewManager()

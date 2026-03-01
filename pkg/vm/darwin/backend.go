@@ -6,9 +6,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/Code-Hex/vz/v3"
@@ -34,8 +34,13 @@ func (b *DarwinBackend) Name() string {
 }
 
 func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
-	if config.CPUs <= 0 {
-		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be > 0")
+	vcpus, ok := api.VCPUCount(config.CPUs)
+	if !ok {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpus > hostCPUs {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= host cpus (%d)", hostCPUs)
 	}
 
 	// Verify files exist
@@ -99,7 +104,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 
 	vzConfig, err := vz.NewVirtualMachineConfiguration(
 		bootLoader,
-		uint(math.Ceil(config.CPUs)),
+		uint(vcpus),
 		uint64(config.MemoryMB)*1024*1024,
 	)
 	if err != nil {

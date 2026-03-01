@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -205,8 +206,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if networkMTU <= 0 {
 		return fmt.Errorf("--mtu must be > 0")
 	}
-	if cpus <= 0 {
-		return fmt.Errorf("--cpus must be > 0")
+	vcpuCount, ok := api.VCPUCount(cpus)
+	if !ok {
+		return fmt.Errorf("--cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpuCount > hostCPUs {
+		return fmt.Errorf("--cpus must be <= host cpus (%d)", hostCPUs)
 	}
 	if noNetwork {
 		if len(allowHosts) > 0 {

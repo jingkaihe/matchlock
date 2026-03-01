@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -45,8 +46,13 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
-	if config.CPUs <= 0 {
-		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be > 0")
+	vcpus, ok := api.VCPUCount(config.CPUs)
+	if !ok {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
+	}
+	hostCPUs := runtime.NumCPU()
+	if vcpus > hostCPUs {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= host cpus (%d)", hostCPUs)
 	}
 
 	tapName := ""

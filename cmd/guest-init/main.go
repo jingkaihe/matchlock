@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -206,7 +207,7 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 		case strings.HasPrefix(field, "matchlock.cpus="):
 			v := strings.TrimPrefix(field, "matchlock.cpus=")
 			cpus, convErr := strconv.ParseFloat(v, 64)
-			if convErr != nil || cpus <= 0 {
+			if convErr != nil || math.IsNaN(cpus) || math.IsInf(cpus, 0) || cpus <= 0 {
 				return nil, errx.With(ErrInvalidCPUs, ": %q", v)
 			}
 			cfg.CPUs = cpus
@@ -417,7 +418,7 @@ func configureCgroupDelegation() {
 }
 
 func configureCPULimit(cpus float64) {
-	if cpus <= 0 {
+	if math.IsNaN(cpus) || math.IsInf(cpus, 0) || cpus <= 0 {
 		return
 	}
 	quota := int(cpus * 100000.0)

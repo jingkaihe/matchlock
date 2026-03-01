@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -392,6 +394,39 @@ func TestCreateRejectsInvalidCPUCount(t *testing.T) {
 	vmID, err := client.Create(CreateOptions{
 		Image: "alpine:latest",
 		CPUs:  -0.5,
+	})
+	require.ErrorIs(t, err, ErrInvalidCPUCount)
+	assert.Empty(t, vmID)
+}
+
+func TestCreateRejectsNonFiniteCPUCount(t *testing.T) {
+	tests := []struct {
+		name string
+		cpus float64
+	}{
+		{name: "NaN", cpus: math.NaN()},
+		{name: "PositiveInf", cpus: math.Inf(1)},
+		{name: "NegativeInf", cpus: math.Inf(-1)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &Client{}
+			vmID, err := client.Create(CreateOptions{
+				Image: "alpine:latest",
+				CPUs:  tc.cpus,
+			})
+			require.ErrorIs(t, err, ErrInvalidCPUCount)
+			assert.Empty(t, vmID)
+		})
+	}
+}
+
+func TestCreateRejectsCPUCountAboveHost(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image: "alpine:latest",
+		CPUs:  float64(runtime.NumCPU()) + 0.1,
 	})
 	require.ErrorIs(t, err, ErrInvalidCPUCount)
 	assert.Empty(t, vmID)

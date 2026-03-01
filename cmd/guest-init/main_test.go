@@ -79,6 +79,31 @@ func TestParseBootConfigRejectsInvalidCPUs(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidCPUs)
 }
 
+func TestParseBootConfigRejectsNonFiniteCPUs(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "NaN", value: "NaN"},
+		{name: "PositiveInf", value: "Inf"},
+		{name: "NegativeInf", value: "-Inf"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.cpus=" + tc.value
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidCPUs)
+		})
+	}
+}
+
 func TestParseBootConfigRejectsInvalidAddHost(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")

@@ -173,11 +173,16 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return fmt.Errorf("--mtu must be > 0")
 	}
 
+	hostCPUs := runtime.NumCPU()
 	if cpus == 0 {
-		cpus = float64(runtime.NumCPU())
+		cpus = float64(hostCPUs)
 	}
-	if cpus < 0 {
-		return fmt.Errorf("--build-cpus must be >= 0")
+	vcpuCount, ok := api.VCPUCount(cpus)
+	if !ok {
+		return fmt.Errorf("--build-cpus must be a finite number > 0 (or 0 for all available)")
+	}
+	if vcpuCount > hostCPUs {
+		return fmt.Errorf("--build-cpus must be <= host cpus (%d)", hostCPUs)
 	}
 	if memory == 0 {
 		mem, err := totalMemoryMB()
