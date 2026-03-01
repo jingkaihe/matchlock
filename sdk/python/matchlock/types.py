@@ -411,8 +411,8 @@ class CreateOptions:
     privileged: bool = False
     """Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)."""
 
-    cpus: int = 0
-    """Number of vCPUs (0 = use default)."""
+    cpus: float = 0
+    """Number of vCPUs (supports fractional values, 0 = use default)."""
 
     memory_mb: int = 0
     """Memory in megabytes (0 = use default)."""

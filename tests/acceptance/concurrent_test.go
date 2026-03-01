@@ -25,6 +25,7 @@ func TestConcurrentSandboxesWithProxy(t *testing.T) {
 
 	sandbox := func() *sdk.SandboxBuilder {
 		return sdk.New("alpine:latest").
+			WithCPUs(acceptanceDefaultCPUs).
 			AllowHost("httpbin.org")
 	}
 
@@ -108,6 +109,7 @@ func TestConcurrentSandboxesHTTPRequest(t *testing.T) {
 			defer wg.Done()
 
 			sb := sdk.New("alpine:latest").
+				WithCPUs(acceptanceDefaultCPUs).
 				AllowHost("httpbin.org")
 
 			client, err := sdk.NewClient(matchlockConfig(t))
@@ -178,6 +180,7 @@ func TestConcurrentSandboxesWithSecrets(t *testing.T) {
 			defer wg.Done()
 
 			sb := sdk.New("alpine:latest").
+				WithCPUs(acceptanceDefaultCPUs).
 				AllowHost("httpbin.org").
 				AddSecret("MY_KEY", secrets[idx], "httpbin.org")
 

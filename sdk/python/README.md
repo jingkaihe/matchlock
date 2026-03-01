@@ -300,7 +300,7 @@ Fluent builder for sandbox configuration.
 
 | Method | Description |
 |---|---|
-| `.with_cpus(n)` | Set number of vCPUs |
+| `.with_cpus(n)` | Set number of vCPUs (supports fractional values, e.g. `0.5`) |
 | `.with_privileged()` | Enable privileged mode (skip in-guest seccomp/cap-drop/no_new_privs) |
 | `.with_memory(mb)` | Set memory in MB |
 | `.with_disk_size(mb)` | Set disk size in MB |

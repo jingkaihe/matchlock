@@ -14,6 +14,8 @@ import (
 )
 
 const launchTimeout = 45 * time.Second
+const acceptanceDefaultCPUs = 0.5
+const acceptanceDefaultCPUsArg = "0.5"
 
 func matchlockConfig(t *testing.T) sdk.Config {
 	t.Helper()
@@ -36,6 +38,10 @@ func launchAlpineWithWorkspace(t *testing.T) *sdk.Client {
 
 func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	t.Helper()
+	if builder.Options().CPUs == 0 {
+		builder.WithCPUs(acceptanceDefaultCPUs)
+	}
+
 	client, err := sdk.NewClient(matchlockConfig(t))
 	require.NoError(t, err, "NewClient")
 
@@ -83,6 +89,7 @@ func matchlockBin(t *testing.T) string {
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	bin := matchlockBin(t)
+	args = withAcceptanceRunCPUs(args)
 	cmd := exec.Command(bin, args...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -108,6 +115,7 @@ func runCLIWithTimeout(t *testing.T, timeout time.Duration, args ...string) (str
 func runCLIEnvWithTimeout(t *testing.T, timeout time.Duration, env []string, args ...string) (string, string, int) {
 	t.Helper()
 	bin := matchlockBin(t)
+	args = withAcceptanceRunCPUs(args)
 	cmd := exec.Command(bin, args...)
 	if env != nil {
 		cmd.Env = append(os.Environ(), env...)
@@ -136,4 +144,34 @@ func runCLIEnvWithTimeout(t *testing.T, timeout time.Duration, env []string, arg
 		require.Fail(t, "command timed out", "%s %v", bin, args)
 		return "", "", -1
 	}
+}
+
+func withAcceptanceRunCPUs(args []string) []string {
+	if len(args) == 0 || args[0] != "run" {
+		return args
+	}
+
+	hasCPUs := false
+	hasHelp := false
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		if arg == "--cpus" || strings.HasPrefix(arg, "--cpus=") {
+			hasCPUs = true
+			break
+		}
+		if arg == "--help" || arg == "-h" {
+			hasHelp = true
+		}
+	}
+	if hasCPUs || hasHelp {
+		return args
+	}
+
+	withCPUs := make([]string, 0, len(args)+2)
+	withCPUs = append(withCPUs, args[0], "--cpus", acceptanceDefaultCPUsArg)
+	withCPUs = append(withCPUs, args[1:]...)
+	return withCPUs
 }

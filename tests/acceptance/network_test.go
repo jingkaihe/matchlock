@@ -321,6 +321,7 @@ func TestSDKAddHostRejectsInvalidMapping(t *testing.T) {
 
 	_, err = client.Create(sdk.CreateOptions{
 		Image: "alpine:latest",
+		CPUs:  acceptanceDefaultCPUs,
 		AddHosts: []api.HostIPMapping{{
 			Host: "bad host",
 			IP:   "10.0.0.10",

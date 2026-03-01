@@ -30,7 +30,7 @@ class Sandbox:
         self._opts.privileged = True
         return self
 
-    def with_cpus(self, cpus: int) -> Sandbox:
+    def with_cpus(self, cpus: float) -> Sandbox:
         self._opts.cpus = cpus
         return self
 

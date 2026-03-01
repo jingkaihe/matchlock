@@ -33,6 +33,10 @@ class TestSandboxResources:
         opts = Sandbox("img").with_cpus(4).options()
         assert opts.cpus == 4
 
+    def test_with_fractional_cpus(self):
+        opts = Sandbox("img").with_cpus(0.5).options()
+        assert opts.cpus == 0.5
+
     def test_with_memory(self):
         opts = Sandbox("img").with_memory(1024).options()
         assert opts.memory_mb == 1024

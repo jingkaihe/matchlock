@@ -104,16 +104,16 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 
 func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 	hostWorkspace := t.TempDir()
-	cmd := exec.Command(
-		matchlockBin(t),
+	args := withAcceptanceRunCPUs([]string{
 		"run",
 		"--image", "alpine:latest",
 		"--workspace", "/workspace",
-		"-v", hostWorkspace+":/workspace",
+		"-v", hostWorkspace + ":/workspace",
 		"--rm",
 		"-it",
 		"sh",
-	)
+	})
+	cmd := exec.Command(matchlockBin(t), args...)
 	ptmx, err := pty.Start(cmd)
 	require.NoError(t, err, "failed to start interactive matchlock run")
 	defer ptmx.Close()

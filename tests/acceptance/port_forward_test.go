@@ -104,6 +104,7 @@ func startPersistentRunWithArgs(t *testing.T, bin string, runArgs ...string) (*e
 	t.Helper()
 	args := []string{"run", "--image", "alpine:latest", "--rm=false"}
 	args = append(args, runArgs...)
+	args = withAcceptanceRunCPUs(args)
 
 	cmd := exec.Command(bin, args...)
 	stderr := &lockedBuffer{}

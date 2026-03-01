@@ -230,6 +230,35 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
+    def test_create_with_fractional_cpus(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-frac-cpu"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            vm_id = client.create(CreateOptions(image="img", cpus=0.5))
+            assert vm_id == "vm-frac-cpu"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["method"] == "create"
+            assert req["params"]["resources"]["cpus"] == 0.5
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
     def test_create_with_privileged(self):
         client, fake = make_client_with_fake()
         try:
