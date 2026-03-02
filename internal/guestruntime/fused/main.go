@@ -337,7 +337,6 @@ func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 
 	// Update cached child/subtree paths so subsequent Open/Read use the new path.
 	updateCachedPathsAfterRename(r.GetChild(name), oldPath, newPath)
-	r.MvChild(name, newParent.EmbeddedInode(), newName, true)
 
 	return 0
 }
@@ -567,7 +566,6 @@ func (n *VFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 
 	// Update cached child/subtree paths so subsequent Open/Read use the new path.
 	updateCachedPathsAfterRename(n.GetChild(name), oldPath, newPath)
-	n.MvChild(name, newParent.EmbeddedInode(), newName, true)
 
 	return 0
 }
