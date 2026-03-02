@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-* Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns).
+* Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns) ([#80](https://github.com/jingkaihe/matchlock/pull/80) by [@sosso](https://github.com/sosso)).
 
 ## 0.1.29
 
