@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+* Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns).
+
 ## 0.1.29
 
 * Added fractional CPU support across CLI and SDK create flows (`cpus` now accepts values like `0.5`).

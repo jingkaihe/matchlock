@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -334,4 +335,27 @@ func TestCLIRunEnvFlagOverridesEnvFile(t *testing.T) {
 	)
 	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
 	assert.Equal(t, "flag", strings.TrimSpace(stdout))
+}
+
+func TestStartupLatencyReliabilityHarness(t *testing.T) {
+	if os.Getenv("MATCHLOCK_RUN_REGRESSION") != "1" {
+		t.Skip("set MATCHLOCK_RUN_REGRESSION=1 to run startup latency reliability harness")
+	}
+
+	const iterations = 3
+	var total time.Duration
+	for i := 0; i < iterations; i++ {
+		start := time.Now()
+		stdout, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "--", "true")
+		require.Equalf(t, 0, exitCode, "run failed (iter=%d): stdout=%s stderr=%s", i, stdout, stderr)
+		total += time.Since(start)
+	}
+	avg := total / iterations
+	t.Logf("startup latency avg=%s over %d runs", avg, iterations)
+
+	if maxMsStr := strings.TrimSpace(os.Getenv("MATCHLOCK_MAX_STARTUP_MS")); maxMsStr != "" {
+		maxMs, err := strconv.Atoi(maxMsStr)
+		require.NoError(t, err, "invalid MATCHLOCK_MAX_STARTUP_MS")
+		assert.LessOrEqual(t, avg.Milliseconds(), int64(maxMs), "startup latency regression threshold exceeded")
+	}
 }

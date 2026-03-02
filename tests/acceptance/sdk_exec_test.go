@@ -5,6 +5,8 @@ package acceptance
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -154,4 +156,120 @@ func TestLargeOutput(t *testing.T) {
 	assert.Equal(t, 0, result.ExitCode)
 	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
 	assert.Len(t, lines, 1000)
+}
+
+func TestHostFSMountAtomicRenamePreservesReadability(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"echo direct > direct.txt",
+		"cat direct.txt",
+		"echo atomic > tmp.xyz",
+		"mv tmp.xyz renamed.txt",
+		"cat renamed.txt",
+	}, "; ")
+	result := runHostFSMountCommand(
+		t,
+		hostRepo,
+		script,
+	)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+	assert.Contains(t, result.Stdout, "direct")
+	assert.Contains(t, result.Stdout, "atomic")
+
+	body, err := osReadTrim(filepath.Join(hostRepo, "renamed.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "atomic", body)
+}
+
+func TestHostFSMountDirectoryRenamePreservesDescendantReads(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"mkdir -p old/sub",
+		"echo nested > old/sub/file.txt",
+		"cat old/sub/file.txt",
+		"mv old new",
+		"cat new/sub/file.txt",
+	}, "; ")
+	result := runHostFSMountCommand(
+		t,
+		hostRepo,
+		script,
+	)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+	assert.Equal(t, 2, strings.Count(result.Stdout, "nested"))
+}
+
+func TestHostFSMountGitHeadLockRenamePreservesReadability(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"mkdir -p .git",
+		"echo 'ref: refs/heads/main' > .git/HEAD.lock",
+		"mv .git/HEAD.lock .git/HEAD",
+		"cat .git/HEAD",
+	}, "; ")
+	result := runHostFSMountCommand(
+		t,
+		hostRepo,
+		script,
+	)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+	assert.Contains(t, result.Stdout, "ref: refs/heads/main")
+}
+
+func TestHostFSMountGitCheckoutAndStatusSucceed(t *testing.T) {
+	hostRepo := t.TempDir()
+	client := launchWithBuilder(t, sdk.New("alpine/git:latest").
+		WithWorkspace("/workspace").
+		MountHostDir("/workspace/repo", hostRepo),
+	)
+
+	script := strings.Join([]string{
+		"set -eu",
+		"git config --global --add safe.directory /workspace/repo",
+		"git init >/dev/null",
+		"git config user.email test@test.com",
+		"git config user.name Test",
+		"git config --local core.logAllRefUpdates false",
+		"echo '# Test' > README.md",
+		"git add README.md",
+		"git commit -m init >/dev/null",
+		"git checkout -b test-branch >/dev/null",
+		"git status --short >/dev/null",
+		"cat .git/HEAD",
+	}, "; ")
+
+	result, err := client.ExecWithDir(
+		context.Background(),
+		script,
+		"/workspace/repo",
+	)
+	require.NoError(t, err, "ExecWithDir")
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+	assert.Contains(t, result.Stdout, "ref: refs/heads/test-branch")
+}
+
+func runHostFSMountCommand(t *testing.T, hostRepo string, cmd string) *sdk.ExecResult {
+	t.Helper()
+	client := launchWithBuilder(t, sdk.New("alpine:latest").
+		WithWorkspace("/workspace").
+		MountHostDir("/workspace/repo", hostRepo),
+	)
+	result, err := client.ExecWithDir(
+		context.Background(),
+		cmd,
+		"/workspace/repo",
+	)
+	require.NoError(t, err, "ExecWithDir")
+	return result
+}
+
+func osReadTrim(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
 }
