@@ -155,6 +155,20 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		closeSocketPair()
 		return nil, errx.Wrap(ErrConsoleConfig, err)
 	}
+	releaseConsole := true
+	defer func() {
+		if !releaseConsole {
+			return
+		}
+		if console.stdinNull != nil {
+			_ = console.stdinNull.Close()
+			console.stdinNull = nil
+		}
+		if console.logFile != nil {
+			_ = console.logFile.Close()
+			console.logFile = nil
+		}
+	}()
 
 	validated, err := vzConfig.Validate()
 	if err != nil || !validated {
@@ -169,6 +183,7 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 		closeSocketPair()
 		return nil, errx.Wrap(ErrVMCreate, err)
 	}
+	releaseConsole = false
 
 	return &DarwinMachine{
 		id:          config.ID,
