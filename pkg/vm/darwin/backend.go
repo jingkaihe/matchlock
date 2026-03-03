@@ -25,6 +25,11 @@ const (
 
 type DarwinBackend struct{}
 
+type consoleFiles struct {
+	stdinNull *os.File
+	logFile   *os.File
+}
+
 func NewDarwinBackend() *DarwinBackend {
 	return &DarwinBackend{}
 }
@@ -144,7 +149,8 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	}
 	vzConfig.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropyConfig})
 
-	if err := b.configureConsole(vzConfig, config); err != nil {
+	console, err := b.configureConsole(vzConfig, config)
+	if err != nil {
 		os.Remove(tempRootfs)
 		closeSocketPair()
 		return nil, errx.Wrap(ErrConsoleConfig, err)
@@ -165,11 +171,13 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	}
 
 	return &DarwinMachine{
-		id:         config.ID,
-		config:     config,
-		vm:         vzVM,
-		socketPair: socketPair,
-		tempRootfs: tempRootfs,
+		id:          config.ID,
+		config:      config,
+		vm:          vzVM,
+		socketPair:  socketPair,
+		tempRootfs:  tempRootfs,
+		consoleRead: console.stdinNull,
+		consoleLog:  console.logFile,
 	}, nil
 }
 
@@ -421,33 +429,38 @@ func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguratio
 	return nil
 }
 
-func (b *DarwinBackend) configureConsole(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {
+func (b *DarwinBackend) configureConsole(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) (*consoleFiles, error) {
 	// Debug console - kernel output goes to file
 	home, _ := os.UserHomeDir()
 	logPath := filepath.Join(home, ".cache", "matchlock", "console.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		return errx.Wrap(ErrConsoleLog, err)
+		return nil, errx.Wrap(ErrConsoleLog, err)
 	}
 
 	nullRead, err := os.Open("/dev/null")
 	if err != nil {
 		logFile.Close()
-		return errx.Wrap(ErrDevNull, err)
+		return nil, errx.Wrap(ErrDevNull, err)
 	}
 
 	serialAttachment, err := vz.NewFileHandleSerialPortAttachment(nullRead, logFile)
 	if err != nil {
 		nullRead.Close()
 		logFile.Close()
-		return errx.Wrap(ErrSerialAttach, err)
+		return nil, errx.Wrap(ErrSerialAttach, err)
 	}
 
 	consoleConfig, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(serialAttachment)
 	if err != nil {
-		return errx.Wrap(ErrConsoleDevice, err)
+		nullRead.Close()
+		logFile.Close()
+		return nil, errx.Wrap(ErrConsoleDevice, err)
 	}
 
 	vzConfig.SetSerialPortsVirtualMachineConfiguration([]*vz.VirtioConsoleDeviceSerialPortConfiguration{consoleConfig})
-	return nil
+	return &consoleFiles{
+		stdinNull: nullRead,
+		logFile:   logFile,
+	}, nil
 }

@@ -73,7 +73,8 @@ var (
 
 // Close errors
 var (
-	ErrStop             = errors.New("stop")
-	ErrCloseVFSListener = errors.New("close vfs listener")
-	ErrCloseSocketPair  = errors.New("close socket pair")
+	ErrStop              = errors.New("stop")
+	ErrCloseVFSListener  = errors.New("close vfs listener")
+	ErrCloseSocketPair   = errors.New("close socket pair")
+	ErrCloseConsoleFiles = errors.New("close console files")
 )

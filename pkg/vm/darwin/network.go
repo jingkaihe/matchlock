@@ -3,7 +3,9 @@
 package darwin
 
 import (
+	"errors"
 	"os"
+	"sync"
 	"syscall"
 )
 
@@ -13,6 +15,7 @@ type SocketPair struct {
 	hostF   *os.File
 	guestF  *os.File
 	closed  bool
+	mu      sync.Mutex
 }
 
 func createSocketPair() (*SocketPair, error) {
@@ -57,20 +60,25 @@ func (sp *SocketPair) GuestFile() *os.File {
 }
 
 func (sp *SocketPair) Close() error {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+
 	if sp.closed {
 		return nil
 	}
 	sp.closed = true
 	var errs []error
 	if sp.hostF != nil {
-		if err := sp.hostF.Close(); err != nil {
+		if err := sp.hostF.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 			errs = append(errs, err)
 		}
+		sp.hostF = nil
 	}
 	if sp.guestF != nil {
-		if err := sp.guestF.Close(); err != nil {
+		if err := sp.guestF.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 			errs = append(errs, err)
 		}
+		sp.guestF = nil
 	}
 	if len(errs) > 0 {
 		return errs[0]

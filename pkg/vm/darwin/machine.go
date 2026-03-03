@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 
 	"io"
 	"net"
@@ -31,6 +32,8 @@ type DarwinMachine struct {
 	started     bool
 	mu          sync.Mutex
 	vfsListener *vz.VirtioSocketListener
+	consoleRead *os.File
+	consoleLog  *os.File
 }
 
 func (m *DarwinMachine) Start(ctx context.Context) error {
@@ -149,10 +152,31 @@ func (m *DarwinMachine) cleanup() {
 	if m.socketPair != nil {
 		m.socketPair.Close()
 	}
+	_ = m.closeConsoleFiles()
 	if m.tempRootfs != "" {
 		os.Remove(m.tempRootfs)
 		m.tempRootfs = ""
 	}
+}
+
+func (m *DarwinMachine) closeConsoleFiles() error {
+	var errs []error
+	if m.consoleRead != nil {
+		if err := m.consoleRead.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			errs = append(errs, err)
+		}
+		m.consoleRead = nil
+	}
+	if m.consoleLog != nil {
+		if err := m.consoleLog.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			errs = append(errs, err)
+		}
+		m.consoleLog = nil
+	}
+	if len(errs) > 0 {
+		return errs[0]
+	}
+	return nil
 }
 
 func (m *DarwinMachine) Wait(ctx context.Context) error {
@@ -484,6 +508,9 @@ func (m *DarwinMachine) Close(ctx context.Context) error {
 		if err := m.socketPair.Close(); err != nil {
 			errs = append(errs, errx.Wrap(ErrCloseSocketPair, err))
 		}
+	}
+	if err := m.closeConsoleFiles(); err != nil {
+		errs = append(errs, errx.Wrap(ErrCloseConsoleFiles, err))
 	}
 
 	if len(errs) > 0 {

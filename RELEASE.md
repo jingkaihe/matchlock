@@ -3,6 +3,7 @@
 ## Unreleased
 
 * Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns) ([#80](https://github.com/jingkaihe/matchlock/pull/80) by [@sosso](https://github.com/sosso)).
+* Fixed intermittent macOS `VZErrorDomain Code=1` VM startup failures in interception mode by retaining Darwin console file handles for VM lifetime, and suppressed spurious `close host-net: file already closed` cleanup noise.
 
 ## 0.1.29
 
