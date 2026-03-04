@@ -101,6 +101,7 @@ func init() {
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, fmt.Sprintf("Volume mount (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
+	runCmd.Flags().StringSlice("direct-mount", nil, "Mount host directory at arbitrary guest path (host:guest[:rw], read-only by default)")
 	runCmd.Flags().StringSlice("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:ro] or @volume_name:guest_mount[:ro])")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
@@ -133,6 +134,7 @@ func init() {
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
+	viper.BindPFlag("run.direct-mount", runCmd.Flags().Lookup("direct-mount"))
 	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
@@ -190,6 +192,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
+	directMountSpecs, _ := cmd.Flags().GetStringSlice("direct-mount")
 	volumes, _ := cmd.Flags().GetStringSlice("volume")
 	diskMountSpecs, _ := cmd.Flags().GetStringSlice("disk")
 	envVars, _ := cmd.Flags().GetStringArray("env")
@@ -310,8 +313,22 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	var vfsConfig *api.VFSConfig
-	if workspaceSet || len(volumes) > 0 {
+	if workspaceSet || len(volumes) > 0 || len(directMountSpecs) > 0 {
 		vfsConfig = &api.VFSConfig{Workspace: workspace}
+	}
+	if len(directMountSpecs) > 0 {
+		directMounts := make(map[string]api.DirectMount)
+		for _, spec := range directMountSpecs {
+			dm, err := api.ParseDirectMountSpec(spec)
+			if err != nil {
+				return errx.With(ErrInvalidVolume, " --direct-mount %q: %w", spec, err)
+			}
+			directMounts[dm.GuestPath] = api.DirectMount{
+				HostPath: dm.HostPath,
+				Readonly: dm.Readonly,
+			}
+		}
+		vfsConfig.DirectMounts = directMounts
 	}
 	if len(volumes) > 0 {
 		if workspace == "" {
@@ -334,7 +351,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		vfsConfig.Mounts = mounts
 	}
 
-	hasVFSMounts := vfsConfig != nil && len(vfsConfig.Mounts) > 0
+	hasVFSMounts := vfsConfig != nil && (len(vfsConfig.Mounts) > 0 || len(vfsConfig.DirectMounts) > 0)
 	extraDisks := make([]api.DiskMount, 0, len(diskMountSpecs))
 	for _, spec := range diskMountSpecs {
 		diskMount, err := parseDiskMountSpec(spec)

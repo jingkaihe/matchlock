@@ -214,6 +214,24 @@ func (b *SandboxBuilder) MountOverlay(guestPath, hostPath string) *SandboxBuilde
 	return b.Mount(guestPath, MountConfig{Type: api.MountTypeOverlay, HostPath: hostPath})
 }
 
+// MountDirect adds an out-of-workspace host directory mount at the given guest path.
+func (b *SandboxBuilder) MountDirect(guestPath, hostPath string) *SandboxBuilder {
+	if b.opts.DirectMounts == nil {
+		b.opts.DirectMounts = make(map[string]DirectMountConfig)
+	}
+	b.opts.DirectMounts[guestPath] = DirectMountConfig{HostPath: hostPath}
+	return b
+}
+
+// MountDirectReadonly adds a read-only out-of-workspace host directory mount.
+func (b *SandboxBuilder) MountDirectReadonly(guestPath, hostPath string) *SandboxBuilder {
+	if b.opts.DirectMounts == nil {
+		b.opts.DirectMounts = make(map[string]DirectMountConfig)
+	}
+	b.opts.DirectMounts[guestPath] = DirectMountConfig{HostPath: hostPath, Readonly: true}
+	return b
+}
+
 // WithUser sets the user to run commands as (uid, uid:gid, or username).
 func (b *SandboxBuilder) WithUser(user string) *SandboxBuilder {
 	if b.opts.ImageConfig == nil {

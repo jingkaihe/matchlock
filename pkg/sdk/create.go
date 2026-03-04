@@ -91,10 +91,13 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["network"] = network
 	}
 
-	if len(opts.Mounts) > 0 || opts.Workspace != "" || wireVFS != nil {
+	if len(opts.Mounts) > 0 || len(opts.DirectMounts) > 0 || opts.Workspace != "" || wireVFS != nil {
 		vfs := make(map[string]interface{})
 		if len(opts.Mounts) > 0 {
 			vfs["mounts"] = opts.Mounts
+		}
+		if len(opts.DirectMounts) > 0 {
+			vfs["direct_mounts"] = opts.DirectMounts
 		}
 		if opts.Workspace != "" {
 			vfs["workspace"] = opts.Workspace

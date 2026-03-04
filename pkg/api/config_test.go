@@ -255,3 +255,59 @@ func TestValidateVFS_AllowsInterceptionWithMounts(t *testing.T) {
 
 	require.NoError(t, cfg.ValidateVFS())
 }
+
+func TestValidateVFS_AllowsDirectMountsWithoutWorkspace(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			DirectMounts: map[string]DirectMount{
+				"/home/agent/.ssh": {HostPath: "/tmp", Readonly: true},
+			},
+		},
+	}
+
+	require.NoError(t, cfg.ValidateVFS())
+	assert.True(t, cfg.HasVFSMounts())
+}
+
+func TestValidateVFS_AllowsMixedMountsAndDirectMounts(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			Workspace: "/workspace",
+			Mounts: map[string]MountConfig{
+				"/workspace/data": {Type: MountTypeMemory},
+			},
+			DirectMounts: map[string]DirectMount{
+				"/home/agent/.ssh": {HostPath: "/tmp", Readonly: true},
+			},
+		},
+	}
+
+	require.NoError(t, cfg.ValidateVFS())
+}
+
+func TestValidateVFS_RejectsInvalidDirectMountPath(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			DirectMounts: map[string]DirectMount{
+				"relative/path": {HostPath: "/tmp", Readonly: true},
+			},
+		},
+	}
+
+	err := cfg.ValidateVFS()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "direct_mounts")
+}
+
+func TestHasVFSMounts_DirectMountsOnly(t *testing.T) {
+	cfg := &Config{
+		VFS: &VFSConfig{
+			DirectMounts: map[string]DirectMount{
+				"/home/agent/.ssh": {HostPath: "/tmp", Readonly: true},
+			},
+		},
+	}
+
+	assert.True(t, cfg.HasVFSMounts())
+}

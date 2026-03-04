@@ -67,6 +67,8 @@ type VFSStat struct {
 	ModTime int64  `cbor:"mtime"`
 	IsDir   bool   `cbor:"is_dir"`
 	Ino     uint64 `cbor:"ino,omitempty"`
+	UID     uint32 `cbor:"uid,omitempty"`
+	GID     uint32 `cbor:"gid,omitempty"`
 }
 
 type VFSDirEntry struct {
@@ -291,13 +293,18 @@ func errnoFromError(err error) int32 {
 }
 
 func statFromInfo(path string, info FileInfo) *VFSStat {
-	return &VFSStat{
+	st := &VFSStat{
 		Size:    info.Size(),
 		Mode:    uint32(info.Mode()),
 		ModTime: info.ModTime().Unix(),
 		IsDir:   info.IsDir(),
 		Ino:     inodeFromFileInfo(path, info, info.IsDir()),
 	}
+	if sysInfo, ok := info.Sys().(*syscall.Stat_t); ok {
+		st.UID = sysInfo.Uid
+		st.GID = sysInfo.Gid
+	}
+	return st
 }
 
 func direntsFromEntries(parentPath string, entries []DirEntry) []VFSDirEntry {

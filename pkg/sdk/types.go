@@ -38,6 +38,9 @@ type CreateOptions struct {
 	NetworkInterception *NetworkInterceptionConfig
 	// Mounts defines VFS mount configurations
 	Mounts map[string]MountConfig
+	// DirectMounts defines out-of-workspace direct host-to-guest mounts.
+	// Key is the guest mount path, value configures the host path and access mode.
+	DirectMounts map[string]DirectMountConfig
 	// Env defines non-secret environment variables for command execution.
 	// These are visible in VM state and inspect/get outputs.
 	Env map[string]string
@@ -195,6 +198,12 @@ type NetworkInterceptionConfig struct {
 type MountConfig struct {
 	Type     string `json:"type"` // memory, host_fs, overlay
 	HostPath string `json:"host_path,omitempty"`
+	Readonly bool   `json:"readonly,omitempty"`
+}
+
+// DirectMountConfig defines an out-of-workspace host-to-guest mount.
+type DirectMountConfig struct {
+	HostPath string `json:"host_path"`
 	Readonly bool   `json:"readonly,omitempty"`
 }
 

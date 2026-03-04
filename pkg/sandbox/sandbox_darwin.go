@@ -246,6 +246,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		GuestIP:             guestIP,
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
+		DirectMountPaths:    sortedDirectMountPaths(config),
 		UseInterception:     needsInterception,
 		Privileged:          config.Privileged,
 		PrebuiltRootfs:      bootstrapRootfsPath,
