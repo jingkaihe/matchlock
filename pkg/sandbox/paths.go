@@ -38,32 +38,6 @@ func DefaultKernelPathWithVersion(version string) (string, error) {
 	return mgr.EnsureKernel(ctx, arch, version)
 }
 
-// DefaultInitramfsPath returns the default path to the initramfs image (optional, mainly for macOS).
-func DefaultInitramfsPath() string {
-	home, _ := os.UserHomeDir()
-	sudoHome := ""
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
-		sudoHome = filepath.Join("/home", sudoUser)
-	}
-
-	paths := []string{
-		os.Getenv("MATCHLOCK_INITRAMFS"),
-		filepath.Join(home, ".cache/matchlock/initramfs"),
-	}
-	if sudoHome != "" {
-		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock/initramfs"))
-	}
-
-	for _, p := range paths {
-		if p != "" {
-			if _, err := os.Stat(p); err == nil {
-				return p
-			}
-		}
-	}
-	return ""
-}
-
 // DefaultGuestAgentPath returns the default path to guest-agent binary.
 func DefaultGuestAgentPath() string {
 	return findGuestBinary("guest-agent", "MATCHLOCK_GUEST_AGENT")

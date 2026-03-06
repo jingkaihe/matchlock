@@ -47,7 +47,6 @@ type Sandbox struct {
 
 type Options struct {
 	KernelPath    string
-	InitramfsPath string
 	RootfsPaths   []string // Required: immutable lower image paths (base->top)
 	RootfsFSTypes []string // Optional fs type per lower image (defaults to erofs).
 }
@@ -135,10 +134,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	kernelPath := opts.KernelPath
 	if kernelPath == "" {
 		kernelPath = DefaultKernelPath()
-	}
-	initramfsPath := opts.InitramfsPath
-	if initramfsPath == "" {
-		initramfsPath = DefaultInitramfsPath()
 	}
 	rootfsPaths := opts.RootfsPaths
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(rootfsPaths, opts.RootfsFSTypes)
@@ -232,7 +227,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	vmConfig := &vm.VMConfig{
 		ID:                  id,
 		KernelPath:          kernelPath,
-		InitramfsPath:       initramfsPath,
 		RootfsPath:          bootstrapRootfsPath,
 		OverlayEnabled:      true,
 		OverlayLowerPaths:   rootfsPaths,
