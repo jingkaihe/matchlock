@@ -6,11 +6,10 @@ import "errors"
 
 // Config errors
 var (
-	ErrKernelNotFound    = errors.New("kernel not found")
-	ErrRootfsNotFound    = errors.New("rootfs not found")
-	ErrInitramfsNotFound = errors.New("initramfs not found")
-	ErrVMConfigInvalid   = errors.New("VM configuration validation failed")
-	ErrInvalidCPUCount   = errors.New("invalid cpu count")
+	ErrKernelNotFound  = errors.New("kernel not found")
+	ErrRootfsNotFound  = errors.New("rootfs not found")
+	ErrVMConfigInvalid = errors.New("VM configuration validation failed")
+	ErrInvalidCPUCount = errors.New("invalid cpu count")
 )
 
 // VM lifecycle errors

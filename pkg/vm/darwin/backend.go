@@ -88,14 +88,6 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	bootLoaderOpts := []vz.LinuxBootLoaderOption{
 		vz.WithCommandLine(kernelArgs),
 	}
-	if config.InitramfsPath != "" {
-		if _, err := os.Stat(config.InitramfsPath); err != nil {
-			os.Remove(tempRootfs)
-			closeSocketPair()
-			return nil, errx.With(ErrInitramfsNotFound, ": %s: %w", config.InitramfsPath, err)
-		}
-		bootLoaderOpts = append(bootLoaderOpts, vz.WithInitrd(config.InitramfsPath))
-	}
 
 	bootLoader, err := vz.NewLinuxBootLoader(
 		config.KernelPath,

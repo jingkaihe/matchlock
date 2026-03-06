@@ -19,7 +19,6 @@ type DiskConfig struct {
 type VMConfig struct {
 	ID                  string
 	KernelPath          string
-	InitramfsPath       string // Optional initramfs/initrd path
 	RootfsPath          string
 	OverlayEnabled      bool     // Boot via overlay root assembly in guest-init
 	OverlayLowerPaths   []string // Host paths to read-only lower images attached as extra disks
