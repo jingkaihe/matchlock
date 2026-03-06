@@ -29,11 +29,11 @@ func checkDarwinArchitecture() Check {
 }
 
 func checkDarwinHypervisorSupport() Check {
-	out, err := syscall.Sysctl("kern.hv_support")
+	out, err := syscall.SysctlUint32("kern.hv_support")
 	if err != nil {
 		return Fail("hypervisor", fmt.Sprintf("sysctl kern.hv_support: %v", err), "Run on Apple Silicon macOS with Virtualization.framework support.")
 	}
-	if out != "1" {
+	if out != 1 {
 		return Fail("hypervisor", "Hypervisor support is disabled.", "Use a host that supports Virtualization.framework hypervisor acceleration.")
 	}
 	return Pass("hypervisor", "Hypervisor support is enabled.")
