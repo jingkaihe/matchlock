@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## 0.2.0 
 
 * Added `matchlock diagnose` for host preflight checks, with Linux and macOS-specific requirement validation.
 * Hardened `matchlock setup linux` to fail fast by default on required setup errors; use `--best-effort` to continue past failures.
