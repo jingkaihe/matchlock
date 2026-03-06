@@ -54,6 +54,7 @@ jobs:
     name: Acceptance (Linux self-hosted)
     runs-on: [self-hosted, Linux, X64]
     needs: test-linux
+    if: github.event_name == 'pull_request'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
