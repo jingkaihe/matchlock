@@ -94,7 +94,7 @@ description = "Run benchmarks"
 run = "go test -bench=. -benchmem -benchtime=2s -count=1 -run=^$ ./pkg/net/"
 
 [tasks."test:acceptance"]
-description = "Run acceptance tests (requires VM support — cannot run in CI)"
+description = "Run acceptance tests (requires virtualization support)"
 # depends = ["build"]
 run = """
 #!/usr/bin/env bash
