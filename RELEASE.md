@@ -1,5 +1,9 @@
 # Release Notes
 
+## 0.2.1
+
+* Fixed TypeScript SDK npm release workflow to use Node 24 for trusted publishing compatibility in GitHub Actions.
+
 ## 0.2.0 
 
 * Added `matchlock diagnose` for host preflight checks, with Linux and macOS-specific requirement validation.
