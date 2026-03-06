@@ -104,6 +104,7 @@ var (
 
 // Sysinfo errors
 var (
-	ErrSysctlMemsize = errors.New("sysctl hw.memsize")
-	ErrSysinfo       = errors.New("sysinfo")
+	ErrSysctlMemsize   = errors.New("sysctl hw.memsize")
+	ErrSysctlHVSupport = errors.New("sysctl kern.hv_support")
+	ErrSysinfo         = errors.New("sysinfo")
 )
