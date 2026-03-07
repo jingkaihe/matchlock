@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+* Fixed interactive PTY resize handling for `matchlock exec -it` by forwarding `SIGWINCH` to the guest and serializing relay writes to avoid stdin/resize races by [@sosso](https://github.com/sosso).
+
 ## 0.2.1
 
 * Fixed TypeScript SDK npm release workflow to use Node 24 for trusted publishing compatibility in GitHub Actions.
