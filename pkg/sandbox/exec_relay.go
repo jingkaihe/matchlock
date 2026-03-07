@@ -206,8 +206,9 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 		opts.User = req.User
 	}
 
+	sender := newRelaySender(conn)
 	stdinReader, stdinWriter := io.Pipe()
-	stdoutWriter := &relayWriter{conn: conn, msgType: relayMsgStdout}
+	stdoutWriter := &relayWriter{sender: sender, msgType: relayMsgStdout}
 
 	resizeCh := make(chan [2]uint16, 1)
 
@@ -246,7 +247,7 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 
 	exitData := make([]byte, 4)
 	binary.BigEndian.PutUint32(exitData, uint32(exitCode))
-	sendRelayMsg(conn, relayMsgExit, exitData)
+	_ = sender.Send(relayMsgExit, exitData)
 }
 
 func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
@@ -266,10 +267,11 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 		opts.User = req.User
 	}
 
+	sender := newRelaySender(conn)
 	stdinReader, stdinWriter := io.Pipe()
 	opts.Stdin = stdinReader
-	opts.Stdout = &relayWriter{conn: conn, msgType: relayMsgStdout}
-	opts.Stderr = &relayWriter{conn: conn, msgType: relayMsgStderr}
+	opts.Stdout = &relayWriter{sender: sender, msgType: relayMsgStdout}
+	opts.Stderr = &relayWriter{sender: sender, msgType: relayMsgStderr}
 
 	// Cancel the context when the relay client disconnects (read error/EOF
 	// from the stdin reader goroutine) so the VM-side process is killed.
@@ -302,7 +304,9 @@ func (r *ExecRelay) handleExecPipe(conn net.Conn, data []byte) {
 		exitCode = result.ExitCode
 	}
 
-	sendRelayExit(conn, exitCode)
+	exitData := make([]byte, 4)
+	binary.BigEndian.PutUint32(exitData, uint32(exitCode))
+	_ = sender.Send(relayMsgExit, exitData)
 }
 
 func (r *ExecRelay) handlePortForward(conn net.Conn, data []byte) {
@@ -414,14 +418,29 @@ func (r *ExecRelay) handleAllowListMutation(conn net.Conn, data []byte, add bool
 	sendRelayAllowListResult(conn, result)
 }
 
+type relaySender struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
+
+func newRelaySender(conn net.Conn) *relaySender {
+	return &relaySender{conn: conn}
+}
+
+func (s *relaySender) Send(msgType uint8, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sendRelayMsg(s.conn, msgType, data)
+}
+
 // relayWriter forwards writes to the relay connection as messages.
 type relayWriter struct {
-	conn    net.Conn
+	sender  *relaySender
 	msgType uint8
 }
 
 func (w *relayWriter) Write(p []byte) (int, error) {
-	if err := sendRelayMsg(w.conn, w.msgType, p); err != nil {
+	if err := w.sender.Send(w.msgType, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
@@ -548,6 +567,7 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 		return 1, errx.Wrap(ErrRelayConnect, err)
 	}
 	defer conn.Close()
+	sender := newRelaySender(conn)
 
 	req := relayExecInteractiveRequest{
 		Command:    command,
@@ -557,7 +577,7 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 		Cols:       cols,
 	}
 	reqData, _ := json.Marshal(req)
-	if err := sendRelayMsg(conn, relayMsgExecInteractive, reqData); err != nil {
+	if err := sender.Send(relayMsgExecInteractive, reqData); err != nil {
 		return 1, errx.Wrap(ErrRelaySend, err)
 	}
 
@@ -592,7 +612,7 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				sendRelayMsg(conn, relayMsgStdin, buf[:n])
+				_ = sender.Send(relayMsgStdin, buf[:n])
 			}
 			if err != nil {
 				return
@@ -607,7 +627,7 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 				data := make([]byte, 4)
 				binary.BigEndian.PutUint16(data[0:2], size[0])
 				binary.BigEndian.PutUint16(data[2:4], size[1])
-				sendRelayMsg(conn, relayMsgResize, data)
+				_ = sender.Send(relayMsgResize, data)
 			}
 		}()
 	}

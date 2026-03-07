@@ -7,11 +7,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/vm"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -338,6 +340,41 @@ func TestExecInteractiveViaRelayForwardsResize(t *testing.T) {
 	}
 }
 
+func TestRelaySenderSerializesFrames(t *testing.T) {
+	conn := newGatedWriteConn()
+	sender := newRelaySender(conn)
+
+	start := make(chan struct{})
+	errCh := make(chan error, 2)
+	go func() {
+		<-start
+		errCh <- sender.Send(relayMsgStdin, []byte("hello"))
+	}()
+	go func() {
+		<-start
+		errCh <- sender.Send(relayMsgResize, []byte("size"))
+	}()
+	close(start)
+
+	select {
+	case <-conn.firstWriteStarted:
+	case <-time.After(1 * time.Second):
+		require.Fail(t, "timed out waiting for first relay write")
+	}
+
+	select {
+	case <-conn.secondWriteStarted:
+		require.Fail(t, "second relay write started before first frame completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(conn.releaseFirstWrite)
+
+	require.NoError(t, <-errCh)
+	require.NoError(t, <-errCh)
+	assert.GreaterOrEqual(t, conn.writeCount(), 4)
+}
+
 // blockedReader blocks on Read until the unblock channel is closed,
 // then returns EOF. This prevents ExecInteractive from finishing
 // before the test can send resize events.
@@ -348,4 +385,51 @@ type blockedReader struct {
 func (r *blockedReader) Read([]byte) (int, error) {
 	<-r.unblock
 	return 0, io.EOF
+}
+
+type gatedWriteConn struct {
+	mu                 sync.Mutex
+	writes             int
+	firstWriteStarted  chan struct{}
+	secondWriteStarted chan struct{}
+	releaseFirstWrite  chan struct{}
+}
+
+func newGatedWriteConn() *gatedWriteConn {
+	return &gatedWriteConn{
+		firstWriteStarted:  make(chan struct{}),
+		secondWriteStarted: make(chan struct{}),
+		releaseFirstWrite:  make(chan struct{}),
+	}
+}
+
+func (c *gatedWriteConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *gatedWriteConn) Close() error                     { return nil }
+func (c *gatedWriteConn) LocalAddr() net.Addr              { return nil }
+func (c *gatedWriteConn) RemoteAddr() net.Addr             { return nil }
+func (c *gatedWriteConn) SetDeadline(time.Time) error      { return nil }
+func (c *gatedWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *gatedWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *gatedWriteConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	c.writes++
+	writeNum := c.writes
+	c.mu.Unlock()
+
+	switch writeNum {
+	case 1:
+		close(c.firstWriteStarted)
+		<-c.releaseFirstWrite
+	case 2:
+		close(c.secondWriteStarted)
+	}
+
+	return len(p), nil
+}
+
+func (c *gatedWriteConn) writeCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writes
 }
