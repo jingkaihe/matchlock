@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -65,6 +67,7 @@ type fakeInteractiveMachine struct {
 	execStarted chan struct{}
 	stdinData   chan []byte
 	stdinClosed chan struct{}
+	resizes     chan [2]uint16
 }
 
 var _ vm.InteractiveMachine = (*fakeInteractiveMachine)(nil)
@@ -74,6 +77,7 @@ func newFakeInteractiveMachine() *fakeInteractiveMachine {
 		execStarted: make(chan struct{}),
 		stdinData:   make(chan []byte, 1),
 		stdinClosed: make(chan struct{}),
+		resizes:     make(chan [2]uint16, 4),
 	}
 }
 
@@ -87,6 +91,14 @@ func (m *fakeInteractiveMachine) Exec(ctx context.Context, command string, opts 
 
 func (m *fakeInteractiveMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	close(m.execStarted)
+
+	// Forward resize events so tests can observe them.
+	go func() {
+		for size := range resizeCh {
+			m.resizes <- size
+		}
+	}()
+
 	data, _ := io.ReadAll(stdin)
 	m.stdinData <- data
 	close(m.stdinClosed)
@@ -235,4 +247,105 @@ func TestExecRelayInteractiveDisconnectClosesStdin(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		require.Fail(t, "timed out waiting for relay")
 	}
+}
+
+func TestExecRelayInteractiveResizeForwardedToMachine(t *testing.T) {
+	machine := newFakeInteractiveMachine()
+	sb := &Sandbox{config: &api.Config{}, machine: machine}
+	relay := NewExecRelay(sb)
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	reqData, err := json.Marshal(relayExecInteractiveRequest{Command: "noop", Rows: 24, Cols: 80})
+	require.NoError(t, err, "marshal request")
+
+	done := make(chan struct{})
+	go func() {
+		relay.handleExecInteractive(serverConn, reqData)
+		close(done)
+	}()
+
+	<-machine.execStarted
+
+	// Send a resize message: 40 rows, 120 cols.
+	resizeData := make([]byte, 4)
+	binary.BigEndian.PutUint16(resizeData[0:2], 40)
+	binary.BigEndian.PutUint16(resizeData[2:4], 120)
+	require.NoError(t, sendRelayMsg(clientConn, relayMsgResize, resizeData), "send resize")
+
+	select {
+	case size := <-machine.resizes:
+		require.Equal(t, [2]uint16{40, 120}, size, "resize rows/cols")
+	case <-time.After(1 * time.Second):
+		require.Fail(t, "timed out waiting for resize event")
+	}
+
+	// Close client to let the session end.
+	require.NoError(t, clientConn.Close(), "close client conn")
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		require.Fail(t, "timed out waiting for relay")
+	}
+}
+
+func TestExecInteractiveViaRelayForwardsResize(t *testing.T) {
+	machine := newFakeInteractiveMachine()
+	sb := &Sandbox{config: &api.Config{}, machine: machine}
+	relay := NewExecRelay(sb)
+
+	// Use a short path — macOS limits Unix socket paths to 104 bytes.
+	dir, err := os.MkdirTemp("", "relay")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socketPath := dir + "/s.sock"
+	require.NoError(t, relay.Start(socketPath), "start relay")
+	defer relay.Stop()
+
+	resizeCh := make(chan [2]uint16, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecInteractiveViaRelay(ctx, socketPath, "noop", "", "", 24, 80,
+			&blockedReader{unblock: ctx.Done()}, io.Discard, resizeCh)
+		done <- err
+	}()
+
+	<-machine.execStarted
+
+	// Send a resize event through the client channel.
+	resizeCh <- [2]uint16{50, 200}
+
+	select {
+	case size := <-machine.resizes:
+		require.Equal(t, [2]uint16{50, 200}, size, "resize rows/cols")
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "timed out waiting for resize event")
+	}
+
+	// Cancel context to tear down the session.
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "timed out waiting for client")
+	}
+}
+
+// blockedReader blocks on Read until the unblock channel is closed,
+// then returns EOF. This prevents ExecInteractive from finishing
+// before the test can send resize events.
+type blockedReader struct {
+	unblock <-chan struct{}
+}
+
+func (r *blockedReader) Read([]byte) (int, error) {
+	<-r.unblock
+	return 0, io.EOF
 }

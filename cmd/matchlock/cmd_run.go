@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -637,21 +636,8 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir s
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	resizeCh := make(chan [2]uint16, 1)
-	winchCh := make(chan os.Signal, 1)
-	signal.Notify(winchCh, syscall.SIGWINCH)
-	go func() {
-		for range winchCh {
-			if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
-				select {
-				case resizeCh <- [2]uint16{uint16(r), uint16(c)}:
-				default:
-				}
-			}
-		}
-	}()
-	defer signal.Stop(winchCh)
-	defer close(resizeCh)
+	resizeCh, stopResize := watchTerminalResize(int(os.Stdin.Fd()))
+	defer stopResize()
 
 	interactiveMachine, ok := sb.Machine().(vm.InteractiveMachine)
 	if !ok {

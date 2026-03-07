@@ -29,6 +29,7 @@ const (
 	relayMsgAllowListAdd    uint8 = 10
 	relayMsgAllowListDelete uint8 = 11
 	relayMsgAllowListResult uint8 = 12
+	relayMsgResize          uint8 = 13
 )
 
 type relayExecRequest struct {
@@ -208,7 +209,9 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutWriter := &relayWriter{conn: conn, msgType: relayMsgStdout}
 
-	// Read stdin from relay client and write to pipe
+	resizeCh := make(chan [2]uint16, 1)
+
+	// Read stdin and resize events from relay client
 	go func() {
 		defer stdinWriter.Close()
 		for {
@@ -216,13 +219,21 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 			if err != nil {
 				return
 			}
-			if msgType == relayMsgStdin {
+			switch msgType {
+			case relayMsgStdin:
 				stdinWriter.Write(data)
+			case relayMsgResize:
+				if len(data) == 4 {
+					rows := binary.BigEndian.Uint16(data[0:2])
+					cols := binary.BigEndian.Uint16(data[2:4])
+					select {
+					case resizeCh <- [2]uint16{rows, cols}:
+					default:
+					}
+				}
 			}
 		}
 	}()
-
-	resizeCh := make(chan [2]uint16, 1)
 
 	exitCode, err := interactiveMachine.ExecInteractive(
 		context.Background(), req.Command, opts,
@@ -530,7 +541,8 @@ func ExecViaRelay(ctx context.Context, socketPath, command, workingDir, user str
 }
 
 // ExecInteractiveViaRelay connects to an exec relay socket and runs an interactive command.
-func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDir, user string, rows, cols uint16, stdin io.Reader, stdout io.Writer) (int, error) {
+// If resizeCh is non-nil, terminal resize events are forwarded to the relay server.
+func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDir, user string, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return 1, errx.Wrap(ErrRelayConnect, err)
@@ -587,6 +599,18 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDi
 			}
 		}
 	}()
+
+	// Forward terminal resize events to relay
+	if resizeCh != nil {
+		go func() {
+			for size := range resizeCh {
+				data := make([]byte, 4)
+				binary.BigEndian.PutUint16(data[0:2], size[0])
+				binary.BigEndian.PutUint16(data[2:4], size[1])
+				sendRelayMsg(conn, relayMsgResize, data)
+			}
+		}()
+	}
 
 	select {
 	case exitCode := <-done:
