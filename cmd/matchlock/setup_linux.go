@@ -5,6 +5,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,6 +45,7 @@ func init() {
 	setupLinuxCmd.Flags().String("user", "", "Username to configure (default: current user or SUDO_USER)")
 	setupLinuxCmd.Flags().String("binary", "", "Path to matchlock binary (default: auto-detect)")
 	setupLinuxCmd.Flags().String("install-dir", "/usr/local/bin", "Directory to install Firecracker")
+	setupLinuxCmd.Flags().Bool("best-effort", false, "Continue setup after non-fatal errors")
 	setupLinuxCmd.Flags().Bool("skip-firecracker", false, "Skip Firecracker installation")
 	setupLinuxCmd.Flags().Bool("skip-permissions", false, "Skip permission setup")
 	setupLinuxCmd.Flags().Bool("skip-network", false, "Skip network configuration")
@@ -58,6 +60,7 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 	}
 
 	skipFirecracker, _ := cmd.Flags().GetBool("skip-firecracker")
+	bestEffort, _ := cmd.Flags().GetBool("best-effort")
 	skipPermissions, _ := cmd.Flags().GetBool("skip-permissions")
 	skipNetwork, _ := cmd.Flags().GetBool("skip-network")
 	installDir, _ := cmd.Flags().GetString("install-dir")
@@ -86,22 +89,28 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Setting up matchlock for user: %s\n\n", userName)
 
 	if !skipFirecracker {
-		if err := installFirecracker(installDir); err != nil {
-			fmt.Printf("⚠ Firecracker installation failed: %v\n", err)
+		if err := runSetupStep("firecracker installation", bestEffort, func() error {
+			return installFirecracker(installDir)
+		}); err != nil {
+			return errx.Wrap(ErrSetupLinux, err)
 		}
 		fmt.Println()
 	}
 
 	if !skipPermissions {
-		if err := setupPermissions(userName, binaryPath); err != nil {
-			fmt.Printf("⚠ Permission setup failed: %v\n", err)
+		if err := runSetupStep("permission setup", bestEffort, func() error {
+			return setupPermissions(userName, binaryPath, bestEffort)
+		}); err != nil {
+			return errx.Wrap(ErrSetupLinux, err)
 		}
 		fmt.Println()
 	}
 
 	if !skipNetwork {
-		if err := setupNetwork(); err != nil {
-			fmt.Printf("⚠ Network setup failed: %v\n", err)
+		if err := runSetupStep("network setup", bestEffort, func() error {
+			return setupNetwork(bestEffort)
+		}); err != nil {
+			return errx.Wrap(ErrSetupLinux, err)
 		}
 		fmt.Println()
 	}
@@ -161,6 +170,11 @@ func installFirecracker(installDir string) error {
 	firecrackerBin := fmt.Sprintf("firecracker-%s-%s", version, arch)
 	jailerBin := fmt.Sprintf("jailer-%s-%s", version, arch)
 
+	installed := map[string]bool{
+		"firecracker": false,
+		"jailer":      false,
+	}
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -191,7 +205,14 @@ func installFirecracker(installDir string) error {
 		if err != nil {
 			return errx.With(ErrWriteFile, " %s: %w", destPath, err)
 		}
+		installed[destName] = true
 		fmt.Printf("✓ Installed %s\n", destPath)
+	}
+
+	for binary, ok := range installed {
+		if !ok {
+			return errx.With(ErrDownloadFailed, ": %s not found in Firecracker archive", binary)
+		}
 	}
 
 	if newVersion := getFirecrackerVersion(); newVersion != "" {
@@ -220,21 +241,25 @@ func getLatestFirecrackerVersion() (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status: HTTP %d", resp.StatusCode)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
 
-	for _, line := range strings.Split(string(body), ",") {
-		if strings.Contains(line, `"tag_name"`) {
-			parts := strings.Split(line, `"`)
-			if len(parts) >= 4 {
-				return parts[3], nil
-			}
-		}
+	var payload struct {
+		TagName string `json:"tag_name"`
 	}
-	return "", fmt.Errorf("could not parse version")
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	if payload.TagName == "" {
+		return "", fmt.Errorf("could not parse version")
+	}
+	return payload.TagName, nil
 }
 
 func checkKVM() {
@@ -248,26 +273,35 @@ func checkKVM() {
 	}
 }
 
-func setupPermissions(userName, binaryPath string) error {
+func setupPermissions(userName, binaryPath string, bestEffort bool) error {
 	fmt.Println("=== Setting up permissions ===")
 
-	if err := addUserToKVMGroup(userName); err != nil {
-		fmt.Printf("⚠ Could not add user to kvm group: %v\n", err)
+	if err := runSetupStep("add user to kvm group", bestEffort, func() error {
+		return addUserToKVMGroup(userName)
+	}); err != nil {
+		return err
 	}
 
-	if err := setCapabilities(binaryPath); err != nil {
-		fmt.Printf("⚠ Could not set capabilities: %v\n", err)
+	if err := runSetupStep("set binary capabilities", bestEffort, func() error {
+		return setCapabilities(binaryPath)
+	}); err != nil {
+		return err
 	}
 
-	if err := setupTunDevice(userName); err != nil {
-		fmt.Printf("⚠ Could not setup /dev/net/tun: %v\n", err)
+	if err := runSetupStep("setup /dev/net/tun", bestEffort, func() error {
+		return setupTunDevice(userName)
+	}); err != nil {
+		return err
 	}
 
 	return nil
 }
 
 func addUserToKVMGroup(userName string) error {
-	out, _ := exec.Command("groups", userName).Output()
+	out, err := exec.Command("groups", userName).Output()
+	if err != nil {
+		return errx.With(ErrSetupStep, " add user to kvm group: %w", err)
+	}
 	groups := strings.Fields(string(out))
 	for _, g := range groups {
 		if g == "kvm" {
@@ -298,7 +332,9 @@ func setCapabilities(binaryPath string) error {
 
 func setupTunDevice(userName string) error {
 	if _, err := os.Stat("/dev/net/tun"); os.IsNotExist(err) {
-		os.MkdirAll("/dev/net", 0755)
+		if err := os.MkdirAll("/dev/net", 0755); err != nil {
+			return errx.With(ErrSetupStep, " create /dev/net: %w", err)
+		}
 		if err := exec.Command("mknod", "/dev/net/tun", "c", "10", "200").Run(); err != nil {
 			return err
 		}
@@ -311,7 +347,10 @@ func setupTunDevice(userName string) error {
 		fmt.Println("✓ Created netdev group")
 	}
 
-	out, _ := exec.Command("groups", userName).Output()
+	out, err := exec.Command("groups", userName).Output()
+	if err != nil {
+		return errx.With(ErrSetupStep, " inspect groups for %s: %w", userName, err)
+	}
 	if !strings.Contains(string(out), "netdev") {
 		if err := exec.Command("usermod", "-aG", "netdev", userName).Run(); err != nil {
 			return errx.With(ErrAddToNetdev, " %s: %w", userName, err)
@@ -329,15 +368,15 @@ func setupTunDevice(userName string) error {
 	return nil
 }
 
-func setupNetwork() error {
+func setupNetwork(bestEffort bool) error {
 	fmt.Println("=== Setting up network ===")
 
-	if err := enableIPForwarding(); err != nil {
-		fmt.Printf("⚠ Could not enable IP forwarding: %v\n", err)
+	if err := runSetupStep("enable IP forwarding", bestEffort, enableIPForwarding); err != nil {
+		return err
 	}
 
-	if err := checkNftables(); err != nil {
-		fmt.Printf("⚠ nftables check: %v\n", err)
+	if err := runSetupStep("load nf_tables kernel module", bestEffort, checkNftables); err != nil {
+		return err
 	}
 
 	return nil
@@ -374,4 +413,17 @@ func checkNftables() error {
 	}
 	fmt.Println("✓ nftables kernel module loaded")
 	return nil
+}
+
+func runSetupStep(name string, bestEffort bool, fn func() error) error {
+	err := fn()
+	if err == nil {
+		return nil
+	}
+	wrapped := errx.With(ErrSetupStep, " %s: %w", name, err)
+	if bestEffort {
+		fmt.Printf("⚠ %s failed: %v\n", name, err)
+		return nil
+	}
+	return wrapped
 }

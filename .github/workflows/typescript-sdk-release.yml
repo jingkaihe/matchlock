@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    name: Test (Node 22)
+    name: Test (Node 24)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: sdk/typescript/package-lock.json
 
@@ -50,8 +50,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+          node-version: "24"
           cache: npm
           cache-dependency-path: sdk/typescript/package-lock.json
 
@@ -79,6 +78,6 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish
-        run: npm publish --access public --provenance
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true
+        run: npm publish --access public --provenance

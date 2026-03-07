@@ -4,6 +4,16 @@
 
 * Fixed interactive PTY resize handling for `matchlock exec -it` by forwarding `SIGWINCH` to the guest and serializing relay writes to avoid stdin/resize races by [@sosso](https://github.com/sosso).
 
+## 0.2.1
+
+* Fixed TypeScript SDK npm release workflow to use Node 24 for trusted publishing compatibility in GitHub Actions.
+
+## 0.2.0 
+
+* Added `matchlock diagnose` for host preflight checks, with Linux and macOS-specific requirement validation.
+* Hardened `matchlock setup linux` to fail fast by default on required setup errors; use `--best-effort` to continue past failures.
+* Removed legacy macOS initramfs support from the Darwin VM path and from diagnose output.
+
 ## 0.1.30 
 
 * Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns) ([#80](https://github.com/jingkaihe/matchlock/pull/80) by [@sosso](https://github.com/sosso)).

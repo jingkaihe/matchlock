@@ -81,6 +81,14 @@ var (
 
 // Setup errors (Linux)
 var (
+	ErrDiagnoseFailed = errors.New("diagnose failed")
+	ErrSetupLinux     = errors.New("setup linux")
+	ErrSetupStep      = errors.New("setup step")
+	ErrKVMAccess      = errors.New("/dev/kvm access")
+	ErrReadCPUInfo    = errors.New("read /proc/cpuinfo")
+	ErrReadIPForward  = errors.New("read ip_forward")
+	ErrTunAccess      = errors.New("/dev/net/tun access")
+	ErrNFTablesCheck  = errors.New("nf_tables availability check")
 	ErrDetermineUser  = errors.New("could not determine user")
 	ErrDownloadFailed = errors.New("download failed")
 	ErrGzipReader     = errors.New("gzip reader")
@@ -96,6 +104,7 @@ var (
 
 // Sysinfo errors
 var (
-	ErrSysctlMemsize = errors.New("sysctl hw.memsize")
-	ErrSysinfo       = errors.New("sysinfo")
+	ErrSysctlMemsize   = errors.New("sysctl hw.memsize")
+	ErrSysctlHVSupport = errors.New("sysctl kern.hv_support")
+	ErrSysinfo         = errors.New("sysinfo")
 )

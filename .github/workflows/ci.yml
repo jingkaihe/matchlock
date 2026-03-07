@@ -50,6 +50,39 @@ jobs:
       - name: Lint
         run: mise run lint
 
+  acceptance-linux:
+    name: Acceptance (Linux self-hosted)
+    runs-on: [self-hosted, Linux, X64]
+    needs: test-linux
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          experimental: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install filesystem tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y e2fsprogs erofs-utils
+
+      - name: Build
+        run: mise run build
+
+      - name: Configure Linux host support
+        run: sudo ./bin/matchlock setup linux --binary "$PWD/bin/matchlock" --user "$USER"
+
+      - name: Acceptance tests
+        env:
+          MATCHLOCK_ACCEPTANCE_PARALLEL: 6
+        run: mise run test:acceptance
+
   test-darwin:
     name: Test (macOS arm64)
     runs-on: macos-latest
