@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+* Fixed interactive PTY resize handling for `matchlock exec -it` by forwarding `SIGWINCH` to the guest and serializing relay writes to avoid stdin/resize races by [@sosso](https://github.com/sosso).
+
 ## 0.1.30 
 
 * Fixed `host_fs` FUSE rename cache handling so files/directories stay readable after atomic `tmp+rename` workflows (including `git checkout`/`git status` patterns) ([#80](https://github.com/jingkaihe/matchlock/pull/80) by [@sosso](https://github.com/sosso)).
