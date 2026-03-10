@@ -34,6 +34,7 @@ var (
 	ErrPipeExecFailed  = errors.New("pipe exec failed")
 	ErrSetRawMode      = errors.New("setting raw mode")
 	ErrInteractiveExec = errors.New("interactive exec failed")
+	ErrReadVMLog       = errors.New("read VM log")
 )
 
 // Pull errors

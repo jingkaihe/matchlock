@@ -341,6 +341,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.create(opts)` | Create a VM from `CreateOptions` (does not auto-start ENTRYPOINT unless `launch_entrypoint=True`) — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
 | `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
+| `.log()` | Return the current buffered VM log as `str` |
+| `.log_stream(stdout=None)` | Stream VM log output until cancelled |
 | `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="")` | Bidirectional pipe-mode exec (no PTY), returns `ExecPipeResult` |
 | `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None)` | Interactive PTY exec, returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |

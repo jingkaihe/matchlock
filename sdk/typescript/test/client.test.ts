@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", async () => {
-  const actual = await vi.importActual<typeof import("node:child_process")>(
-    "node:child_process",
-  );
+  const actual =
+    await vi.importActual<typeof import("node:child_process")>(
+      "node:child_process",
+    );
   return {
     ...actual,
     spawn: vi.fn(),
@@ -12,11 +13,19 @@ vi.mock("node:child_process", async () => {
 });
 
 import { execFile, spawn } from "node:child_process";
-import { Client, MatchlockError, RPCError, Sandbox, VFS_HOOK_ACTION_BLOCK } from "../src";
+import {
+  Client,
+  MatchlockError,
+  RPCError,
+  Sandbox,
+  VFS_HOOK_ACTION_BLOCK,
+} from "../src";
 import { FakeProcess } from "./helpers";
 
 const mockedSpawn = vi.mocked(spawn);
-const mockedExecFile = vi.mocked(execFile as unknown as (...args: unknown[]) => unknown);
+const mockedExecFile = vi.mocked(
+  execFile as unknown as (...args: unknown[]) => unknown,
+);
 
 function installFakeProcess(): FakeProcess {
   const fake = new FakeProcess();
@@ -83,7 +92,11 @@ describe("Client", () => {
     const request = await fake.waitForRequest("create");
     expect(request.params?.launch_entrypoint).toBe(true);
 
-    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-launch" } });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-launch" },
+    });
     await expect(launchPromise).resolves.toBe("vm-launch");
 
     fake.close();
@@ -114,7 +127,11 @@ describe("Client", () => {
       mtu: 1200,
     });
 
-    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net" } });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-net" },
+    });
     await expect(createPromise).resolves.toBe("vm-net");
 
     fake.close();
@@ -163,7 +180,11 @@ describe("Client", () => {
       },
     });
 
-    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-hooks" } });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-net-hooks" },
+    });
     await expect(createPromise).resolves.toBe("vm-net-hooks");
 
     fake.close();
@@ -185,7 +206,11 @@ describe("Client", () => {
       intercept: true,
     });
 
-    fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: { id: "vm-net-force" } });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: request.id,
+      result: { id: "vm-net-force" },
+    });
     await expect(createPromise).resolves.toBe("vm-net-force");
 
     fake.close();
@@ -267,9 +292,9 @@ describe("Client", () => {
     });
 
     const request = await fake.waitForRequest("create");
-    expect((request.params?.network as Record<string, unknown>).block_private_ips).toBe(
-      false,
-    );
+    expect(
+      (request.params?.network as Record<string, unknown>).block_private_ips,
+    ).toBe(false);
 
     fake.pushResponse({
       jsonrpc: "2.0",
@@ -368,7 +393,10 @@ describe("Client", () => {
 
     const execPromise = client.exec("pwd", { workingDir: "/workspace" });
     const request = await fake.waitForRequest("exec");
-    expect(request.params).toEqual({ command: "pwd", working_dir: "/workspace" });
+    expect(request.params).toEqual({
+      command: "pwd",
+      working_dir: "/workspace",
+    });
 
     fake.pushResponse({
       jsonrpc: "2.0",
@@ -428,9 +456,65 @@ describe("Client", () => {
       result: { exit_code: 0, duration_ms: 42 },
     });
 
-    await expect(streamPromise).resolves.toEqual({ exitCode: 0, durationMs: 42 });
+    await expect(streamPromise).resolves.toEqual({
+      exitCode: 0,
+      durationMs: 42,
+    });
     expect(out).toBe("line1\nline2\n");
     expect(err).toBe("warn\n");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("reads buffered VM logs", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const logPromise = client.log();
+    const req = await fake.waitForRequest("log");
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {
+        content: Buffer.from("hello from log\n").toString("base64"),
+      },
+    });
+
+    await expect(logPromise).resolves.toBe("hello from log\n");
+
+    fake.close();
+    await client.close();
+  });
+
+  it("streams VM logs from notifications", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    let out = "";
+    const logPromise = client.logStream({
+      stdout: (chunk) => {
+        out += chunk.toString("utf8");
+      },
+    });
+
+    const req = await fake.waitForRequest("log_stream");
+    fake.pushNotification("log_stream.data", {
+      id: req.id,
+      data: Buffer.from("first\n").toString("base64"),
+    });
+    fake.pushNotification("log_stream.data", {
+      id: req.id,
+      data: Buffer.from("second\n").toString("base64"),
+    });
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: {},
+    });
+
+    await expect(logPromise).resolves.toBeUndefined();
+    expect(out).toBe("first\nsecond\n");
 
     fake.close();
     await client.close();
@@ -616,7 +700,9 @@ describe("Client", () => {
             ops: ["write"],
             path: "/workspace/*",
             mutateHook: (request) =>
-              Buffer.from(`size=${request.size};mode=${request.mode.toString(8)}`),
+              Buffer.from(
+                `size=${request.size};mode=${request.mode.toString(8)}`,
+              ),
           },
         ],
       },
@@ -630,7 +716,10 @@ describe("Client", () => {
     });
     await createPromise;
 
-    const writePromise = client.writeFile("/workspace/test.txt", Buffer.from("abcd"));
+    const writePromise = client.writeFile(
+      "/workspace/test.txt",
+      Buffer.from("abcd"),
+    );
     const writeReq = await fake.waitForRequest("write_file");
     const content = Buffer.from(
       String((writeReq.params as Record<string, unknown>).content),
@@ -792,7 +881,9 @@ describe("Client", () => {
     });
 
     const createReq = await fake.waitForRequest("create");
-    expect((createReq.params?.vfs as Record<string, unknown>).interception).toEqual({
+    expect(
+      (createReq.params?.vfs as Record<string, unknown>).interception,
+    ).toEqual({
       emit_events: true,
     });
 
@@ -847,7 +938,11 @@ describe("Client", () => {
     mockedExecFile.mockImplementationOnce((...args: unknown[]) => {
       const cb = args[args.length - 1];
       if (typeof cb === "function") {
-        cb(null, '{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n', "");
+        cb(
+          null,
+          '{"name":"cache","size":"16.0 MB","path":"/tmp/cache.ext4"}\n',
+          "",
+        );
       }
       return {} as never;
     });
@@ -908,9 +1003,15 @@ describe("Client", () => {
   it("rejects volume operations with invalid inputs", async () => {
     const client = new Client({ binaryPath: "matchlock" });
 
-    await expect(client.volumeCreate("  ", 16)).rejects.toThrow("volume name is required");
-    await expect(client.volumeCreate("cache", 0)).rejects.toThrow("volume size must be > 0");
-    await expect(client.volumeRemove("  ")).rejects.toThrow("volume name is required");
+    await expect(client.volumeCreate("  ", 16)).rejects.toThrow(
+      "volume name is required",
+    );
+    await expect(client.volumeCreate("cache", 0)).rejects.toThrow(
+      "volume size must be > 0",
+    );
+    await expect(client.volumeRemove("  ")).rejects.toThrow(
+      "volume name is required",
+    );
   });
 
   it("throws when process is not running", async () => {

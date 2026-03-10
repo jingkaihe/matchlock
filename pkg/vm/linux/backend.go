@@ -142,7 +142,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	)
 
 	if m.config.LogPath != "" {
-		logFile, err := os.Create(m.config.LogPath)
+		logFile, err := os.OpenFile(m.config.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0644)
 		if err != nil {
 			return errx.Wrap(ErrCreateLogFile, err)
 		}

@@ -438,9 +438,14 @@ func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguratio
 
 func (b *DarwinBackend) configureConsole(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) (*consoleFiles, error) {
 	// Debug console - kernel output goes to file
-	home, _ := os.UserHomeDir()
-	logPath := filepath.Join(home, ".cache", "matchlock", "console.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	logPath := config.LogPath
+	if logPath == "" {
+		logPath = "console.log"
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return nil, errx.Wrap(ErrConsoleLog, err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, errx.Wrap(ErrConsoleLog, err)
 	}

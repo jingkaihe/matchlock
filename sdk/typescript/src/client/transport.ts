@@ -21,6 +21,7 @@ const REQUEST_NOTIFICATION_METHODS = new Set<string>([
   "exec_pipe.stderr",
   "exec_tty.ready",
   "exec_tty.stdout",
+  "log_stream.data",
 ]);
 
 export class RPCTransport {
@@ -45,7 +46,11 @@ export class RPCTransport {
   }
 
   async start(): Promise<void> {
-    if (this.process && this.process.exitCode === null && !this.process.killed) {
+    if (
+      this.process &&
+      this.process.exitCode === null &&
+      !this.process.killed
+    ) {
       return;
     }
 
@@ -79,7 +84,9 @@ export class RPCTransport {
   }
 
   isRunning(): boolean {
-    return !!this.process && this.process.exitCode === null && !this.process.killed;
+    return (
+      !!this.process && this.process.exitCode === null && !this.process.killed
+    );
   }
 
   async close(timeoutSeconds = 0): Promise<void> {

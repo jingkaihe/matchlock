@@ -26,7 +26,7 @@ func TestCLIVersionFlag(t *testing.T) {
 func TestCLIHelp(t *testing.T) {
 	stdout, _, exitCode := runCLI(t, "--help")
 	require.Equal(t, 0, exitCode)
-	for _, sub := range []string{"run", "exec", "build", "pull", "list", "get", "kill", "rm", "prune", "port-forward", "rpc", "version"} {
+	for _, sub := range []string{"run", "exec", "log", "build", "pull", "list", "get", "kill", "rm", "prune", "port-forward", "rpc", "version"} {
 		assert.Containsf(t, stdout, sub, "help output should mention %q subcommand", sub)
 	}
 }

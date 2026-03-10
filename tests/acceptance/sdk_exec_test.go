@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
@@ -74,6 +75,34 @@ func TestExecStream(t *testing.T) {
 	require.NoError(t, err, "ExecStream")
 	assert.Equal(t, 0, result.ExitCode)
 	assert.Equal(t, "streamed", strings.TrimSpace(stdout.String()))
+}
+
+func TestLog(t *testing.T) {
+	t.Parallel()
+	client := launchWithBuilder(t, sdk.New("alpine:latest").
+		WithNoNetwork().
+		WithEntrypoint("sh", "-c", "echo first && sleep 2 && echo second"))
+
+	require.Eventually(t, func() bool {
+		logOutput, err := client.Log(context.Background())
+		return err == nil && strings.Contains(logOutput, "first")
+	}, 20*time.Second, 100*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- client.LogStream(ctx, &out)
+	}()
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(out.String(), "second")
+	}, 20*time.Second, 100*time.Millisecond)
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	assert.Contains(t, out.String(), "first")
+	assert.Contains(t, out.String(), "second")
 }
 
 func TestExecWithDir(t *testing.T) {

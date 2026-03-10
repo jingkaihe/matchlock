@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -127,7 +129,10 @@ func newTestRPCWithFactory(factory VMFactory) *testRPC {
 	stdoutR, stdoutW := io.Pipe()
 
 	h := NewHandler(factory, stdinR, stdoutW)
+	return newTestRPCWithHandler(h, stdinW, stdoutR)
+}
 
+func newTestRPCWithHandler(h *Handler, stdinW *io.PipeWriter, stdoutR *io.PipeReader) *testRPC {
 	done := make(chan error, 1)
 	go func() { done <- h.Run(context.Background()) }()
 
@@ -318,6 +323,102 @@ func TestHandlerExecStream(t *testing.T) {
 	json.Unmarshal(final.Result, &result)
 	assert.Equal(t, 0, result.ExitCode)
 	assert.Equal(t, int64(42), result.DurationMS)
+}
+
+func TestHandlerLog(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "vm.log")
+	require.NoError(t, os.WriteFile(logPath, []byte("hello log\n"), 0644))
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	handler := NewHandler(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{id: "vm-test"}, nil
+	}, stdinR, stdoutW)
+	handler.logPathForVM = func(string) string { return logPath }
+
+	rpc := newTestRPCWithHandler(handler, stdinW, stdoutR)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("log", 2, nil)
+	msg := rpc.read()
+	require.NotNil(t, msg.ID)
+	require.Nil(t, msg.Error)
+
+	var result struct {
+		Content string `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Result, &result))
+	decoded, err := base64.StdEncoding.DecodeString(result.Content)
+	require.NoError(t, err)
+	assert.Equal(t, "hello log\n", string(decoded))
+}
+
+func TestHandlerLogStream(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "vm.log")
+	require.NoError(t, os.WriteFile(logPath, []byte("first\n"), 0644))
+
+	stdinR, stdinW := io.Pipe()
+	stdoutR, stdoutW := io.Pipe()
+	handler := NewHandler(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{id: "vm-test"}, nil
+	}, stdinR, stdoutW)
+	handler.logPathForVM = func(string) string { return logPath }
+
+	rpc := newTestRPCWithHandler(handler, stdinW, stdoutR)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("log_stream", 2, nil)
+
+	msg := rpc.read()
+	require.Equal(t, "log_stream.data", msg.Method)
+	var chunk struct {
+		ID   *uint64 `json:"id"`
+		Data string  `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(msg.Params, &chunk))
+	decoded, err := base64.StdEncoding.DecodeString(chunk.Data)
+	require.NoError(t, err)
+	assert.Equal(t, "first\n", string(decoded))
+
+	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0644)
+	require.NoError(t, err)
+	_, err = f.WriteString("second\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	msg = rpc.read()
+	require.Equal(t, "log_stream.data", msg.Method)
+	require.NoError(t, json.Unmarshal(msg.Params, &chunk))
+	decoded, err = base64.StdEncoding.DecodeString(chunk.Data)
+	require.NoError(t, err)
+	assert.Equal(t, "second\n", string(decoded))
+
+	rpc.send("cancel", 99, map[string]uint64{"id": 2})
+
+	var cancelResp *rpcMsg
+	var finalResp *rpcMsg
+	for cancelResp == nil || finalResp == nil {
+		msg = rpc.read()
+		require.NotNil(t, msg.ID)
+		switch *msg.ID {
+		case 99:
+			cancelResp = msg
+		case 2:
+			finalResp = msg
+		}
+	}
+
+	require.Nil(t, cancelResp.Error)
+	require.NotNil(t, finalResp.Error)
+	assert.Equal(t, ErrCodeCancelled, finalResp.Error.Code)
 }
 
 func TestHandlerExecPipe(t *testing.T) {

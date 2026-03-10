@@ -412,6 +412,7 @@ class Client:
             "exec_pipe.stderr",
             "exec_tty.ready",
             "exec_tty.stdout",
+            "log_stream.data",
         ):
             return
 
@@ -1427,6 +1428,27 @@ class Client:
         return ExecStreamResult(
             exit_code=result["exit_code"],
             duration_ms=result["duration_ms"],
+        )
+
+    def log(self, timeout: float | None = None) -> str:
+        """Return the current buffered VM log."""
+        result = self._send_request("log", timeout=timeout)
+        return base64.b64decode(result["content"]).decode("utf-8", errors="replace")
+
+    def log_stream(
+        self,
+        stdout: IO[str] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Stream the VM log until the request completes or is cancelled."""
+
+        def on_notification(method: str, notif_params: dict[str, Any]) -> None:
+            if method != "log_stream.data":
+                return
+            self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+
+        self._send_request(
+            "log_stream", on_notification=on_notification, timeout=timeout
         )
 
     def _wait_ready_or_done(

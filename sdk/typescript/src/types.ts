@@ -317,3 +317,7 @@ export interface ExecInteractiveOptions extends ExecOptions {
   cols?: number;
   resize?: AsyncIterable<TTYSize> | Iterable<TTYSize>;
 }
+
+export interface LogStreamOptions extends RequestOptions {
+  stdout?: StreamWriter;
+}

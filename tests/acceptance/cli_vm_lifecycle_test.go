@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -286,6 +287,65 @@ func TestCLILifecycle(t *testing.T) {
 		stdout2, _, _ := runCLI(t, "list")
 		assert.NotContains(t, stdout2, vmID, "VM should not appear in list after rm")
 	})
+}
+
+func TestCLILog(t *testing.T) {
+	bin := matchlockBin(t)
+
+	args := withAcceptanceRunCPUs([]string{
+		"run",
+		"--image", "alpine:latest",
+		"--rm=false",
+		"--no-network",
+		"--",
+		"sh", "-c", "echo first && sleep 2 && echo second",
+	})
+	cmd := exec.Command(bin, args...)
+	runStdout := &lockedBuffer{}
+	runStderr := &lockedBuffer{}
+	cmd.Stdout = runStdout
+	cmd.Stderr = runStderr
+	require.NoError(t, cmd.Start(), "failed to start run")
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- cmd.Wait()
+		close(runDone)
+	}()
+
+	runPID := cmd.Process.Pid
+	var vmID string
+	t.Cleanup(func() {
+		cleanupPersistentRun(t, bin, vmID, runPID, runDone)
+	})
+
+	vmID = waitForRunningVMID(t, runPID, runDone, runStderr)
+	waitForExecReady(t, vmID, runPID, runDone, runStderr)
+
+	require.Eventually(t, func() bool {
+		stdout, _, exitCode := runCLI(t, "log", vmID)
+		return exitCode == 0 && strings.Contains(stdout, "first")
+	}, 20*time.Second, 100*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	followCmd := exec.CommandContext(ctx, bin, "log", "-f", vmID)
+	followStdout := &lockedBuffer{}
+	followStderr := &lockedBuffer{}
+	followCmd.Stdout = followStdout
+	followCmd.Stderr = followStderr
+	require.NoError(t, followCmd.Start(), "failed to start log -f")
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(followStdout.String(), "second")
+	}, 20*time.Second, 100*time.Millisecond, "follow stderr: %s", followStderr.String())
+
+	cancel()
+	_ = followCmd.Wait()
+
+	logOutput := followStdout.String()
+	assert.Contains(t, logOutput, "first")
+	assert.Contains(t, logOutput, "second")
 }
 
 func TestCLIRunRmFalseNoCommand(t *testing.T) {

@@ -46,6 +46,7 @@ export type {
   VolumeInfo,
   HostIPMapping,
   ImageConfig,
+  LogStreamOptions,
   MountConfig,
   NetworkBodyTransform,
   NetworkHookFunc,

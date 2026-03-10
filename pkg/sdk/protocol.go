@@ -252,7 +252,8 @@ func (c *Client) handleNotification(notif notification) {
 	switch notif.Method {
 	case "exec_stream.stdout", "exec_stream.stderr",
 		"exec_pipe.ready", "exec_pipe.stdout", "exec_pipe.stderr",
-		"exec_tty.ready", "exec_tty.stdout":
+		"exec_tty.ready", "exec_tty.stdout",
+		"log_stream.data":
 		var p struct {
 			ID *uint64 `json:"id"`
 		}

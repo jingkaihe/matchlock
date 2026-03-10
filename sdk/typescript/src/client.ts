@@ -16,6 +16,7 @@ import {
   type ExecStreamOptions,
   type ExecStreamResult,
   type FileInfo,
+  type LogStreamOptions,
   type PortForward,
   type PortForwardBinding,
   type RequestOptions,
@@ -28,7 +29,15 @@ import { ExecAPI } from "./client/exec";
 import { NetworkHooks } from "./client/network-hooks";
 import { parsePortForwards } from "./client/port-forward";
 import { RPCTransport } from "./client/transport";
-import { asNumber, asObject, asString, defaultConfig, toBuffer, toError, validateAddHost } from "./client/utils";
+import {
+  asNumber,
+  asObject,
+  asString,
+  defaultConfig,
+  toBuffer,
+  toError,
+  validateAddHost,
+} from "./client/utils";
 import { VFSHooks } from "./client/vfs-hooks";
 import { volumeCreate, volumeList, volumeRemove } from "./client/volumes";
 import type { JSONObject, JSONValue } from "./client/wire";
@@ -138,9 +147,8 @@ export class Client {
 
     const [wireVFS, localHooks, localMutateHooks, localActionHooks] =
       this.vfsHooks.compile(options.vfsInterception);
-    let [wireNetworkInterception, localNetworkHooks] = this.networkHooks.compile(
-      options.networkInterception,
-    );
+    let [wireNetworkInterception, localNetworkHooks] =
+      this.networkHooks.compile(options.networkInterception);
 
     await this.networkHooks.stop();
     let startedNetworkHookServer = false;
@@ -212,7 +220,13 @@ export class Client {
     stderr?: StreamWriter,
     options: RequestOptions = {},
   ): Promise<ExecStreamResult> {
-    return this.execAPI.execStreamWithDir(command, workingDir, stdout, stderr, options);
+    return this.execAPI.execStreamWithDir(
+      command,
+      workingDir,
+      stdout,
+      stderr,
+      options,
+    );
   }
 
   async execPipe(
@@ -247,6 +261,34 @@ export class Client {
     return this.execAPI.execInteractive(command, options);
   }
 
+  async log(options: RequestOptions = {}): Promise<string> {
+    const result = asObject(await this.sendRequest("log", undefined, options));
+    return Buffer.from(asString(result.content), "base64").toString("utf8");
+  }
+
+  async logStream(options: LogStreamOptions = {}): Promise<void> {
+    const onNotification = (method: string, params: JSONObject): void => {
+      if (method !== "log_stream.data") {
+        return;
+      }
+
+      const data = asString(params.data);
+      if (!data) {
+        return;
+      }
+
+      let decoded: Buffer;
+      try {
+        decoded = Buffer.from(data, "base64");
+      } catch {
+        return;
+      }
+      this.writeStreamChunk(options.stdout, decoded);
+    };
+
+    await this.sendRequest("log_stream", undefined, options, onNotification);
+  }
+
   async writeFile(
     path: string,
     content: BinaryLike,
@@ -269,7 +311,11 @@ export class Client {
       original.length,
       mode,
     );
-    const mutated = await this.vfsHooks.applyLocalWriteMutations(path, original, mode);
+    const mutated = await this.vfsHooks.applyLocalWriteMutations(
+      path,
+      original,
+      mode,
+    );
 
     await this.sendRequest(
       "write_file",
@@ -291,7 +337,10 @@ export class Client {
     return Buffer.from(asString(result.content), "base64");
   }
 
-  async listFiles(path: string, options: RequestOptions = {}): Promise<FileInfo[]> {
+  async listFiles(
+    path: string,
+    options: RequestOptions = {},
+  ): Promise<FileInfo[]> {
     await this.vfsHooks.applyLocalActionHooks(VFS_HOOK_OP_READDIR, path, 0, 0);
 
     const result = asObject(
@@ -338,7 +387,8 @@ export class Client {
     const result = asObject(
       await this.sendRequest("port_forward", {
         forwards: wireForwards as unknown as JSONValue,
-        addresses: addresses && addresses.length > 0 ? [...addresses] : ["127.0.0.1"],
+        addresses:
+          addresses && addresses.length > 0 ? [...addresses] : ["127.0.0.1"],
       }),
     );
 
@@ -370,5 +420,21 @@ export class Client {
     if (method === "event") {
       this.vfsHooks.handleFileEventNotification(params, this);
     }
+  }
+
+  private writeStreamChunk(
+    writer: StreamWriter | undefined,
+    chunk: Buffer,
+  ): void {
+    if (!writer) {
+      return;
+    }
+
+    if (typeof writer === "function") {
+      void writer(chunk);
+      return;
+    }
+
+    writer.write(chunk);
   }
 }

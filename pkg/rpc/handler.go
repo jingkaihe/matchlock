@@ -106,6 +106,7 @@ func (r *execInputReader) Read(p []byte) (int, error) {
 type Handler struct {
 	factory   VMFactory
 	vm        VM
+	lastVMID  string
 	pfManager *sandbox.PortForwardManager
 	pfMu      sync.Mutex   // serializes port-forward manager replacement
 	vmMu      sync.RWMutex // protects vm field
@@ -121,7 +122,8 @@ type Handler struct {
 	execPipes map[uint64]chan execInputChunk
 	execTTYs  map[uint64]execTTYSession
 	// entryCancel stops a launch-started image ENTRYPOINT/CMD exec when VM closes.
-	entryCancel context.CancelFunc
+	entryCancel  context.CancelFunc
+	logPathForVM func(string) string
 }
 
 type execTTYSession struct {
@@ -138,6 +140,9 @@ func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 		cancels:   make(map[uint64]context.CancelFunc),
 		execPipes: make(map[uint64]chan execInputChunk),
 		execTTYs:  make(map[uint64]execTTYSession),
+		logPathForVM: func(vmID string) string {
+			return state.NewManager().LogPath(vmID)
+		},
 	}
 }
 
@@ -268,6 +273,10 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleReadFile(ctx, req)
 	case "list_files":
 		return h.handleListFiles(ctx, req)
+	case "log":
+		return h.handleLog(req)
+	case "log_stream":
+		return h.handleLogStream(ctx, req)
 	case "allow_list_add":
 		return h.handleAllowListAdd(ctx, req)
 	case "allow_list_delete":
@@ -289,6 +298,15 @@ func (h *Handler) getVM() VM {
 	h.vmMu.RLock()
 	defer h.vmMu.RUnlock()
 	return h.vm
+}
+
+func (h *Handler) currentVMID() string {
+	h.vmMu.RLock()
+	defer h.vmMu.RUnlock()
+	if h.vm != nil {
+		return h.vm.ID()
+	}
+	return h.lastVMID
 }
 
 func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
@@ -376,6 +394,7 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	}
 	h.entryCancel = entryCancel
 	h.vm = vm
+	h.lastVMID = vm.ID()
 	h.vmMu.Unlock()
 
 	go func() {
@@ -410,19 +429,32 @@ func startImageEntrypoint(
 
 	command := api.ShellQuoteArgs(commandArgs)
 	entryCtx, cancel := context.WithCancel(context.Background())
+	logWriter, err := openVMLogAppender(state.NewManager().LogPath(vm.ID()))
+	if err != nil {
+		logWriter = nil
+	}
 	type runResult struct {
 		result *api.ExecResult
 		err    error
 	}
 	done := make(chan runResult, 1)
 	go func() {
+		stdout := io.Discard
+		stderr := io.Discard
+		if logWriter != nil {
+			stdout = logWriter
+			stderr = logWriter
+		}
 		// Force pipe-mode execution so detached startup never buffers unbounded
 		// stdout/stderr in host memory.
 		result, err := vm.Exec(entryCtx, command, &api.ExecOptions{
 			Stdin:  strings.NewReader(""),
-			Stdout: io.Discard,
-			Stderr: io.Discard,
+			Stdout: stdout,
+			Stderr: stderr,
 		})
+		if logWriter != nil {
+			_ = logWriter.Close()
+		}
 		done <- runResult{result: result, err: err}
 	}()
 
@@ -432,6 +464,9 @@ func startImageEntrypoint(
 	select {
 	case rr := <-done:
 		cancel()
+		if logWriter != nil {
+			_ = logWriter.Close()
+		}
 		if rr.err != nil {
 			return nil, fmt.Errorf("start image entrypoint: %s", rr.err)
 		}
@@ -443,8 +478,15 @@ func startImageEntrypoint(
 		return cancel, nil
 	case <-ctx.Done():
 		cancel()
+		if logWriter != nil {
+			_ = logWriter.Close()
+		}
 		return nil, ctx.Err()
 	}
+}
+
+func openVMLogAppender(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 }
 
 func (h *Handler) handleExec(ctx context.Context, req *Request) *Response {
@@ -1045,6 +1087,71 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 			"files": files,
 		},
 		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleLog(req *Request) *Response {
+	vmID := h.currentVMID()
+	if vmID == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	data, err := state.ReadLogFile(h.logPathForVM(vmID))
+	if err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeFileFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result: map[string]interface{}{
+			"content": base64.StdEncoding.EncodeToString(data),
+		},
+		ID: req.ID,
+	}
+}
+
+func (h *Handler) handleLogStream(ctx context.Context, req *Request) *Response {
+	vmID := h.currentVMID()
+	if vmID == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: "VM not created"},
+			ID:      req.ID,
+		}
+	}
+
+	if req.ID == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidRequest, Message: "log_stream requires request id"},
+		}
+	}
+
+	writer := &streamWriter{handler: h, reqID: req.ID, method: "log_stream.data"}
+	if err := state.CopyLogFile(ctx, h.logPathForVM(vmID), writer, true); err != nil {
+		code := ErrCodeFileFailed
+		if ctx.Err() != nil {
+			code = ErrCodeCancelled
+		}
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: code, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result:  map[string]interface{}{},
+		ID:      req.ID,
 	}
 }
 

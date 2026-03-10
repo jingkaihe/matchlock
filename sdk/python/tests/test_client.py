@@ -691,7 +691,11 @@ class TestClientCreate:
                         image="img",
                         no_network=True,
                         network_interception=NetworkInterceptionConfig(
-                            rules=[NetworkHookRule(action="block", hosts=["bad.example.com"])]
+                            rules=[
+                                NetworkHookRule(
+                                    action="block", hosts=["bad.example.com"]
+                                )
+                            ]
                         ),
                     )
                 )
@@ -1624,6 +1628,74 @@ class TestClientExecStream:
             fake.close_stdout()
 
 
+class TestClientLog:
+    def test_log_returns_buffered_output(self):
+        client, fake = make_client_with_fake()
+        try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {
+                            "content": base64.b64encode(b"hello from log\n").decode(),
+                        },
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            result = client.log()
+            assert result == "hello from log\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+    def test_log_stream_writes_notifications(self):
+        client, fake = make_client_with_fake()
+        try:
+            stdout_buf = io.StringIO()
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "log_stream.data",
+                        "params": {
+                            "id": 1,
+                            "data": base64.b64encode(b"first\n").decode(),
+                        },
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "log_stream.data",
+                        "params": {
+                            "id": 1,
+                            "data": base64.b64encode(b"second\n").decode(),
+                        },
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response({"jsonrpc": "2.0", "id": 1, "result": {}})
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            client.log_stream(stdout=stdout_buf)
+            assert stdout_buf.getvalue() == "first\nsecond\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
 class TestClientExecPipe:
     def test_exec_pipe_streams_and_pipes_stdin(self):
         client, fake = make_client_with_fake()
@@ -2253,7 +2325,9 @@ class TestClientVolume:
         )
         client = Client(Config(binary_path="matchlock"))
 
-        with pytest.raises(MatchlockError, match="failed to parse volume create output"):
+        with pytest.raises(
+            MatchlockError, match="failed to parse volume create output"
+        ):
             client.volume_create("cache", 16)
 
     @patch("subprocess.run")
@@ -2278,10 +2352,14 @@ class TestClientVolume:
 
     @patch("subprocess.run")
     def test_volume_list_fails_on_invalid_line(self, mock_run):
-        mock_run.return_value = MagicMock(stdout='[{"name":"cache","size":"16.0 MB"}]\n')
+        mock_run.return_value = MagicMock(
+            stdout='[{"name":"cache","size":"16.0 MB"}]\n'
+        )
         client = Client(Config(binary_path="matchlock"))
 
-        with pytest.raises(MatchlockError, match="failed to parse volume list output line"):
+        with pytest.raises(
+            MatchlockError, match="failed to parse volume list output line"
+        ):
             client.volume_list()
 
     @patch("subprocess.run")

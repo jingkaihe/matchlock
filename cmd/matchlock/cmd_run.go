@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -490,9 +491,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if command != "" {
+		logWriter, err := openVMLogAppender(stateMgr.LogPath(sb.ID()))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open VM log: %v\n", err)
+		}
+		if logWriter != nil {
+			defer logWriter.Close()
+		}
+
+		stdout := io.Writer(os.Stdout)
+		stderr := io.Writer(os.Stderr)
+		if logWriter != nil {
+			stdout = io.MultiWriter(os.Stdout, logWriter)
+			stderr = io.MultiWriter(os.Stderr, logWriter)
+		}
+
 		opts := &api.ExecOptions{
-			Stdout: os.Stdout,
-			Stderr: os.Stderr,
+			Stdout: stdout,
+			Stderr: stderr,
 		}
 		if interactive {
 			opts.Stdin = os.Stdin
@@ -658,6 +674,10 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir s
 	}
 
 	return exitCode
+}
+
+func openVMLogAppender(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 }
 
 func parseDiskMountSpec(spec string) (api.DiskMount, error) {
