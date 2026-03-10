@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -419,6 +420,65 @@ func TestHandlerLogStream(t *testing.T) {
 	require.Nil(t, cancelResp.Error)
 	require.NotNil(t, finalResp.Error)
 	assert.Equal(t, ErrCodeCancelled, finalResp.Error.Code)
+}
+
+func TestHandlerLogStreamStopsOnStdinEOF(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "vm.log")
+	require.NoError(t, os.WriteFile(logPath, []byte("first\n"), 0644))
+
+	var input bytes.Buffer
+	writeRequest := func(method string, id uint64, params interface{}) {
+		req := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"method":  method,
+			"id":      id,
+		}
+		if params != nil {
+			p, err := json.Marshal(params)
+			require.NoError(t, err)
+			req["params"] = json.RawMessage(p)
+		}
+		data, err := json.Marshal(req)
+		require.NoError(t, err)
+		_, err = fmt.Fprintln(&input, string(data))
+		require.NoError(t, err)
+	}
+
+	writeRequest("create", 1, map[string]string{"image": "alpine:latest"})
+	writeRequest("log_stream", 2, nil)
+
+	var output bytes.Buffer
+	handler := NewHandler(func(ctx context.Context, config *api.Config) (VM, error) {
+		return &mockVM{id: "vm-test"}, nil
+	}, &input, &output)
+	handler.logPathForVM = func(string) string { return logPath }
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handler.Run(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for handler to exit after stdin EOF")
+	}
+
+	var sawCancelled bool
+	scanner := bufio.NewScanner(strings.NewReader(output.String()))
+	for scanner.Scan() {
+		var msg rpcMsg
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &msg))
+		if msg.ID != nil && *msg.ID == 2 {
+			require.NotNil(t, msg.Error)
+			assert.Equal(t, ErrCodeCancelled, msg.Error.Code)
+			sawCancelled = true
+		}
+	}
+	require.NoError(t, scanner.Err())
+	assert.True(t, sawCancelled, "expected cancelled log_stream response")
 }
 
 func TestHandlerExecPipe(t *testing.T) {

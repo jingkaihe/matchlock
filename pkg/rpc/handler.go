@@ -121,6 +121,8 @@ type Handler struct {
 	execMu    sync.RWMutex
 	execPipes map[uint64]chan execInputChunk
 	execTTYs  map[uint64]execTTYSession
+	runMu     sync.Mutex
+	runCancel context.CancelFunc
 	// entryCancel stops a launch-started image ENTRYPOINT/CMD exec when VM closes.
 	entryCancel  context.CancelFunc
 	logPathForVM func(string) string
@@ -147,7 +149,18 @@ func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 }
 
 func (h *Handler) Run(ctx context.Context) error {
-	go h.eventLoop(ctx)
+	runCtx, runCancel := context.WithCancel(ctx)
+	h.runMu.Lock()
+	h.runCancel = runCancel
+	h.runMu.Unlock()
+	defer func() {
+		runCancel()
+		h.runMu.Lock()
+		h.runCancel = nil
+		h.runMu.Unlock()
+	}()
+
+	go h.eventLoop(runCtx)
 
 	scanner := bufio.NewScanner(h.stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
@@ -180,7 +193,7 @@ func (h *Handler) Run(ctx context.Context) error {
 		// Create and close run synchronously to avoid races
 		if req.Method == "create" || req.Method == "close" {
 			h.wg.Wait()
-			resp := h.handleRequest(ctx, &req)
+			resp := h.handleRequest(runCtx, &req)
 			if resp != nil {
 				h.sendResponse(resp)
 			}
@@ -191,7 +204,7 @@ func (h *Handler) Run(ctx context.Context) error {
 		// These methods share per-request channels and can race if handled
 		// in separate goroutines.
 		if isExecInputMethod(req.Method) {
-			resp := h.handleRequest(ctx, &req)
+			resp := h.handleRequest(runCtx, &req)
 			if resp != nil {
 				h.sendResponse(resp)
 			}
@@ -202,7 +215,7 @@ func (h *Handler) Run(ctx context.Context) error {
 		go func(r Request) {
 			defer h.wg.Done()
 
-			reqCtx, cancel := context.WithCancel(ctx)
+			reqCtx, cancel := context.WithCancel(runCtx)
 			defer cancel()
 
 			if r.ID != nil {
@@ -221,8 +234,9 @@ func (h *Handler) Run(ctx context.Context) error {
 			if r.Method == "port_forward" {
 				// Port-forward listeners should outlive the request lifetime.
 				// They are explicitly closed by a subsequent port_forward call
-				// or during close.
-				handleCtx = ctx
+				// or during close, but they should still stop when the RPC
+				// transport goes away.
+				handleCtx = runCtx
 			}
 
 			resp := h.handleRequest(handleCtx, &r)
@@ -232,6 +246,7 @@ func (h *Handler) Run(ctx context.Context) error {
 		}(req)
 	}
 
+	h.stopRun()
 	h.wg.Wait()
 	return scanner.Err()
 }
@@ -930,20 +945,20 @@ type streamWriter struct {
 
 func (w *streamWriter) Write(p []byte) (int, error) {
 	w.used = true
-	w.handler.sendStreamData(w.reqID, w.method, p)
+	if err := w.handler.sendStreamData(w.reqID, w.method, p); err != nil {
+		return 0, err
+	}
 	return len(p), nil
 }
 
-func (h *Handler) sendStreamData(reqID *uint64, method string, data []byte) {
-	h.sendRequestNotification(reqID, method, map[string]interface{}{
+func (h *Handler) sendStreamData(reqID *uint64, method string, data []byte) error {
+	return h.sendRequestNotification(reqID, method, map[string]interface{}{
 		"data": base64.StdEncoding.EncodeToString(data),
 	})
 }
 
-func (h *Handler) sendRequestNotification(reqID *uint64, method string, extraParams map[string]interface{}) {
+func (h *Handler) sendRequestNotification(reqID *uint64, method string, extraParams map[string]interface{}) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	params := map[string]interface{}{
 		"id": reqID,
 	}
@@ -957,7 +972,12 @@ func (h *Handler) sendRequestNotification(reqID *uint64, method string, extraPar
 		"params":  params,
 	}
 	encoded, _ := json.Marshal(notification)
-	fmt.Fprintln(h.stdout, string(encoded))
+	_, err := fmt.Fprintln(h.stdout, string(encoded))
+	h.mu.Unlock()
+	if err != nil {
+		h.stopRun()
+	}
+	return err
 }
 
 func (h *Handler) handleWriteFile(ctx context.Context, req *Request) *Response {
@@ -1440,10 +1460,12 @@ func (h *Handler) eventLoop(ctx context.Context) {
 
 func (h *Handler) sendResponse(resp *Response) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	data, _ := json.Marshal(resp)
-	fmt.Fprintln(h.stdout, string(data))
+	_, err := fmt.Fprintln(h.stdout, string(data))
+	h.mu.Unlock()
+	if err != nil {
+		h.stopRun()
+	}
 }
 
 func (h *Handler) sendError(id *uint64, code int, message string) {
@@ -1456,15 +1478,33 @@ func (h *Handler) sendError(id *uint64, code int, message string) {
 
 func (h *Handler) sendEvent(event api.Event) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	notification := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"method":  "event",
 		"params":  event,
 	}
 	data, _ := json.Marshal(notification)
-	fmt.Fprintln(h.stdout, string(data))
+	_, err := fmt.Fprintln(h.stdout, string(data))
+	h.mu.Unlock()
+	if err != nil {
+		h.stopRun()
+	}
+}
+
+func (h *Handler) stopRun() {
+	h.closed.Store(true)
+
+	if closer, ok := h.stdin.(io.Closer); ok {
+		_ = closer.Close()
+	}
+
+	h.runMu.Lock()
+	cancel := h.runCancel
+	h.runMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func RunRPC(ctx context.Context, factory VMFactory) error {
