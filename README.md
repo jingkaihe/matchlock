@@ -19,6 +19,17 @@ When you pass `--allow-host` or `--secret`, Matchlock seals the network - only t
 
 ### Install
 
+See [`docs/install.md`](./docs/install.md) for full installation details.
+
+**Automatic installer**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/install.sh | bash
+
+# Or install a specific release
+curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/install.sh | bash -s -- --version 0.2.4
+```
+
 **macOS (Homebrew)**
 
 ```bash
