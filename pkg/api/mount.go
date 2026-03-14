@@ -126,6 +126,66 @@ func ValidateVFSMountsWithinWorkspace(mounts map[string]MountConfig, workspace s
 	return nil
 }
 
+// DirectMountSpec is a parsed --direct-mount specification.
+type DirectMountSpec struct {
+	HostPath  string
+	GuestPath string
+	Readonly  bool
+}
+
+// ParseDirectMountSpec parses a direct mount string in format:
+// - "host:guest" (read-only by default)
+// - "host:guest:rw" (read-write)
+func ParseDirectMountSpec(spec string) (DirectMountSpec, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return DirectMountSpec{}, ErrInvalidDirectMountFormat
+	}
+
+	hostPath := parts[0]
+	guestPath := parts[1]
+
+	// Resolve to absolute path
+	var err error
+	if !filepath.IsAbs(hostPath) {
+		hostPath, err = filepath.Abs(hostPath)
+		if err != nil {
+			return DirectMountSpec{}, errx.Wrap(ErrResolvePath, err)
+		}
+	}
+
+	// Verify host path exists
+	if _, err := os.Stat(hostPath); err != nil {
+		return DirectMountSpec{}, errx.With(ErrHostPathNotExist, ": %s", hostPath)
+	}
+
+	// Guest path must be absolute
+	if !filepath.IsAbs(guestPath) {
+		return DirectMountSpec{}, errx.With(ErrGuestPathNotAbs, ": %q", guestPath)
+	}
+
+	// Validate guest path is safe for kernel cmdline
+	if err := ValidateGuestMount(guestPath); err != nil {
+		return DirectMountSpec{}, err
+	}
+
+	readonly := true
+	if len(parts) == 3 {
+		switch strings.ToLower(strings.TrimSpace(parts[2])) {
+		case "rw":
+			readonly = false
+		default:
+			return DirectMountSpec{}, errx.With(ErrUnknownMountOption, " %q (use 'rw' for read-write, omit for read-only)", parts[2])
+		}
+	}
+
+	return DirectMountSpec{
+		HostPath:  hostPath,
+		GuestPath: filepath.Clean(guestPath),
+		Readonly:  readonly,
+	}, nil
+}
+
 func isWithinWorkspace(path string, workspace string) bool {
 	path = filepath.Clean(path)
 	workspace = filepath.Clean(workspace)
