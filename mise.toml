@@ -73,7 +73,11 @@ description = "Remove built binaries"
 run = "rm -rf bin/"
 
 [tasks."package:linux"]
-description = "Build Linux .deb/.rpm packages with GoReleaser snapshot mode"
+description = "Build Linux .deb/.rpm packages for a tagged release without publishing"
+run = "goreleaser release --clean --skip=publish,announce"
+
+[tasks."package:linux:snapshot"]
+description = "Build Linux .deb/.rpm packages in GoReleaser snapshot mode"
 run = "goreleaser release --snapshot --clean"
 
 # =============================================================================

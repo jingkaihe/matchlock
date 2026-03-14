@@ -60,6 +60,7 @@ Linux sudo rule:
 ## Packaging Notes
 
 - Linux package artifacts are generated with GoReleaser/nfpm via `mise run package:linux`.
+- Use `mise run package:linux:snapshot` for local snapshot/test artifacts.
 - Starter package config lives in `.goreleaser.yaml` and `packaging/linux/`.
 - Package lifecycle scripts must stay machine-safe: capabilities/sysctl/module loading are okay; user-specific `usermod` logic is not.
 
@@ -73,6 +74,7 @@ mise run check
 mise run check:errx
 mise run fmt
 mise run package:linux
+mise run package:linux:snapshot
 ```
 
 Testing standard:

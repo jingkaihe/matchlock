@@ -121,7 +121,13 @@ Use:
 mise run package:linux
 ```
 
-That runs a GoReleaser snapshot build and emits raw binaries plus `.deb` and `.rpm` packages under `dist/`.
+That runs a non-publishing GoReleaser release build for the current tag and emits raw binaries plus `.deb` and `.rpm` packages under `dist/`.
+
+For local development/testing snapshot artifacts, use:
+
+```bash
+mise run package:linux:snapshot
+```
 
 ## Recommended next steps
 
