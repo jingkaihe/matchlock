@@ -1,6 +1,10 @@
 # Release Notes
 
-## Unreleased
+## 0.2.5
+
+Use non-snapshot mode deb/rpm package for formal releases
+
+## 0.2.4
 
 * Added Linux package-based installation via upstream `.deb` and `.rpm` release artifacts, plus a cross-platform install script.
 * Fixed interactive PTY resize handling for `matchlock exec -it` by forwarding `SIGWINCH` to the guest and serializing relay writes to avoid stdin/resize races by [@sosso](https://github.com/sosso).
