@@ -19,6 +19,8 @@ To install a specific release:
 curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/install.sh | bash -s -- --version 0.2.4
 ```
 
+On macOS, pinned installs work once the Homebrew tap has been updated to that same release.
+
 If you already have the repository checked out locally, you can also run:
 
 ```bash
@@ -27,13 +29,13 @@ If you already have the repository checked out locally, you can also run:
 
 The script detects the current OS and architecture:
 
-- on macOS, it installs via Homebrew
+- on macOS, it installs via Homebrew and upgrades existing installs
 - on Linux, it downloads and installs the latest matching `.deb` or `.rpm` package from GitHub Releases
 
 On Linux, the script currently supports:
 
 - Debian / Ubuntu (`dpkg`)
-- Fedora / RHEL / CentOS Stream (`rpm` or `dnf`)
+- Fedora / RHEL / CentOS Stream (`dnf`)
 
 After installation, verify the host with:
 
@@ -76,7 +78,7 @@ For arm64 systems, use the `linux_arm64.deb` release asset instead.
 Download the matching release asset from GitHub Releases, then install it:
 
 ```bash
-sudo rpm -Uvh ./matchlock_<version>_linux_amd64.rpm
+sudo dnf install ./matchlock_<version>_linux_amd64.rpm
 ```
 
 For arm64 systems, use the `linux_arm64.rpm` release asset instead.

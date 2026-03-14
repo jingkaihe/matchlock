@@ -21,7 +21,9 @@ When you pass `--allow-host` or `--secret`, Matchlock seals the network - only t
 
 See [`docs/install.md`](./docs/install.md) for full installation details.
 
-**Automatic installer**
+**Quick Installation**
+
+The script below detect OS, and install matchlock using Homebrew on Macos, and rpm/deb on Debian/RHEL flavourd Linux Distros
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/install.sh | bash
@@ -30,7 +32,9 @@ curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/in
 curl -fsSL https://raw.githubusercontent.com/jingkaihe/matchlock/main/scripts/install.sh | bash -s -- --version 0.2.4
 ```
 
-**macOS (Homebrew)**
+**Homebrew**
+
+Homebrew based installation is supported on both macOS and Linux:
 
 ```bash
 brew tap jingkaihe/essentials
@@ -48,7 +52,7 @@ matchlock diagnose
 **Fedora / RHEL / CentOS Stream (.rpm)**
 
 ```bash
-sudo rpm -Uvh ./matchlock_<version>_linux_amd64.rpm
+sudo dnf install ./matchlock_<version>_linux_amd64.rpm
 matchlock diagnose
 ```
 

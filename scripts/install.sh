@@ -51,6 +51,17 @@ release_tag() {
   esac
 }
 
+release_version() {
+  if [ -z "$MATCHLOCK_VERSION" ]; then
+    return 1
+  fi
+
+  case "$MATCHLOCK_VERSION" in
+    v*) printf '%s\n' "${MATCHLOCK_VERSION#v}" ;;
+    *) printf '%s\n' "$MATCHLOCK_VERSION" ;;
+  esac
+}
+
 release_label() {
   if [ -z "$MATCHLOCK_VERSION" ]; then
     echo "latest"
@@ -93,11 +104,57 @@ detect_arch() {
   esac
 }
 
+brew_formula_version() {
+  local formula="$1"
+  brew info --json=v2 "$formula" |
+    grep -oE '"stable":"[^"]+"' |
+    head -n1 |
+    cut -d'"' -f4
+}
+
+brew_installed_version() {
+  local formula="$1"
+  brew list --versions "$formula" 2>/dev/null | awk 'NF { print $2; exit }'
+}
+
 install_macos() {
   need_cmd brew
+  local formula="jingkaihe/essentials/matchlock"
+  local available_version=""
+  local installed_version=""
+  local requested_version=""
+
   echo "Detected macOS; installing Matchlock via Homebrew..."
   brew tap jingkaihe/essentials
-  brew install matchlock
+
+  if [ -n "$MATCHLOCK_VERSION" ]; then
+    requested_version="$(release_version)"
+    if ! available_version="$(brew_formula_version "$formula")"; then
+      echo "Error: could not determine the Homebrew formula version for ${formula}." >&2
+      exit 1
+    fi
+    if [ -z "$available_version" ]; then
+      echo "Error: Homebrew did not report an available version for ${formula}." >&2
+      exit 1
+    fi
+    if [ "$available_version" != "$requested_version" ]; then
+      echo "Error: requested release $(release_tag) is not currently available via Homebrew." >&2
+      echo "The tap currently provides ${available_version}." >&2
+      echo "Omit --version to install the latest Homebrew release, or retry once the tap is updated." >&2
+      exit 1
+    fi
+  fi
+
+  if installed_version="$(brew_installed_version matchlock)"; then
+    if [ -n "$MATCHLOCK_VERSION" ] && [ "$installed_version" = "$requested_version" ]; then
+      echo "Matchlock ${installed_version} is already installed via Homebrew."
+      return
+    fi
+    brew upgrade "$formula"
+    return
+  fi
+
+  brew install "$formula"
 }
 
 download_asset() {
@@ -112,25 +169,22 @@ release_json() {
   curl -fsSL "$(release_api_url)"
 }
 
+extract_release_asset_names() {
+  sed -nE 's/.*"browser_download_url":[[:space:]]*"[^"]*\/([^"/]+)".*/\1/p'
+}
+
 find_release_asset() {
   local pattern="$1"
-  local json
-  need_cmd python3
-  json="$(release_json)"
-  python3 -c '
-import json
-import re
-import sys
+  local asset
 
-pattern = re.compile(sys.argv[1])
-data = json.load(sys.stdin)
-for asset in data.get("assets", []):
-    name = asset.get("name", "")
-    if pattern.search(name):
-        print(name)
-        sys.exit(0)
-sys.exit(1)
-' "$pattern" <<<"$json"
+  while IFS= read -r asset; do
+    if [[ "$asset" =~ $pattern ]]; then
+      printf '%s\n' "$asset"
+      return 0
+    fi
+  done < <(release_json | extract_release_asset_names)
+
+  return 1
 }
 
 require_release_asset() {
@@ -178,8 +232,12 @@ install_linux_rpm() {
 
   if command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y "$tmp"
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum localinstall -y "$tmp"
   else
-    sudo rpm -Uvh "$tmp"
+    echo "Error: RPM-based installation requires dnf or yum to resolve package dependencies." >&2
+    rm -f "$tmp"
+    exit 1
   fi
   rm -f "$tmp"
 }
@@ -195,13 +253,18 @@ install_linux() {
     return
   fi
 
-  if command -v rpm >/dev/null 2>&1; then
+  if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
     echo "Using RPM package flow."
     install_linux_rpm "$arch"
     return
   fi
 
-  echo "Error: unsupported Linux packaging environment; expected dpkg or rpm" >&2
+  if command -v rpm >/dev/null 2>&1; then
+    echo "Error: unsupported RPM environment; install dnf or yum to resolve package dependencies" >&2
+    exit 1
+  fi
+
+  echo "Error: unsupported Linux packaging environment; expected dpkg, dnf, or yum" >&2
   exit 1
 }
 
