@@ -22,6 +22,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/firecracker"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vsock"
 )
@@ -136,7 +137,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		return errx.Wrap(ErrWriteConfig, err)
 	}
 
-	m.cmd = exec.CommandContext(ctx, "firecracker",
+	m.cmd = exec.CommandContext(ctx, firecracker.ResolveFirecrackerPath(),
 		"--api-sock", m.config.SocketPath,
 		"--config-file", configPath,
 	)

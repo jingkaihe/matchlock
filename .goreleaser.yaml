@@ -1,0 +1,116 @@
+version: 2
+
+project_name: matchlock
+
+before:
+  hooks:
+    - go mod download
+    - rm -rf .goreleaser-firecracker && mkdir -p .goreleaser-firecracker/linux-amd64 .goreleaser-firecracker/linux-arm64
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 amd64 .goreleaser-firecracker/linux-amd64 firecracker
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 amd64 .goreleaser-firecracker/linux-amd64 jailer
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 arm64 .goreleaser-firecracker/linux-arm64 firecracker
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 arm64 .goreleaser-firecracker/linux-arm64 jailer
+
+builds:
+  - id: matchlock
+    main: ./cmd/matchlock
+    binary: matchlock
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/jingkaihe/matchlock/pkg/version.Version={{ .Version }}
+        -X github.com/jingkaihe/matchlock/pkg/version.GitCommit={{ .Commit }}
+        -X github.com/jingkaihe/matchlock/pkg/version.BuildTime={{ .Date }}
+
+  - id: guest-init
+    main: ./cmd/guest-init
+    binary: guest-init
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+
+archives:
+  - id: raw-binaries
+    ids:
+      - matchlock
+      - guest-init
+    formats:
+      - binary
+    name_template: >-
+      {{ .Binary }}-{{ .Os }}-
+      {{- if eq .Arch "amd64" -}}amd64
+      {{- else if eq .Arch "arm64" -}}arm64
+      {{- else -}}{{ .Arch }}{{- end -}}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+nfpms:
+  - id: matchlock-linux
+    package_name: matchlock
+    ids:
+      - matchlock
+      - guest-init
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    maintainer: Jingkai He <jingkai@hey.com>
+    description: Lightweight micro-VM sandbox for running AI agents securely.
+    homepage: https://github.com/jingkaihe/matchlock
+    license: MIT
+    contents:
+      - src: .goreleaser-firecracker/linux-{{ .Arch }}/firecracker
+        dst: /usr/libexec/matchlock/firecracker
+        file_info:
+          mode: 0755
+      - src: .goreleaser-firecracker/linux-{{ .Arch }}/jailer
+        dst: /usr/libexec/matchlock/jailer
+        file_info:
+          mode: 0755
+      - src: packaging/linux/sysctl/99-matchlock.conf
+        dst: /usr/lib/sysctl.d/99-matchlock.conf
+        file_info:
+          mode: 0644
+      - src: packaging/linux/doc/README.packaging.md
+        dst: /usr/share/doc/matchlock/README.packaging.md
+        file_info:
+          mode: 0644
+    scripts:
+      postinstall: packaging/linux/scripts/postinstall.sh
+    overrides:
+      deb:
+        dependencies:
+          - e2fsprogs
+          - erofs-utils
+          - libcap2-bin
+          - nftables
+          - kmod
+          - procps
+      rpm:
+        dependencies:
+          - e2fsprogs
+          - erofs-utils
+          - libcap
+          - nftables
+          - kmod
+          - procps-ng
+
+release:
+  disable: true

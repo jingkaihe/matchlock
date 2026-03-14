@@ -34,6 +34,7 @@ Thumbs.db
 *.ext4
 vmlinux
 vmlinux-*
+dist/
 node_modules/
 sdk/typescript/node_modules/
 sdk/typescript/dist/
@@ -42,6 +43,7 @@ sdk/typescript/dist/
 *.sock
 firecracker.log
 firecracker-*.log
+.goreleaser-firecracker/
 
 # Kernel build
 /tmp/kernel-build/

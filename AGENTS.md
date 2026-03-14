@@ -48,14 +48,20 @@ mise install
 # macOS (usable, codesigned binary for usage and acceptance tests)
 mise run build
 
-# Linux (usable binary + one-time capability/network setup)
+# Linux (usable binary + one-time setup)
 mise run build && sudo ./bin/matchlock setup linux
 ```
 
 Linux sudo rule:
-- Use `sudo` only for the one-time `setup linux` command above.
+- Use `sudo` only for the one-time `setup linux` / `setup user` commands above.
 - Do not run `matchlock run` or `matchlock exec` with `sudo`.
 - NEVER EVER run `matchlock` with `sudo`.
+
+## Packaging Notes
+
+- Linux package artifacts are generated with GoReleaser/nfpm via `mise run package:linux`.
+- Starter package config lives in `.goreleaser.yaml` and `packaging/linux/`.
+- Package lifecycle scripts must stay machine-safe: capabilities/sysctl/module loading are okay; user-specific `usermod` logic is not.
 
 ## Test and Check
 
@@ -66,6 +72,7 @@ mise run test:coverage
 mise run check
 mise run check:errx
 mise run fmt
+mise run package:linux
 ```
 
 Testing standard:

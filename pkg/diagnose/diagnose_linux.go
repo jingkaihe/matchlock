@@ -18,11 +18,11 @@ func Run() Result {
 		checkKVMDeviceExists(),
 		checkKVMAcceleration(),
 		checkKVMAccessible(),
-		checkUserGroup("kvm", "Add your user to the kvm group and log in again."),
+		checkUserGroup("kvm", "Run `sudo matchlock setup user <name>` and log in again."),
 		checkMatchlockCapabilities(),
 		checkIPForwardingEnabled(),
 		checkTunDeviceAccessible(),
-		checkUserGroup("netdev", "Add your user to the netdev group and log in again, or run `sudo matchlock setup linux`."),
+		checkUserGroup("netdev", "Run `sudo matchlock setup user <name>` and log in again."),
 		checkNFTablesAvailable(),
 	}
 	return finalize(checks)
@@ -31,7 +31,7 @@ func Run() Result {
 func checkFirecrackerInstalled() Check {
 	version := firecrackerVersion()
 	if version == "" {
-		return Fail("firecracker", "Firecracker is not installed or not on PATH.", "Run `sudo matchlock setup linux` or install firecracker and jailer into your PATH.")
+		return Fail("firecracker", "Firecracker is not installed or bundled package assets are missing.", "Run `sudo matchlock setup linux` or install the Matchlock package that bundles firecracker/jailer.")
 	}
 	return Pass("firecracker", fmt.Sprintf("Firecracker %s is available.", version))
 }

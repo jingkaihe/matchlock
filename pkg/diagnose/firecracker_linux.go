@@ -5,10 +5,12 @@ package diagnose
 import (
 	"os/exec"
 	"strings"
+
+	"github.com/jingkaihe/matchlock/pkg/firecracker"
 )
 
 func firecrackerVersion() string {
-	out, err := exec.Command("firecracker", "--version").Output()
+	out, err := exec.Command(firecracker.ResolveFirecrackerPath(), "--version").Output()
 	if err != nil {
 		return ""
 	}

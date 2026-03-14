@@ -6,6 +6,7 @@
 go = "1.25"
 golangci-lint = "latest"
 uv = "latest"
+goreleaser = "latest"
 "go:github.com/google/go-containerregistry/cmd/crane" = "latest"
 
 [env]
@@ -70,6 +71,10 @@ echo "Built: bin/matchlock, bin/guest-init ($GOARCH)"
 [tasks.clean]
 description = "Remove built binaries"
 run = "rm -rf bin/"
+
+[tasks."package:linux"]
+description = "Build Linux .deb/.rpm packages with GoReleaser snapshot mode"
+run = "goreleaser release --snapshot --clean"
 
 # =============================================================================
 # Test tasks

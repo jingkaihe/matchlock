@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"github.com/jingkaihe/matchlock/pkg/firecracker"
 )
 
 var setupCmd = &cobra.Command{
@@ -28,17 +29,27 @@ var setupCmd = &cobra.Command{
 
 var setupLinuxCmd = &cobra.Command{
 	Use:   "linux",
-	Short: "Setup matchlock for Linux (installs Firecracker and configures permissions)",
+	Short: "Setup matchlock for Linux host and current user",
 	Long: `Setup matchlock for Linux by:
-  1. Installing Firecracker from GitHub releases
-  2. Adding current user to kvm group
-  3. Setting capabilities on matchlock binary
-  4. Enabling IP forwarding
-  5. Configuring /dev/net/tun
-  6. Ensuring nftables kernel module is loaded
+  1. Installing or locating Firecracker
+  2. Configuring the host for Matchlock
+  3. Adding the current user to kvm/netdev groups
 
 This command requires root privileges.`,
 	RunE: runSetupLinux,
+}
+
+var setupUserCmd = &cobra.Command{
+	Use:   "user <name>",
+	Short: "Enroll a user for Matchlock access on Linux",
+	Long: `Enroll a specific user for Matchlock access by:
+  1. Adding the user to the kvm group
+  2. Adding the user to the netdev group
+
+This command requires root privileges. Users must log out and back in for group
+changes to take effect.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runSetupUser,
 }
 
 func init() {
@@ -47,9 +58,10 @@ func init() {
 	setupLinuxCmd.Flags().String("install-dir", "/usr/local/bin", "Directory to install Firecracker")
 	setupLinuxCmd.Flags().Bool("best-effort", false, "Continue setup after non-fatal errors")
 	setupLinuxCmd.Flags().Bool("skip-firecracker", false, "Skip Firecracker installation")
-	setupLinuxCmd.Flags().Bool("skip-permissions", false, "Skip permission setup")
+	setupLinuxCmd.Flags().Bool("skip-permissions", false, "Skip machine permission setup")
 	setupLinuxCmd.Flags().Bool("skip-network", false, "Skip network configuration")
 
+	setupCmd.AddCommand(setupUserCmd)
 	setupCmd.AddCommand(setupLinuxCmd)
 	rootCmd.AddCommand(setupCmd)
 }
@@ -59,24 +71,35 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("this command requires root privileges. Run with: sudo matchlock setup linux")
 	}
 
+	userName, err := resolveSetupUser(cmd)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Setting up matchlock host and user: %s\n\n", userName)
+
+	if err := runSetupLinuxHost(cmd); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	if err := setupUserGroups(userName); err != nil {
+		return errx.Wrap(ErrSetupLinux, err)
+	}
+
+	fmt.Println()
+	fmt.Println("Setup complete!")
+	fmt.Printf("User %s must log out and back in for group changes to take effect.\n", userName)
+	return nil
+}
+
+func runSetupLinuxHost(cmd *cobra.Command) error {
 	skipFirecracker, _ := cmd.Flags().GetBool("skip-firecracker")
 	bestEffort, _ := cmd.Flags().GetBool("best-effort")
 	skipPermissions, _ := cmd.Flags().GetBool("skip-permissions")
 	skipNetwork, _ := cmd.Flags().GetBool("skip-network")
 	installDir, _ := cmd.Flags().GetString("install-dir")
-	userName, _ := cmd.Flags().GetString("user")
 	binaryPath, _ := cmd.Flags().GetString("binary")
-
-	if userName == "" {
-		userName = os.Getenv("SUDO_USER")
-		if userName == "" {
-			u, err := user.Current()
-			if err != nil {
-				return errx.Wrap(ErrDetermineUser, err)
-			}
-			userName = u.Username
-		}
-	}
 
 	if binaryPath == "" {
 		if exe, err := os.Executable(); err == nil {
@@ -86,7 +109,8 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Printf("Setting up matchlock for user: %s\n\n", userName)
+	fmt.Println("Setting up matchlock host requirements")
+	fmt.Println()
 
 	if !skipFirecracker {
 		if err := runSetupStep("firecracker installation", bestEffort, func() error {
@@ -99,7 +123,7 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 
 	if !skipPermissions {
 		if err := runSetupStep("permission setup", bestEffort, func() error {
-			return setupPermissions(userName, binaryPath, bestEffort)
+			return setupHostPermissions(binaryPath, bestEffort)
 		}); err != nil {
 			return errx.Wrap(ErrSetupLinux, err)
 		}
@@ -115,9 +139,45 @@ func runSetupLinux(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
-	fmt.Println("Setup complete!")
-	fmt.Println("Please log out and back in for group changes to take effect.")
+	fmt.Println("Host setup complete!")
 	return nil
+}
+
+func runSetupUser(cmd *cobra.Command, args []string) error {
+	if os.Getuid() != 0 {
+		return fmt.Errorf("this command requires root privileges. Run with: sudo matchlock setup user <name>")
+	}
+
+	userName := args[0]
+	if _, err := user.Lookup(userName); err != nil {
+		return errx.Wrap(ErrDetermineUser, err)
+	}
+
+	if err := setupUserGroups(userName); err != nil {
+		return errx.Wrap(ErrSetupLinux, err)
+	}
+
+	fmt.Println()
+	fmt.Println("Setup complete!")
+	fmt.Printf("User %s must log out and back in for group changes to take effect.\n", userName)
+	return nil
+}
+
+func resolveSetupUser(cmd *cobra.Command) (string, error) {
+	userName, _ := cmd.Flags().GetString("user")
+	if userName != "" {
+		return userName, nil
+	}
+
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		return sudoUser, nil
+	}
+
+	u, err := user.Current()
+	if err != nil {
+		return "", errx.Wrap(ErrDetermineUser, err)
+	}
+	return u.Username, nil
 }
 
 func installFirecracker(installDir string) error {
@@ -132,7 +192,7 @@ func installFirecracker(installDir string) error {
 
 	installedVersion := getFirecrackerVersion()
 	if installedVersion != "" {
-		fmt.Printf("✓ Firecracker %s already installed\n", installedVersion)
+		fmt.Printf("✓ Firecracker %s already available\n", installedVersion)
 		return nil
 	}
 
@@ -224,7 +284,7 @@ func installFirecracker(installDir string) error {
 }
 
 func getFirecrackerVersion() string {
-	out, err := exec.Command("firecracker", "--version").Output()
+	out, err := exec.Command(firecracker.ResolveFirecrackerPath(), "--version").Output()
 	if err != nil {
 		return ""
 	}
@@ -273,14 +333,8 @@ func checkKVM() {
 	}
 }
 
-func setupPermissions(userName, binaryPath string, bestEffort bool) error {
-	fmt.Println("=== Setting up permissions ===")
-
-	if err := runSetupStep("add user to kvm group", bestEffort, func() error {
-		return addUserToKVMGroup(userName)
-	}); err != nil {
-		return err
-	}
+func setupHostPermissions(binaryPath string, bestEffort bool) error {
+	fmt.Println("=== Setting up host permissions ===")
 
 	if err := runSetupStep("set binary capabilities", bestEffort, func() error {
 		return setCapabilities(binaryPath)
@@ -288,10 +342,22 @@ func setupPermissions(userName, binaryPath string, bestEffort bool) error {
 		return err
 	}
 
-	if err := runSetupStep("setup /dev/net/tun", bestEffort, func() error {
-		return setupTunDevice(userName)
-	}); err != nil {
+	if err := runSetupStep("setup /dev/net/tun", bestEffort, setupTunDevice); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func setupUserGroups(userName string) error {
+	fmt.Printf("=== Enrolling user %s ===\n", userName)
+
+	if err := addUserToKVMGroup(userName); err != nil {
+		return errx.With(ErrSetupStep, " add user to kvm group: %w", err)
+	}
+
+	if err := addUserToNetdevGroup(userName); err != nil {
+		return errx.With(ErrSetupStep, " add user to netdev group: %w", err)
 	}
 
 	return nil
@@ -317,6 +383,30 @@ func addUserToKVMGroup(userName string) error {
 	return nil
 }
 
+func addUserToNetdevGroup(userName string) error {
+	if err := exec.Command("getent", "group", "netdev").Run(); err != nil {
+		if err := exec.Command("groupadd", "netdev").Run(); err != nil {
+			return errx.Wrap(ErrCreateNetdev, err)
+		}
+		fmt.Println("✓ Created netdev group")
+	}
+
+	out, err := exec.Command("groups", userName).Output()
+	if err != nil {
+		return errx.With(ErrSetupStep, " inspect groups for %s: %w", userName, err)
+	}
+	if strings.Contains(string(out), "netdev") {
+		fmt.Println("✓ User already in netdev group")
+		return nil
+	}
+
+	if err := exec.Command("usermod", "-aG", "netdev", userName).Run(); err != nil {
+		return errx.With(ErrAddToNetdev, " %s: %w", userName, err)
+	}
+	fmt.Printf("✓ Added %s to netdev group\n", userName)
+	return nil
+}
+
 func setCapabilities(binaryPath string) error {
 	if _, err := os.Stat(binaryPath); err != nil {
 		fmt.Printf("⚠ Binary not found at %s - skipping capability setup\n", binaryPath)
@@ -330,7 +420,7 @@ func setCapabilities(binaryPath string) error {
 	return nil
 }
 
-func setupTunDevice(userName string) error {
+func setupTunDevice() error {
 	if _, err := os.Stat("/dev/net/tun"); os.IsNotExist(err) {
 		if err := os.MkdirAll("/dev/net", 0755); err != nil {
 			return errx.With(ErrSetupStep, " create /dev/net: %w", err)
@@ -345,17 +435,6 @@ func setupTunDevice(userName string) error {
 			return errx.Wrap(ErrCreateNetdev, err)
 		}
 		fmt.Println("✓ Created netdev group")
-	}
-
-	out, err := exec.Command("groups", userName).Output()
-	if err != nil {
-		return errx.With(ErrSetupStep, " inspect groups for %s: %w", userName, err)
-	}
-	if !strings.Contains(string(out), "netdev") {
-		if err := exec.Command("usermod", "-aG", "netdev", userName).Run(); err != nil {
-			return errx.With(ErrAddToNetdev, " %s: %w", userName, err)
-		}
-		fmt.Printf("✓ Added %s to netdev group\n", userName)
 	}
 
 	if err := exec.Command("chown", "root:netdev", "/dev/net/tun").Run(); err != nil {

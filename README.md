@@ -19,9 +19,38 @@ When you pass `--allow-host` or `--secret`, Matchlock seals the network - only t
 
 ### Install
 
+**macOS (Homebrew)**
+
 ```bash
 brew tap jingkaihe/essentials
 brew install matchlock
+```
+
+**Debian / Ubuntu (.deb)**
+
+```bash
+sudo dpkg -i ./matchlock_<version>_linux_amd64.deb
+sudo apt-get install -f
+matchlock diagnose
+```
+
+**Fedora / RHEL / CentOS Stream (.rpm)**
+
+```bash
+sudo rpm -Uvh ./matchlock_<version>_linux_amd64.rpm
+matchlock diagnose
+```
+
+If `matchlock diagnose` reports missing host setup, run:
+
+```bash
+sudo matchlock setup linux
+```
+
+To enroll a specific user explicitly, run:
+
+```bash
+sudo matchlock setup user <name>
 ```
 
 ### Usage

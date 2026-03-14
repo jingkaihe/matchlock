@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-linux:
-    name: Build Linux binaries
+    name: Build Linux binaries and packages
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,18 +24,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Linux CLI + guest binaries
+      - name: Build Linux release artifacts
+        run: mise run package:linux
+
+      - name: Stage Linux release assets
+        shell: bash
         run: |
-          mise run cross-build:linux
-          mise run cross-build:guest
+          set -euo pipefail
+          mkdir -p release-assets
+
+          cp dist/matchlock_linux_amd64_*/matchlock release-assets/matchlock-linux-amd64
+          cp dist/matchlock_linux_arm64_*/matchlock release-assets/matchlock-linux-arm64
+          cp dist/guest-init_linux_amd64_*/guest-init release-assets/guest-init-linux-amd64
+          cp dist/guest-init_linux_arm64_*/guest-init release-assets/guest-init-linux-arm64
+          cp dist/*.deb release-assets/
+          cp dist/*.rpm release-assets/
+          cp dist/checksums.txt release-assets/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-binaries
+          name: linux-release-artifacts
           path: |
-            bin/matchlock-linux-*
-            bin/guest-init-linux-*
+            release-assets/*
 
   build-darwin:
     name: Build macOS (arm64)
@@ -93,7 +104,10 @@ jobs:
             bin/matchlock-linux-arm64 \
             bin/matchlock-darwin-arm64 \
             bin/guest-init-linux-amd64 \
-            bin/guest-init-linux-arm64
+            bin/guest-init-linux-arm64 \
+            bin/*.deb \
+            bin/*.rpm \
+            bin/checksums.txt
           rm -f "$NOTES_FILE"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
