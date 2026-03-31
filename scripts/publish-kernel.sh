@@ -132,8 +132,6 @@ create_manifest() {
         -m "$amd64_tag" \
         -m "$arm64_tag"
 
-    apply_labels "$manifest_tag" "Matchlock Linux kernel (multi-platform)"
-
     echo "Published manifest: $manifest_tag"
 
     # Also tag as latest if requested
