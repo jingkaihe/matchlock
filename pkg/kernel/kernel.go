@@ -51,13 +51,6 @@ func (a Architecture) KernelFilename() string {
 	return "kernel"
 }
 
-func (a Architecture) TagSuffix() string {
-	if a == ArchARM64 {
-		return "arm64"
-	}
-	return "amd64"
-}
-
 func (a Architecture) OCIPlatform() string {
 	if a == ArchARM64 {
 		return "linux/arm64"
@@ -125,7 +118,7 @@ func (m *Manager) EnsureKernel(ctx context.Context, arch Architecture, version s
 	kernelPath := m.KernelPath(arch, version)
 	imageRef := fmt.Sprintf("%s/kernel:%s", m.registry, version)
 
-	if _, err := os.Stat(kernelPath); err == nil && isKernelBinary(kernelPath) {
+	if _, err := os.Stat(kernelPath); err == nil {
 		m.recordVersionCache(version, arch, kernelPath, sizeOnDisk(kernelPath), imageRef, "")
 		return kernelPath, nil
 	}
@@ -179,45 +172,7 @@ func (m *Manager) KernelRefPath(arch Architecture, ref string) string {
 
 func (m *Manager) download(ctx context.Context, arch Architecture, version string, destPath string) (string, int64, error) {
 	imageRef := fmt.Sprintf("%s/kernel:%s", m.registry, version)
-	digest, size, err := m.downloadRef(ctx, arch, imageRef, destPath)
-	if err != nil {
-		return "", 0, err
-	}
-	if !isKernelBinary(destPath) {
-		// The versioned tag is a single-arch image (not a multi-platform index) and
-		// remote.Get returned the wrong architecture silently. Retry with the
-		// arch-specific tag (e.g. "6.19.8-arm64").
-		archRef := fmt.Sprintf("%s/kernel:%s-%s", m.registry, version, arch.TagSuffix())
-		return m.downloadRef(ctx, arch, archRef, destPath)
-	}
-	return digest, size, nil
-}
-
-// isKernelBinary reports whether path contains a kernel binary rather than
-// an unextracted tar archive. When extraction fails inside downloadRef the raw
-// layer (a plain tar) is written to disk; detecting this avoids passing a tar
-// to the Virtualization framework.
-func isKernelBinary(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	// A POSIX tar archive has the magic string "ustar" at byte offset 257.
-	// Read enough bytes to check for it.
-	buf := make([]byte, 262)
-	n, _ := f.Read(buf)
-	if n < 4 {
-		return false
-	}
-	if buf[0] == 0x1f && buf[1] == 0x8b { // gzip magic
-		return false
-	}
-	if n >= 262 && string(buf[257:262]) == "ustar" { // tar magic
-		return false
-	}
-	return true
+	return m.downloadRef(ctx, arch, imageRef, destPath)
 }
 
 func (m *Manager) downloadRef(ctx context.Context, arch Architecture, imageRef, destPath string) (string, int64, error) {
