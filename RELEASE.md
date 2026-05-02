@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.2.10
+
+* Improved macOS interception-mode DNS reliability by bounding upstream DNS exchanges with timeouts and logging failed upstream queries instead of letting blackholed DNS requests pin goroutines - by [@sosso](https://github.com/sosso)
+* Added a global `--log-level` CLI flag, configurable through `MATCHLOCK_LOG_LEVEL`, to control process-wide structured logging at `debug`, `info`, `warn`, or `error` levels.
+
 ## 0.2.9
 
 * Fixed Linux `--allow-host` DNS reachability for intercepted sandboxes by adding a host-side DNS forwarder and nftables redirection for guest DNS queries ([#94](https://github.com/jingkaihe/matchlock/issues/94), initial contribution by [@nemtsov](https://github.com/nemtsov)).
