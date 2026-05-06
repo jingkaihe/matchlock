@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,7 +25,29 @@ func buildVFSProviders(config *api.Config) map[string]vfs.Provider {
 			vfsProviders[path] = provider
 		}
 	}
+	if config.VFS != nil && config.VFS.DirectMounts != nil {
+		for guestPath, dm := range config.VFS.DirectMounts {
+			var p vfs.Provider = vfs.NewRealFSProvider(dm.HostPath)
+			if dm.Readonly {
+				p = vfs.NewReadonlyProvider(p)
+			}
+			vfsProviders[guestPath] = p
+		}
+	}
 	return vfsProviders
+}
+
+// sortedDirectMountPaths returns sorted guest paths from direct mounts config.
+func sortedDirectMountPaths(config *api.Config) []string {
+	if config.VFS == nil || len(config.VFS.DirectMounts) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(config.VFS.DirectMounts))
+	for guestPath := range config.VFS.DirectMounts {
+		paths = append(paths, guestPath)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {

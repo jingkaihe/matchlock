@@ -82,6 +82,8 @@ type VFSStat struct {
 	ModTime int64  `cbor:"mtime"`
 	IsDir   bool   `cbor:"is_dir"`
 	Ino     uint64 `cbor:"ino,omitempty"`
+	UID     uint32 `cbor:"uid,omitempty"`
+	GID     uint32 `cbor:"gid,omitempty"`
 }
 
 type VFSDirEntry struct {
@@ -654,6 +656,8 @@ func fillAttr(attr *fuse.Attr, stat *VFSStat) {
 	attr.Blksize = 4096
 	attr.Blocks = (uint64(stat.Size) + 511) / 512
 	attr.Ino = stat.Ino
+	attr.Uid = stat.UID
+	attr.Gid = stat.GID
 	if stat.IsDir {
 		attr.Mode = syscall.S_IFDIR | (stat.Mode & 0777)
 		attr.Nlink = 2
@@ -782,75 +786,124 @@ func getWorkspaceFromCmdline() string {
 	return ""
 }
 
-func Run() {
-	// Get workspace from kernel cmdline.
-	mountpoint := getWorkspaceFromCmdline()
-	if len(os.Args) > 1 {
-		mountpoint = os.Args[1]
+func getDirectMountsFromCmdline() []string {
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return nil
 	}
-	if mountpoint == "" {
-		fmt.Fprintln(os.Stderr, "Missing workspace mountpoint")
-		os.Exit(1)
+	for _, part := range strings.Fields(string(data)) {
+		if strings.HasPrefix(part, "matchlock.direct_mount=") {
+			val := strings.TrimPrefix(part, "matchlock.direct_mount=")
+			if val == "" {
+				return nil
+			}
+			return strings.Split(val, ",")
+		}
 	}
+	return nil
+}
 
-	fmt.Printf("Guest FUSE daemon (go-fuse) starting, mounting at %s...\n", mountpoint)
-
-	if err := os.MkdirAll(mountpoint, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create mountpoint: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Connect to host VFS server with retries
+func connectVFSClient() (*VFSClient, error) {
 	var client *VFSClient
 	var err error
 	for i := 0; i < 30; i++ {
 		client, err = NewVFSClient()
 		if err == nil {
-			break
+			return client, nil
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to VFS server: %v\n", err)
-		os.Exit(1)
+	return nil, err
+}
+
+func Run() {
+	// Collect mount points from kernel cmdline and args.
+	workspace := getWorkspaceFromCmdline()
+	if len(os.Args) > 1 {
+		workspace = os.Args[1]
 	}
-	defer client.Close()
-	fmt.Println("Connected to VFS server")
+	directMounts := getDirectMountsFromCmdline()
 
-	// Create root node - basePath must match the VFS mount configuration on host
-	root := &VFSRoot{client: client, basePath: mountpoint}
-
-	// Mount with go-fuse using DirectMountStrict to avoid fusermount dependency
-	opts := &fs.Options{
-		MountOptions: fuse.MountOptions{
-			AllowOther:        true,
-			FsName:            "matchlock",
-			Name:              "fuse.matchlock",
-			Debug:             false,
-			DirectMountStrict: true,
-		},
-		AttrTimeout:  &[]time.Duration{time.Second}[0],
-		EntryTimeout: &[]time.Duration{time.Second}[0],
+	var mountpoints []string
+	if workspace != "" {
+		mountpoints = append(mountpoints, workspace)
 	}
+	mountpoints = append(mountpoints, directMounts...)
 
-	server, err := fs.Mount(mountpoint, root, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to mount: %v\n", err)
+	if len(mountpoints) == 0 {
+		fmt.Fprintln(os.Stderr, "No mount points configured (no workspace or direct mounts)")
 		os.Exit(1)
 	}
 
-	fmt.Printf("FUSE filesystem mounted at %s\n", mountpoint)
+	fmt.Printf("Guest FUSE daemon (go-fuse) starting, %d mount point(s)...\n", len(mountpoints))
 
-	// Handle signals for graceful shutdown
+	// Create all mountpoint directories.
+	for _, mp := range mountpoints {
+		if err := os.MkdirAll(mp, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create mountpoint %s: %v\n", mp, err)
+			os.Exit(1)
+		}
+	}
+
+	// Mount each point with its own VFSClient and FUSE server.
+	var servers []*fuse.Server
+	var clients []*VFSClient
+
+	for _, mp := range mountpoints {
+		client, err := connectVFSClient()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to connect to VFS server for %s: %v\n", mp, err)
+			os.Exit(1)
+		}
+		clients = append(clients, client)
+		fmt.Printf("Connected to VFS server for %s\n", mp)
+
+		root := &VFSRoot{client: client, basePath: mp}
+		opts := &fs.Options{
+			MountOptions: fuse.MountOptions{
+				AllowOther:        true,
+				FsName:            "matchlock",
+				Name:              "fuse.matchlock",
+				Debug:             false,
+				DirectMountStrict: true,
+			},
+			AttrTimeout:  &[]time.Duration{time.Second}[0],
+			EntryTimeout: &[]time.Duration{time.Second}[0],
+		}
+
+		server, err := fs.Mount(mp, root, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to mount %s: %v\n", mp, err)
+			os.Exit(1)
+		}
+		servers = append(servers, server)
+		fmt.Printf("FUSE filesystem mounted at %s\n", mp)
+	}
+
+	// Handle signals for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		<-sigCh
 		fmt.Println("Shutting down...")
-		server.Unmount()
+		for _, s := range servers {
+			s.Unmount()
+		}
 	}()
 
-	// Serve until unmounted
-	server.Wait()
+	// Wait for all servers.
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		wg.Add(1)
+		go func(srv *fuse.Server) {
+			defer wg.Done()
+			srv.Wait()
+		}(s)
+	}
+	wg.Wait()
+
+	for _, c := range clients {
+		c.Close()
+	}
 }

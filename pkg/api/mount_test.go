@@ -162,3 +162,53 @@ func TestValidateVFSMountsWithinWorkspaceRejectsRelative(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "must be absolute")
 }
+
+func TestParseDirectMountSpecBasicReadonly(t *testing.T) {
+	hostDir := t.TempDir()
+	spec, err := ParseDirectMountSpec(hostDir + ":/home/agent/.ssh")
+	require.NoError(t, err)
+	assert.Equal(t, hostDir, spec.HostPath)
+	assert.Equal(t, "/home/agent/.ssh", spec.GuestPath)
+	assert.True(t, spec.Readonly, "default should be readonly")
+}
+
+func TestParseDirectMountSpecExplicitRW(t *testing.T) {
+	hostDir := t.TempDir()
+	spec, err := ParseDirectMountSpec(hostDir + ":/home/agent/.aws:rw")
+	require.NoError(t, err)
+	assert.Equal(t, hostDir, spec.HostPath)
+	assert.Equal(t, "/home/agent/.aws", spec.GuestPath)
+	assert.False(t, spec.Readonly, "explicit rw should not be readonly")
+}
+
+func TestParseDirectMountSpecHostNotExist(t *testing.T) {
+	_, err := ParseDirectMountSpec("/nonexistent/path:/home/agent/.ssh")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "does not exist")
+}
+
+func TestParseDirectMountSpecRelativeGuestPath(t *testing.T) {
+	hostDir := t.TempDir()
+	_, err := ParseDirectMountSpec(hostDir + ":relative/path")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be absolute")
+}
+
+func TestParseDirectMountSpecInvalidFormat(t *testing.T) {
+	_, err := ParseDirectMountSpec("only-one-part")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidDirectMountFormat)
+}
+
+func TestParseDirectMountSpecUnknownOption(t *testing.T) {
+	hostDir := t.TempDir()
+	_, err := ParseDirectMountSpec(hostDir + ":/home/agent/.ssh:wat")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown option")
+}
+
+func TestParseDirectMountSpecTooManyParts(t *testing.T) {
+	_, err := ParseDirectMountSpec("/a:/b:rw:extra")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidDirectMountFormat)
+}

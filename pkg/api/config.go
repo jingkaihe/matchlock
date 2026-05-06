@@ -207,7 +207,7 @@ func (c *Config) GetWorkspace() string {
 
 // HasVFSMounts reports whether VFS is enabled with at least one mount.
 func (c *Config) HasVFSMounts() bool {
-	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
+	return c != nil && c.VFS != nil && (len(c.VFS.Mounts) > 0 || len(c.VFS.DirectMounts) > 0)
 }
 
 // ValidateVFS checks VFS config invariants.
@@ -215,9 +215,10 @@ func (c *Config) HasVFSMounts() bool {
 // Rules:
 // - vfs.workspace requires at least one vfs.mounts entry
 // - vfs.mounts requires a non-empty vfs.workspace
-// - vfs.interception requires at least one vfs.mounts entry
+// - vfs.interception requires at least one vfs.mounts entry (workspace-based or direct)
 // - vfs.workspace must be a safe absolute guest path
 // - every vfs.mounts key must be under vfs.workspace
+// - direct_mounts do not require a workspace and guest paths must be safe absolute paths
 func (c *Config) ValidateVFS() error {
 	if c == nil || c.VFS == nil {
 		return nil
@@ -226,6 +227,7 @@ func (c *Config) ValidateVFS() error {
 	workspace := c.VFS.Workspace
 	hasWorkspace := strings.TrimSpace(workspace) != ""
 	hasMounts := len(c.VFS.Mounts) > 0
+	hasDirectMounts := len(c.VFS.DirectMounts) > 0
 	hasInterception := c.VFS.Interception != nil
 
 	if hasWorkspace && !hasMounts {
@@ -234,9 +236,17 @@ func (c *Config) ValidateVFS() error {
 	if hasMounts && !hasWorkspace {
 		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
 	}
-	if hasInterception && !hasMounts {
+	if hasInterception && !hasMounts && !hasDirectMounts {
 		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
 	}
+
+	// Validate direct mount guest paths
+	for guestPath := range c.VFS.DirectMounts {
+		if err := ValidateGuestMount(guestPath); err != nil {
+			return errx.With(ErrInvalidConfig, ": vfs.direct_mounts: %v", err)
+		}
+	}
+
 	if !hasMounts {
 		return nil
 	}
