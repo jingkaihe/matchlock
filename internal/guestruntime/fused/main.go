@@ -174,6 +174,7 @@ var _ = (fs.NodeUnlinker)((*VFSRoot)(nil))
 var _ = (fs.NodeRmdirer)((*VFSRoot)(nil))
 var _ = (fs.NodeRenamer)((*VFSRoot)(nil))
 var _ = (fs.NodeFsyncer)((*VFSRoot)(nil))
+var _ = (fs.NodeSymlinker)((*VFSRoot)(nil))
 
 // VFSNode represents a file or directory in the VFS
 type VFSNode struct {
@@ -194,6 +195,8 @@ var _ = (fs.NodeRmdirer)((*VFSNode)(nil))
 var _ = (fs.NodeRenamer)((*VFSNode)(nil))
 var _ = (fs.NodeSetattrer)((*VFSNode)(nil))
 var _ = (fs.NodeFsyncer)((*VFSNode)(nil))
+var _ = (fs.NodeSymlinker)((*VFSNode)(nil))
+var _ = (fs.NodeReadlinker)((*VFSNode)(nil))
 
 func fsyncPath(ctx context.Context, client *VFSClient, path string) syscall.Errno {
 	resp, err := client.RequestCtx(ctx, &VFSRequest{Op: OpFsyncPath, Path: path})
@@ -268,6 +271,8 @@ func (r *VFSRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		mode := uint32(syscall.S_IFREG)
 		if e.IsDir {
 			mode = syscall.S_IFDIR
+		} else if e.Mode&uint32(os.ModeSymlink) != 0 {
+			mode = syscall.S_IFLNK
 		}
 		ino := e.Ino
 		if ino == 0 {
@@ -369,6 +374,29 @@ func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	updateCachedPathsAfterRename(r.GetChild(name), oldPath, newPath)
 
 	return 0
+}
+
+func (r *VFSRoot) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	return symlinkChild(ctx, r, r.client, r.basePath, target, name, out)
+}
+
+func symlinkChild(ctx context.Context, parent fs.InodeEmbedder, client *VFSClient, parentPath, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	path := filepath.Join(parentPath, name)
+	resp, err := client.RequestCtx(ctx, &VFSRequest{Op: OpSymlink, Path: path, NewPath: target})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+	fillEntryAttr(out, resp.Stat, entryAttrDefaults{
+		mode:  syscall.S_IFLNK | 0777,
+		ino:   inodeForPath(path, false),
+		isDir: false,
+	})
+	node := &VFSNode{client: client, path: path, isDir: false}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
+	return parent.EmbeddedInode().NewInode(ctx, node, stable), 0
 }
 
 func updateCachedPathsAfterRename(inode *fs.Inode, oldPath string, newPath string) {
@@ -486,6 +514,8 @@ func (n *VFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		mode := uint32(syscall.S_IFREG)
 		if e.IsDir {
 			mode = syscall.S_IFDIR
+		} else if e.Mode&uint32(os.ModeSymlink) != 0 {
+			mode = syscall.S_IFLNK
 		}
 		ino := e.Ino
 		if ino == 0 {
@@ -600,6 +630,21 @@ func (n *VFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmb
 	return 0
 }
 
+func (n *VFSNode) Symlink(ctx context.Context, target, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	return symlinkChild(ctx, n, n.client, n.path, target, name, out)
+}
+
+func (n *VFSNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	resp, err := n.client.RequestCtx(ctx, &VFSRequest{Op: OpReadlink, Path: n.path})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+	return resp.Data, 0
+}
+
 // VFSFileHandle handles read/write operations on open files
 type VFSFileHandle struct {
 	client *VFSClient
@@ -689,6 +734,9 @@ func fillAttr(attr *fuse.Attr, stat *VFSStat) {
 	if stat.IsDir {
 		attr.Mode = syscall.S_IFDIR | (stat.Mode & 0777)
 		attr.Nlink = 2
+	} else if stat.Mode&uint32(os.ModeSymlink) != 0 {
+		attr.Mode = syscall.S_IFLNK | (stat.Mode & 0777)
+		attr.Nlink = 1
 	} else {
 		attr.Mode = syscall.S_IFREG | (stat.Mode & 0777)
 		attr.Nlink = 1

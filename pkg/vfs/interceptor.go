@@ -171,7 +171,7 @@ func (p *interceptProvider) Symlink(target, link string) error {
 	if err := p.hooks.Before(&req); err != nil {
 		return err
 	}
-	err := p.inner.Symlink(target, req.Path)
+	err := p.inner.Symlink(req.NewPath, req.Path)
 	p.hooks.After(req, HookResult{Err: err})
 	return err
 }

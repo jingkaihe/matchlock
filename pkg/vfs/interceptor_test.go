@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -232,6 +233,69 @@ func TestInterceptProvider_CallbackHooks(t *testing.T) {
 	_, err := provider.Create("/blocked-cb.txt", 0644)
 	require.Error(t, err)
 	assert.True(t, os.IsPermission(err))
+}
+
+func TestInterceptProvider_Symlink_HookCanMutateTarget(t *testing.T) {
+	hooks := NewHookEngineWithCallbacks([]Hook{
+		{
+			Phase:   HookPhaseBefore,
+			Matcher: OpPathMatcher{Ops: []HookOp{HookOpSymlink}, PathPattern: "/link"},
+			Before: BeforeHookFunc(func(ctx context.Context, req *HookRequest) error {
+				assert.Equal(t, "original-target", req.NewPath)
+				req.NewPath = "rewritten-target"
+				return nil
+			}),
+		},
+	})
+	defer hooks.Close()
+
+	dir := t.TempDir()
+	provider := NewInterceptProvider(NewRealFSProvider(dir), hooks)
+
+	require.NoError(t, provider.Symlink("original-target", "/link"))
+
+	got, err := os.Readlink(filepath.Join(dir, "link"))
+	require.NoError(t, err)
+	assert.Equal(t, "rewritten-target", got, "inner Symlink must receive the hook-mutated target")
+}
+
+func TestInterceptProvider_Readlink_FiresBeforeAndAfterHooks(t *testing.T) {
+	var beforeFired, afterFired atomic.Int32
+	var afterErr atomic.Value
+
+	hooks := NewHookEngineWithCallbacks([]Hook{
+		{
+			Phase:   HookPhaseBefore,
+			Matcher: OpPathMatcher{Ops: []HookOp{HookOpReadlink}},
+			Before: BeforeHookFunc(func(ctx context.Context, req *HookRequest) error {
+				beforeFired.Store(1)
+				return nil
+			}),
+		},
+		{
+			Phase:   HookPhaseAfter,
+			Matcher: OpPathMatcher{Ops: []HookOp{HookOpReadlink}},
+			After: AfterHookFunc(func(ctx context.Context, req HookRequest, result HookResult) {
+				afterFired.Store(1)
+				if result.Err != nil {
+					afterErr.Store(result.Err)
+				}
+			}),
+		},
+	})
+	defer hooks.Close()
+
+	dir := t.TempDir()
+	require.NoError(t, os.Symlink("target", filepath.Join(dir, "link")))
+
+	provider := NewInterceptProvider(NewRealFSProvider(dir), hooks)
+	got, err := provider.Readlink("/link")
+	require.NoError(t, err)
+	assert.Equal(t, "target", got)
+
+	assert.Equal(t, int32(1), beforeFired.Load())
+	assert.Equal(t, int32(1), afterFired.Load())
+	assert.Nil(t, afterErr.Load())
 }
 
 func TestInterceptProvider_EmitsEvents(t *testing.T) {

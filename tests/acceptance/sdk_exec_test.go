@@ -337,3 +337,109 @@ func osReadTrim(path string) (string, error) {
 	}
 	return strings.TrimSpace(string(data)), nil
 }
+
+func TestHostFSMountSymlinkCreateAndFollow(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"echo target-content > real.txt",
+		"ln -s real.txt link",
+		"readlink link",
+		"cat link",
+	}, "; ")
+	result := runHostFSMountCommand(t, hostRepo, script)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "real.txt", lines[0])
+	assert.Equal(t, "target-content", lines[1])
+
+	target, err := os.Readlink(filepath.Join(hostRepo, "link"))
+	require.NoError(t, err, "symlink should be visible on host")
+	assert.Equal(t, "real.txt", target)
+}
+
+func TestHostFSMountSymlinkVisibleInReaddir(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"echo content > real.txt",
+		"ln -s real.txt link",
+		"ls -la",
+	}, "; ")
+	result := runHostFSMountCommand(t, hostRepo, script)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+	assert.Contains(t, result.Stdout, "link -> real.txt")
+}
+
+// pnpm creates a content-addressable store with deep symlink trees of the form
+//
+//	node_modules/pkg -> ../.pnpm/pkg@1.0.0/node_modules
+//
+// This test exercises creating a symlink to a directory and following it
+// across a traversal, which covers the full symlink round-trip.
+func TestHostFSMountPnpmStyleSymlinks(t *testing.T) {
+	hostRepo := t.TempDir()
+	script := strings.Join([]string{
+		"set -eu",
+		"mkdir -p .pnpm/pkg@1.0.0/node_modules",
+		"echo pkg-content > .pnpm/pkg@1.0.0/node_modules/index.js",
+		"mkdir -p node_modules",
+		"ln -s ../.pnpm/pkg@1.0.0/node_modules node_modules/pkg",
+		"readlink node_modules/pkg",
+		"cat node_modules/pkg/index.js",
+	}, "; ")
+	result := runHostFSMountCommand(t, hostRepo, script)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "../.pnpm/pkg@1.0.0/node_modules", lines[0])
+	assert.Equal(t, "pkg-content", lines[1])
+}
+
+func TestHostFSMountPreExistingSymlinkVisibleFromVM(t *testing.T) {
+	hostRepo := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(hostRepo, "real.txt"), []byte("host-content\n"), 0644))
+	require.NoError(t, os.Symlink("real.txt", filepath.Join(hostRepo, "link")))
+
+	script := strings.Join([]string{
+		"set -eu",
+		"readlink link",
+		"cat link",
+	}, "; ")
+	result := runHostFSMountCommand(t, hostRepo, script)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "real.txt", lines[0])
+	assert.Equal(t, "host-content", lines[1])
+}
+
+// Guests must not be able to create symlinks whose target resolves outside the
+// mount root. The host provider rejects with EPERM; busybox `ln` surfaces this
+// as a non-zero exit and the on-disk path must not exist afterwards.
+func TestHostFSMountRejectsSymlinkEscapingMount(t *testing.T) {
+	hostRepo := t.TempDir()
+
+	// Each `ln` is expected to fail; suppress non-zero exit per-attempt so the
+	// guest script can exercise all three cases before the assertions run.
+	script := strings.Join([]string{
+		"ln -s /etc/passwd absolute-link 2>&1 || echo ABS_REJECTED",
+		"ln -s ../escape relative-link 2>&1 || echo REL_REJECTED",
+		"ln -s ../../../etc/passwd deep-link 2>&1 || echo DEEP_REJECTED",
+	}, "; ")
+	result := runHostFSMountCommand(t, hostRepo, script)
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", result.Stdout, result.Stderr)
+
+	assert.Contains(t, result.Stdout, "ABS_REJECTED")
+	assert.Contains(t, result.Stdout, "REL_REJECTED")
+	assert.Contains(t, result.Stdout, "DEEP_REJECTED")
+
+	for _, name := range []string{"absolute-link", "relative-link", "deep-link"} {
+		_, err := os.Lstat(filepath.Join(hostRepo, name))
+		assert.Truef(t, os.IsNotExist(err), "%s must not exist on host after rejection", name)
+	}
+}
