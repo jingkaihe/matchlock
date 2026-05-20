@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"os"
 	"syscall"
 	"testing"
 
@@ -198,13 +199,18 @@ func TestVFSNodeFsyncUsesNodePath(t *testing.T) {
 
 func newSingleRequestClient(t *testing.T, validate func(*VFSRequest) error) (*VFSClient, func()) {
 	t.Helper()
+	return newSingleRequestClientReturning(t, validate, nil)
+}
+
+func newSingleRequestClientReturning(t *testing.T, validate func(*VFSRequest) error, ret *VFSResponse) (*VFSClient, func()) {
+	t.Helper()
 
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	require.NoError(t, err)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serveSingleRequest(fds[1], validate)
+		done <- serveSingleRequestReturning(fds[1], validate, ret)
 	}()
 
 	client := &VFSClient{fd: fds[0]}
@@ -217,7 +223,7 @@ func newSingleRequestClient(t *testing.T, validate func(*VFSRequest) error) (*VF
 	return client, cleanup
 }
 
-func serveSingleRequest(fd int, validate func(*VFSRequest) error) error {
+func serveSingleRequestReturning(fd int, validate func(*VFSRequest) error, ret *VFSResponse) error {
 	defer func() {
 		_ = syscall.Close(fd)
 	}()
@@ -241,7 +247,11 @@ func serveSingleRequest(fd int, validate func(*VFSRequest) error) error {
 		return err
 	}
 
-	respData, err := cbor.Marshal(&VFSResponse{})
+	resp := ret
+	if resp == nil {
+		resp = &VFSResponse{}
+	}
+	respData, err := cbor.Marshal(resp)
 	if err != nil {
 		return err
 	}
@@ -254,6 +264,29 @@ func serveSingleRequest(fd int, validate func(*VFSRequest) error) error {
 		return err
 	}
 
+	return nil
+}
+
+func verifySymlinkRequest(req *VFSRequest, expectedPath, expectedTarget string) error {
+	if req.Op != OpSymlink {
+		return errors.New("unexpected op")
+	}
+	if req.Path != expectedPath {
+		return errors.New("unexpected symlink path: " + req.Path)
+	}
+	if req.NewPath != expectedTarget {
+		return errors.New("unexpected symlink target: " + req.NewPath)
+	}
+	return nil
+}
+
+func verifyReadlinkRequest(req *VFSRequest, expectedPath string) error {
+	if req.Op != OpReadlink {
+		return errors.New("unexpected op")
+	}
+	if req.Path != expectedPath {
+		return errors.New("unexpected readlink path: " + req.Path)
+	}
 	return nil
 }
 
@@ -278,4 +311,99 @@ func verifyFsyncPathRequest(req *VFSRequest, expectedPath string) error {
 		return errors.New("unexpected fsync path: " + req.Path)
 	}
 	return nil
+}
+
+func TestFillAttr_Symlink(t *testing.T) {
+	var attr fuse.Attr
+	fillAttr(&attr, &VFSStat{
+		Mode:    uint32(os.ModeSymlink | 0777),
+		ModTime: 1700000000,
+		IsDir:   false,
+		Ino:     77,
+	})
+
+	assert.Equal(t, uint64(77), attr.Ino)
+	assert.Equal(t, uint32(syscall.S_IFLNK|0777), attr.Mode)
+	assert.Equal(t, uint32(1), attr.Nlink)
+}
+
+func TestVFSRootSymlink_SendsCorrectRequest(t *testing.T) {
+	ctx := context.Background()
+	client, cleanup := newSingleRequestClient(t, func(req *VFSRequest) error {
+		return verifySymlinkRequest(req, "/workspace/link", "../target.txt")
+	})
+	defer cleanup()
+
+	root := &VFSRoot{client: client, basePath: "/workspace"}
+	fs.NewNodeFS(root, &fs.Options{})
+
+	var out fuse.EntryOut
+	child, errno := root.Symlink(ctx, "../target.txt", "link", &out)
+	require.Equal(t, syscall.Errno(0), errno)
+	require.NotNil(t, child)
+	assert.Equal(t, uint32(syscall.S_IFLNK|0777), out.Attr.Mode)
+}
+
+func TestVFSNodeSymlink_SendsCorrectRequest(t *testing.T) {
+	ctx := context.Background()
+	client, cleanup := newSingleRequestClient(t, func(req *VFSRequest) error {
+		return verifySymlinkRequest(req, "/workspace/dir/link", "../../other")
+	})
+	defer cleanup()
+
+	root := &VFSRoot{client: client, basePath: "/workspace"}
+	fs.NewNodeFS(root, &fs.Options{})
+
+	node := &VFSNode{client: client, path: "/workspace/dir", isDir: true}
+	root.NewInode(ctx, node, fs.StableAttr{Mode: syscall.S_IFDIR, Ino: 2})
+
+	var out fuse.EntryOut
+	child, errno := node.Symlink(ctx, "../../other", "link", &out)
+	require.Equal(t, syscall.Errno(0), errno)
+	require.NotNil(t, child)
+	assert.Equal(t, uint32(syscall.S_IFLNK|0777), out.Attr.Mode)
+}
+
+func TestVFSNodeReadlink_SendsCorrectRequest(t *testing.T) {
+	ctx := context.Background()
+	client, cleanup := newSingleRequestClientReturning(t, func(req *VFSRequest) error {
+		return verifyReadlinkRequest(req, "/workspace/link")
+	}, &VFSResponse{Data: []byte("../target.txt")})
+	defer cleanup()
+
+	node := &VFSNode{client: client, path: "/workspace/link", isDir: false}
+	data, errno := node.Readlink(ctx)
+	require.Equal(t, syscall.Errno(0), errno)
+	assert.Equal(t, []byte("../target.txt"), data)
+}
+
+func TestVFSNodeReadlink_ReturnsErrnoOnServerError(t *testing.T) {
+	ctx := context.Background()
+	client, cleanup := newSingleRequestClientReturning(t, func(req *VFSRequest) error {
+		return verifyReadlinkRequest(req, "/workspace/missing")
+	}, &VFSResponse{Err: -int32(syscall.ENOENT)})
+	defer cleanup()
+
+	node := &VFSNode{client: client, path: "/workspace/missing", isDir: false}
+	_, errno := node.Readlink(ctx)
+	assert.Equal(t, syscall.ENOENT, errno)
+}
+
+func TestVFSRootSymlink_WithStatResponse(t *testing.T) {
+	ctx := context.Background()
+	client, cleanup := newSingleRequestClientReturning(t, func(req *VFSRequest) error {
+		return verifySymlinkRequest(req, "/workspace/link", "../target.txt")
+	}, &VFSResponse{Stat: &VFSStat{Mode: uint32(os.ModeSymlink | 0644), Ino: 42}})
+	defer cleanup()
+
+	root := &VFSRoot{client: client, basePath: "/workspace"}
+	fs.NewNodeFS(root, &fs.Options{})
+
+	var out fuse.EntryOut
+	child, errno := root.Symlink(ctx, "../target.txt", "link", &out)
+	require.Equal(t, syscall.Errno(0), errno)
+	require.NotNil(t, child)
+	assert.Equal(t, uint32(syscall.S_IFLNK|0644), out.Attr.Mode)
+	assert.Equal(t, uint64(42), out.Attr.Ino)
+	assert.Equal(t, uint64(42), out.Ino)
 }

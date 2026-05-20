@@ -277,6 +277,27 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		}
 		return &VFSResponse{}
 
+	case OpSymlink:
+		if err := provider.Symlink(req.NewPath, req.Path); err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		// Symlink succeeded. If the follow-up Stat fails (e.g. the link
+		// was concurrently removed), return success without a Stat so the
+		// client can fall back to a synthetic inode via fillEntryAttr; a
+		// later Getattr will reconcile if the on-disk inode differs.
+		info, err := provider.Stat(req.Path)
+		if err != nil {
+			return &VFSResponse{}
+		}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
+
+	case OpReadlink:
+		target, err := provider.Readlink(req.Path)
+		if err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		return &VFSResponse{Data: []byte(target)}
+
 	default:
 		return &VFSResponse{Err: -int32(syscall.ENOSYS)}
 	}
