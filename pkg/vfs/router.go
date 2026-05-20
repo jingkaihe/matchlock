@@ -273,12 +273,42 @@ func (r *MountRouter) Rename(oldPath, newPath string) error {
 	return oldP.Rename(oldRel, newRel)
 }
 
+// Symlink validates the target against the guest-visible mount tree before
+// dispatching to the matching provider. Absolute targets are rejected outright
+// — once dereferenced inside the guest they would name arbitrary host paths.
+// Relative targets are resolved against the link's parent directory; the
+// resolved guest path must equal or sit beneath some registered mount root.
+//
+// Validating at the router (rather than per-provider) lets relative links cross
+// sibling mount boundaries when the resolved path is still inside the guest
+// namespace — a common pnpm layout where node_modules is a separate mount but
+// links still reach back into the workspace root.
 func (r *MountRouter) Symlink(target, link string) error {
-	p, rel, err := r.resolve(link)
+	if filepath.IsAbs(target) {
+		return syscall.EPERM
+	}
+	cleanLink := filepath.Clean(link)
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(cleanLink), target))
+	if !r.coveredByMount(resolved) {
+		return syscall.EPERM
+	}
+	p, rel, err := r.resolve(cleanLink)
 	if err != nil {
 		return err
 	}
 	return p.Symlink(target, rel)
+}
+
+func (r *MountRouter) coveredByMount(guestPath string) bool {
+	for _, m := range r.mounts {
+		if guestPath == m.path {
+			return true
+		}
+		if strings.HasPrefix(guestPath, m.path+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *MountRouter) Readlink(path string) (string, error) {

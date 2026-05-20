@@ -3,7 +3,6 @@ package vfs
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 )
 
@@ -137,32 +136,16 @@ func (p *RealFSProvider) Rename(oldPath, newPath string) error {
 	return os.Rename(p.realPath(oldPath), p.realPath(newPath))
 }
 
-// Symlink rejects targets that, when resolved relative to the link's parent,
-// escape the provider root. The link's content is opaque to FUSE (the guest
-// kernel resolves targets in its own namespace), but any host-side tool that
-// later walks the workspace would dereference an unconstrained target —
-// turning guest-writable symlinks into a host read/write-anywhere primitive.
+// Symlink rejects absolute targets — once dereferenced they would name
+// arbitrary host paths. Relative-target containment is enforced by
+// MountRouter, which has visibility into the full guest mount tree;
+// the per-provider host root is not the right boundary when mounts
+// are nested in the guest namespace.
 func (p *RealFSProvider) Symlink(target, link string) error {
-	linkPath := p.realPath(link)
-	if err := validateSymlinkTarget(p.root, linkPath, target); err != nil {
-		return err
-	}
-	return os.Symlink(target, linkPath)
-}
-
-func validateSymlinkTarget(root, linkPath, target string) error {
 	if filepath.IsAbs(target) {
 		return syscall.EPERM
 	}
-	rootClean := filepath.Clean(root)
-	resolved := filepath.Clean(filepath.Join(filepath.Dir(linkPath), target))
-	if resolved == rootClean {
-		return nil
-	}
-	if !strings.HasPrefix(resolved, rootClean+string(filepath.Separator)) {
-		return syscall.EPERM
-	}
-	return nil
+	return os.Symlink(target, p.realPath(link))
 }
 
 func (p *RealFSProvider) Readlink(path string) (string, error) {

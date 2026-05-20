@@ -3,6 +3,7 @@ package vfs
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -291,4 +292,95 @@ func TestMountRouter_ReadDirAncestorWithoutBaseMount(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, "data", entries[0].Name())
 	assert.True(t, entries[0].IsDir())
+}
+
+// Symlink target validation lives at the router level (so cross-mount targets
+// are judged against the full guest namespace, not one provider's host root).
+
+func TestMountRouter_Symlink_RejectsAbsoluteTarget(t *testing.T) {
+	dir := t.TempDir()
+	router := NewMountRouter(map[string]Provider{
+		"/workspace": NewRealFSProvider(dir),
+	})
+
+	err := router.Symlink("/etc/passwd", "/workspace/link")
+	assert.ErrorIs(t, err, syscall.EPERM)
+
+	_, statErr := os.Lstat(filepath.Join(dir, "link"))
+	assert.True(t, os.IsNotExist(statErr), "rejected symlink must not exist on disk")
+}
+
+func TestMountRouter_Symlink_RejectsTargetEscapingAllMounts(t *testing.T) {
+	dir := t.TempDir()
+	router := NewMountRouter(map[string]Provider{
+		"/workspace": NewRealFSProvider(dir),
+	})
+
+	err := router.Symlink("../../escape", "/workspace/link")
+	assert.ErrorIs(t, err, syscall.EPERM)
+}
+
+func TestMountRouter_Symlink_AllowsRelativeTargetInsideMount(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "a", "b", "c"), 0755))
+	router := NewMountRouter(map[string]Provider{
+		"/workspace": NewRealFSProvider(dir),
+	})
+
+	// Link at /workspace/a/b/c/link, target ../../d resolves to /workspace/a/d.
+	require.NoError(t, router.Symlink("../../d", "/workspace/a/b/c/link"))
+}
+
+// Cross-mount sibling: link sits in a nested mount, target reaches back into
+// the parent mount. The per-provider host-root check would have rejected this;
+// the router-level check allows it because the resolved guest path is still
+// inside a registered mount. This is the pnpm node_modules layout.
+func TestMountRouter_Symlink_AllowsCrossMountSibling(t *testing.T) {
+	workspaceHost := t.TempDir()
+	nmHost := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(nmHost, ".pnpm", "node_modules"), 0755))
+
+	router := NewMountRouter(map[string]Provider{
+		"/home/agent/workspace":              NewRealFSProvider(workspaceHost),
+		"/home/agent/workspace/node_modules": NewRealFSProvider(nmHost),
+	})
+
+	// Link: /home/agent/workspace/node_modules/.pnpm/node_modules/bar
+	// Target "../../../bar" resolves to /home/agent/workspace/bar — covered
+	// by the workspace mount even though it escapes the node_modules backing dir.
+	err := router.Symlink("../../../bar", "/home/agent/workspace/node_modules/.pnpm/node_modules/bar")
+	require.NoError(t, err)
+
+	got, err := os.Readlink(filepath.Join(nmHost, ".pnpm", "node_modules", "bar"))
+	require.NoError(t, err)
+	assert.Equal(t, "../../../bar", got, "link target must be stored verbatim — guest kernel resolves it")
+}
+
+// One-too-many: the resolved guest path lands one level above the workspace
+// mount root, so it is not covered by any mount and must be rejected.
+func TestMountRouter_Symlink_RejectsCrossMountTargetOutsideAllMounts(t *testing.T) {
+	workspaceHost := t.TempDir()
+	nmHost := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(nmHost, ".pnpm", "node_modules"), 0755))
+
+	router := NewMountRouter(map[string]Provider{
+		"/home/agent/workspace":              NewRealFSProvider(workspaceHost),
+		"/home/agent/workspace/node_modules": NewRealFSProvider(nmHost),
+	})
+
+	// "../../../../bar" resolves to /home/agent/bar — outside every mount.
+	err := router.Symlink("../../../../bar", "/home/agent/workspace/node_modules/.pnpm/node_modules/bar")
+	assert.ErrorIs(t, err, syscall.EPERM)
+}
+
+// Target equals a mount root exactly — must be allowed (boundary case of HasPrefix).
+func TestMountRouter_Symlink_AllowsTargetEqualToMountRoot(t *testing.T) {
+	workspaceHost := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(workspaceHost, "sub"), 0755))
+	router := NewMountRouter(map[string]Provider{
+		"/home/agent/workspace": NewRealFSProvider(workspaceHost),
+	})
+
+	// Link at /home/agent/workspace/sub/link, target ".." resolves to the mount root.
+	require.NoError(t, router.Symlink("..", "/home/agent/workspace/sub/link"))
 }

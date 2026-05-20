@@ -45,14 +45,6 @@ func TestRealFSProvider_Symlink_RejectsAbsoluteTarget(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "rejected symlink must not exist on disk")
 }
 
-func TestRealFSProvider_Symlink_RejectsTargetEscapingRoot(t *testing.T) {
-	dir := t.TempDir()
-	p := NewRealFSProvider(dir)
-
-	err := p.Symlink("../escape", "/link")
-	assert.ErrorIs(t, err, syscall.EPERM)
-}
-
 func TestRealFSProvider_Symlink_AllowsRelativeTargetInsideRoot(t *testing.T) {
 	dir := t.TempDir()
 	p := NewRealFSProvider(dir)
@@ -130,25 +122,6 @@ func TestDispatch_OpSymlink_ErrOnExistingEntry(t *testing.T) {
 	assert.Equal(t, -int32(syscall.EEXIST), resp.Err)
 }
 
-func TestRealFSProvider_Symlink_RejectsMultiLevelEscape(t *testing.T) {
-	dir := t.TempDir()
-	p := NewRealFSProvider(dir)
-
-	err := p.Symlink("../../../etc/passwd", "/link")
-	assert.ErrorIs(t, err, syscall.EPERM)
-}
-
-func TestRealFSProvider_Symlink_RejectsEmbeddedDotDotEscape(t *testing.T) {
-	dir := t.TempDir()
-	p := NewRealFSProvider(dir)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0755))
-
-	// Link sits at <root>/sub/link. Target "../../escape" resolves to
-	// <root-parent>/escape, which is outside the mount.
-	err := p.Symlink("../../escape", "/sub/link")
-	assert.ErrorIs(t, err, syscall.EPERM)
-}
-
 func TestRealFSProvider_Symlink_AllowsDotDotThatStaysWithinDeepMount(t *testing.T) {
 	dir := t.TempDir()
 	p := NewRealFSProvider(dir)
@@ -163,9 +136,10 @@ func TestRealFSProvider_Symlink_AllowsDotDotThatStaysWithinDeepMount(t *testing.
 
 func TestDispatch_OpSymlink_RejectsEscapingTarget(t *testing.T) {
 	dir := t.TempDir()
-	s := NewVFSServer(NewRealFSProvider(dir))
+	router := NewMountRouter(map[string]Provider{"/workspace": NewRealFSProvider(dir)})
+	s := NewVFSServer(router)
 
-	resp := s.dispatch(&VFSRequest{Op: OpSymlink, Path: "/link", NewPath: "../../../etc/passwd"})
+	resp := s.dispatch(&VFSRequest{Op: OpSymlink, Path: "/workspace/link", NewPath: "../../../etc/passwd"})
 	assert.Equal(t, -int32(syscall.EPERM), resp.Err)
 
 	_, statErr := os.Lstat(filepath.Join(dir, "link"))
