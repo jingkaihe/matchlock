@@ -386,6 +386,58 @@ graph LR
 - [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 
+## FAQ
+
+### What is Matchlock?
+
+Matchlock is a CLI tool for running AI agents in ephemeral microVMs with network allowlisting, secret injection, and VM-level isolation.
+
+### Why use Matchlock?
+
+| Feature | Benefit |
+|---------|---------|
+| Sub-second boot | Full Linux in <1s |
+| Network isolation | Only allowed hosts |
+| Secret injection | Credentials in-flight, placeholders in VM |
+| VM-level isolation | Compromised agents can't leak |
+| Volume overlay | Vanishing snapshots |
+| Cross-platform | Linux + MacBook |
+
+### System Requirements
+
+| Platform | Requirement |
+|----------|-------------|
+| Linux | KVM support |
+| macOS | Apple Silicon |
+
+### Network Allowlisting
+
+```bash
+matchlock run --allow-host "api.openai.com" python agent.py
+```
+
+### Secret Injection
+
+```bash
+matchlock run --secret KEY@api.anthropic.com python call.py
+```
+
+### Installation
+
+| Method | Command |
+|--------|---------|
+| Script | `curl install.sh | bash` |
+| Homebrew | `brew install matchlock` |
+
+### Is Matchlock free?
+
+Yes, open-source.
+
+### Help
+
+- Docs: `docs/install.md`
+- Issues: GitHub Issues
+
 ## License
 
 MIT
