@@ -1836,6 +1836,8 @@ class TestClientExecPipe:
                 stdin=stdin_buf,
                 stdout=stdout_buf,
                 stderr=stderr_buf,
+                working_dir="/workspace",
+                user="1000:1000",
             )
 
             assert isinstance(result, ExecPipeResult)
@@ -1849,6 +1851,10 @@ class TestClientExecPipe:
             assert methods[0] == "exec_pipe"
             assert "exec_pipe.stdin" in methods
             assert "exec_pipe.stdin_eof" in methods
+
+            exec_req = reqs[0]
+            assert exec_req["params"]["working_dir"] == "/workspace"
+            assert exec_req["params"]["user"] == "1000:1000"
 
             stdin_req = next(req for req in reqs if req["method"] == "exec_pipe.stdin")
             assert stdin_req["params"]["id"] == 1

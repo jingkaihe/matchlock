@@ -119,33 +119,18 @@ export class ExecAPI {
     command: string,
     options: ExecPipeOptions = {},
   ): Promise<ExecPipeResult> {
-    return this.execPipeWithDir(
-      command,
-      options.workingDir ?? "",
-      options.stdin,
-      options.stdout,
-      options.stderr,
-      options,
-    );
-  }
-
-  async execPipeWithDir(
-    command: string,
-    workingDir = "",
-    stdin?: StreamReader,
-    stdout?: StreamWriter,
-    stderr?: StreamWriter,
-    options: RequestOptions = {},
-  ): Promise<ExecPipeResult> {
     const params: JSONObject = { command };
-    if (workingDir) {
-      params.working_dir = workingDir;
+    if (options.workingDir) {
+      params.working_dir = options.workingDir;
+    }
+    if (options.user) {
+      params.user = options.user;
     }
 
     const stop = this.createStopSignal();
     const ready = this.createReadySignal();
     const inputPump = this.pumpExecInput(
-      stdin,
+      options.stdin,
       ready.promise,
       stop,
       "exec_pipe.stdin",
@@ -171,9 +156,9 @@ export class ExecAPI {
       }
 
       if (method === "exec_pipe.stdout") {
-        this.writeStreamChunk(stdout, decoded);
+        this.writeStreamChunk(options.stdout, decoded);
       } else if (method === "exec_pipe.stderr") {
-        this.writeStreamChunk(stderr, decoded);
+        this.writeStreamChunk(options.stderr, decoded);
       }
     };
 
@@ -190,6 +175,24 @@ export class ExecAPI {
       ready.markReady(undefined);
       await inputPump.catch(() => undefined);
     }
+  }
+
+  /** @deprecated Use execPipe with ExecPipeOptions. */
+  async execPipeWithDir(
+    command: string,
+    workingDir = "",
+    stdin?: StreamReader,
+    stdout?: StreamWriter,
+    stderr?: StreamWriter,
+    options: RequestOptions = {},
+  ): Promise<ExecPipeResult> {
+    return this.execPipe(command, {
+      ...options,
+      workingDir,
+      stdin,
+      stdout,
+      stderr,
+    });
   }
 
   async execInteractive(
