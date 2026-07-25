@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -17,6 +19,7 @@ import (
 var (
 	errCreateClient     = errors.New("create client")
 	errLaunchSandbox    = errors.New("launch sandbox")
+	errExecPipe         = errors.New("exec_pipe")
 	errTerminalRequired = errors.New("terminal required")
 	errSetRawMode       = errors.New("set raw mode")
 	errRestoreTerm      = errors.New("restore terminal mode")
@@ -51,11 +54,26 @@ func run() error {
 	}
 	slog.Info("sandbox ready", "vm", vmID)
 
+	ctx := context.Background()
+	var pipeStdout, pipeStderr bytes.Buffer
+	pipeResult, err := client.ExecPipeWithOptions(ctx, "id -u; cat; echo pipe-stderr >&2", sdk.ExecPipeOptions{
+		WorkingDir: "/workspace",
+		User:       "65534:65534",
+		Stdin:      strings.NewReader("hello from stdin\n"),
+		Stdout:     &pipeStdout,
+		Stderr:     &pipeStderr,
+	})
+	if err != nil {
+		return errx.Wrap(errExecPipe, err)
+	}
+	fmt.Printf("pipe exit=%d duration_ms=%d\n", pipeResult.ExitCode, pipeResult.DurationMS)
+	fmt.Printf("pipe stdout:\n%s", pipeStdout.String())
+	fmt.Printf("pipe stderr:\n%s", pipeStderr.String())
+
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return errx.With(errTerminalRequired, ": run this example in an interactive terminal")
 	}
 
-	ctx := context.Background()
 	stdinFD := int(os.Stdin.Fd())
 
 	cols, rows, err := term.GetSize(stdinFD)
