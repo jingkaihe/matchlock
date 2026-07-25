@@ -210,6 +210,9 @@ export class ExecAPI {
     if (options.workingDir) {
       params.working_dir = options.workingDir;
     }
+    if (options.user) {
+      params.user = options.user;
+    }
 
     const stop = this.createStopSignal();
     const ready = this.createReadySignal();

@@ -1612,6 +1612,7 @@ class Client:
         cols: int = 80,
         resize: Iterable[tuple[int, int]] | None = None,
         timeout: float | None = None,
+        user: str = "",
     ) -> ExecInteractiveResult:
         """Execute a command in interactive PTY mode.
 
@@ -1624,6 +1625,7 @@ class Client:
             cols: Initial terminal columns.
             resize: Optional iterable of ``(rows, cols)`` resize events.
             timeout: Optional timeout in seconds.
+            user: Optional user to run as (uid, uid:gid, or username).
         """
         params: dict[str, Any] = {
             "command": command,
@@ -1632,6 +1634,8 @@ class Client:
         }
         if working_dir:
             params["working_dir"] = working_dir
+        if user:
+            params["user"] = user
 
         state: dict[str, Any] = {"req_id": None}
         ready_event = threading.Event()

@@ -676,6 +676,8 @@ describe("Client", () => {
 
     let out = "";
     const interactivePromise = client.execInteractive("sh", {
+      workingDir: "/workspace",
+      user: "1000:1000",
       stdin: [Buffer.from("exit\n")],
       stdout: (chunk) => {
         out += chunk.toString("utf8");
@@ -686,7 +688,13 @@ describe("Client", () => {
     });
 
     const req = await fake.waitForRequest("exec_tty");
-    expect(req.params).toEqual({ command: "sh", rows: 30, cols: 100 });
+    expect(req.params).toEqual({
+      command: "sh",
+      working_dir: "/workspace",
+      user: "1000:1000",
+      rows: 30,
+      cols: 100,
+    });
     fake.pushNotification("exec_tty.ready", { id: req.id });
 
     const stdinReq = await fake.waitForRequest("exec_tty.stdin");

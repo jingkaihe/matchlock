@@ -325,6 +325,8 @@ export interface ExecPipeOptions extends ExecOptions {
 }
 
 export interface ExecInteractiveOptions extends ExecOptions {
+  /** User to run as: uid, uid:gid, or username. */
+  user?: string;
   stdin?: StreamReader;
   stdout?: StreamWriter;
   rows?: number;
