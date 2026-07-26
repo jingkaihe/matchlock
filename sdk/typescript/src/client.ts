@@ -236,6 +236,7 @@ export class Client {
     return this.execAPI.execPipe(command, options);
   }
 
+  /** @deprecated Use execPipe with ExecPipeOptions. */
   async execPipeWithDir(
     command: string,
     workingDir = "",

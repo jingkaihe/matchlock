@@ -65,6 +65,7 @@ def run_exec_pipe(client: Client) -> None:
         stdout=stdout_buf,
         stderr=stderr_buf,
         working_dir="/workspace",
+        user="65534:65534",
     )
     print(f"pipe exit={result.exit_code} duration_ms={result.duration_ms}")
     print("pipe stdout:")

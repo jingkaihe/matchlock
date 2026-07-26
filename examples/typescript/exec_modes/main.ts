@@ -32,6 +32,7 @@ async function runExecPipe(client: MatchlockClient): Promise<void> {
 
   const result = await client.execPipe("cat; echo pipe-stderr >&2", {
     workingDir: "/workspace",
+    user: "65534:65534",
     stdin: [Buffer.from("hello from stdin\n")],
     stdout: (chunk) => {
       stdoutChunks.push(chunk);

@@ -77,6 +77,33 @@ func TestExecStream(t *testing.T) {
 	assert.Equal(t, "streamed", strings.TrimSpace(stdout.String()))
 }
 
+func TestExecPipeWithOptionsUser(t *testing.T) {
+	t.Parallel()
+	client := launchAlpine(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var stdout, stderr bytes.Buffer
+	result, err := client.ExecPipeWithOptions(ctx, "id -u; id -g; pwd; cat; echo pipe-stderr >&2", sdk.ExecPipeOptions{
+		WorkingDir: "/tmp",
+		User:       "65534:65534",
+		Stdin:      strings.NewReader("hello from stdin\n"),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	require.NoError(t, err, "ExecPipeWithOptions")
+	require.Equalf(t, 0, result.ExitCode, "stdout: %s\nstderr: %s", stdout.String(), stderr.String())
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	require.Len(t, lines, 4, "stdout: %q", stdout.String())
+	assert.Equal(t, "65534", lines[0], "uid")
+	assert.Equal(t, "65534", lines[1], "gid")
+	assert.Equal(t, "/tmp", lines[2], "working directory")
+	assert.Equal(t, "hello from stdin", lines[3], "stdin")
+	assert.Equal(t, "pipe-stderr", strings.TrimSpace(stderr.String()))
+}
+
 func TestLog(t *testing.T) {
 	t.Parallel()
 	client := launchWithBuilder(t, sdk.New("alpine:latest").

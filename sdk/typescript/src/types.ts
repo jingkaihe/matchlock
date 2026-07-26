@@ -317,12 +317,16 @@ export interface ExecStreamOptions extends ExecOptions {
 }
 
 export interface ExecPipeOptions extends ExecOptions {
+  /** User to run as: uid, uid:gid, or username. */
+  user?: string;
   stdin?: StreamReader;
   stdout?: StreamWriter;
   stderr?: StreamWriter;
 }
 
 export interface ExecInteractiveOptions extends ExecOptions {
+  /** User to run as: uid, uid:gid, or username. */
+  user?: string;
   stdin?: StreamReader;
   stdout?: StreamWriter;
   rows?: number;

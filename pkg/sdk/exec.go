@@ -76,6 +76,15 @@ type ExecPipeResult struct {
 	DurationMS int64
 }
 
+// ExecPipeOptions controls pipe-mode execution. The zero value provides defaults.
+type ExecPipeOptions struct {
+	WorkingDir string
+	User       string // "uid", "uid:gid", or username
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+}
+
 // ExecInteractiveResult holds the final result of an interactive TTY exec.
 type ExecInteractiveResult struct {
 	ExitCode   int
@@ -155,16 +164,36 @@ func (c *Client) ExecStreamWithDir(ctx context.Context, command, workingDir stri
 // ExecPipe executes a command in pipe mode with bidirectional stdin/stdout/stderr.
 // This mode does not allocate a PTY.
 func (c *Client) ExecPipe(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) (*ExecPipeResult, error) {
-	return c.ExecPipeWithDir(ctx, command, "", stdin, stdout, stderr)
+	return c.ExecPipeWithOptions(ctx, command, ExecPipeOptions{
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+	})
 }
 
 // ExecPipeWithDir executes a command in pipe mode with a working directory.
+//
+// Deprecated: Use ExecPipeWithOptions with ExecPipeOptions.WorkingDir.
 func (c *Client) ExecPipeWithDir(ctx context.Context, command, workingDir string, stdin io.Reader, stdout, stderr io.Writer) (*ExecPipeResult, error) {
+	return c.ExecPipeWithOptions(ctx, command, ExecPipeOptions{
+		WorkingDir: workingDir,
+		Stdin:      stdin,
+		Stdout:     stdout,
+		Stderr:     stderr,
+	})
+}
+
+// ExecPipeWithOptions executes a command in pipe mode with configurable execution options.
+// This mode does not allocate a PTY.
+func (c *Client) ExecPipeWithOptions(ctx context.Context, command string, opts ExecPipeOptions) (*ExecPipeResult, error) {
 	params := map[string]string{
 		"command": command,
 	}
-	if workingDir != "" {
-		params["working_dir"] = workingDir
+	if opts.WorkingDir != "" {
+		params["working_dir"] = opts.WorkingDir
+	}
+	if opts.User != "" {
+		params["user"] = opts.User
 	}
 
 	reqID := c.requestID.Add(1)
@@ -175,7 +204,7 @@ func (c *Client) ExecPipeWithDir(ctx context.Context, command, workingDir string
 		readyOnce.Do(func() { close(readyCh) })
 	}
 
-	go c.pumpExecInput(ctx, doneCh, readyCh, reqID, stdin, "exec_pipe.stdin", "exec_pipe.stdin_eof")
+	go c.pumpExecInput(ctx, doneCh, readyCh, reqID, opts.Stdin, "exec_pipe.stdin", "exec_pipe.stdin_eof")
 
 	onNotification := func(method string, params json.RawMessage) {
 		switch method {
@@ -194,12 +223,12 @@ func (c *Client) ExecPipeWithDir(ctx context.Context, command, workingDir string
 			}
 			switch method {
 			case "exec_pipe.stdout":
-				if stdout != nil {
-					stdout.Write(decoded)
+				if opts.Stdout != nil {
+					opts.Stdout.Write(decoded)
 				}
 			case "exec_pipe.stderr":
-				if stderr != nil {
-					stderr.Write(decoded)
+				if opts.Stderr != nil {
+					opts.Stderr.Write(decoded)
 				}
 			}
 		}

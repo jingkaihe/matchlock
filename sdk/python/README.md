@@ -354,8 +354,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
 | `.log()` | Return the current buffered VM log as `str` |
 | `.log_stream(stdout=None)` | Stream VM log output until cancelled |
-| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="")` | Bidirectional pipe-mode exec (no PTY), returns `ExecPipeResult` |
-| `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None)` | Interactive PTY exec, returns `ExecInteractiveResult` |
+| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="", timeout=None, user="")` | Bidirectional pipe-mode exec as an optional user (uid, uid:gid, or username), returns `ExecPipeResult` |
+| `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None, timeout=None, user="")` | Interactive PTY exec as an optional user (uid, uid:gid, or username), returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
