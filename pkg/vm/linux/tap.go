@@ -25,6 +25,19 @@ type ifreq struct {
 }
 
 func CreateTAP(name string) (int, error) {
+	return createTAPInternal(name, true)
+}
+
+// CreateNonPersistentTAP creates a TAP device WITHOUT TUNSETPERSIST, so the kernel
+// destroys it automatically when the last open descriptor closes. This is used by
+// backends that hand the fd to a child process (QEMU via ExtraFiles) and rely on
+// the child's fd lifetime to reap the interface on crash/exit, eliminating the
+// persistent-TAP leak that occurs when a child is killed without a clean Close().
+func CreateNonPersistentTAP(name string) (int, error) {
+	return createTAPInternal(name, false)
+}
+
+func createTAPInternal(name string, persistent bool) (int, error) {
 	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return 0, errx.Wrap(ErrTUNOpen, err)
@@ -41,12 +54,15 @@ func CreateTAP(name string) (int, error) {
 		return 0, errx.Wrap(ErrTUNSETIFF, errno)
 	}
 
-	// Make the TAP device persistent so it survives FD close
-	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
-		uintptr(TUNSETPERSIST), 1)
-	if errno != 0 {
-		syscall.Close(fd)
-		return 0, errx.Wrap(ErrTUNSETPERSIST, errno)
+	if persistent {
+		// Make the TAP device persistent so it survives FD close (legacy behavior
+		// for Firecracker/reconcile that expects a durable named interface).
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
+			uintptr(TUNSETPERSIST), 1)
+		if errno != 0 {
+			syscall.Close(fd)
+			return 0, errx.Wrap(ErrTUNSETPERSIST, errno)
+		}
 	}
 
 	return fd, nil

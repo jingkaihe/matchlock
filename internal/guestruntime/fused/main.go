@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,6 +27,9 @@ const (
 	AF_VSOCK        = 40
 	VMADDR_CID_HOST = 2
 	VsockPortVFS    = 5001
+	// VMADDR_PORT_ANY requests that the kernel pick any port. It is invalid as a
+	// dial target, so a matchlock.vfs_port=VMADDR_PORT_ANY argument is rejected.
+	VMADDR_PORT_ANY = 0xffffffff
 )
 
 // VFS protocol (must match pkg/vfs/server.go)
@@ -102,11 +106,71 @@ type VFSClient struct {
 }
 
 func NewVFSClient() (*VFSClient, error) {
-	fd, err := dialVsock(VMADDR_CID_HOST, VsockPortVFS)
+	data, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return nil, fmt.Errorf("read /proc/cmdline: %w", err)
+	}
+	port, err := parseVFSPortFromCmdline(string(data))
+	if err != nil {
+		return nil, err
+	}
+	fd, err := dialVsock(VMADDR_CID_HOST, port)
 	if err != nil {
 		return nil, err
 	}
 	return &VFSClient{fd: fd}, nil
+}
+
+// VsockPortVFSDefault is the well-known VFS vsock port used by Firecracker and
+// Darwin. The QEMU backend assigns a distinct port per sandbox and passes it via
+// matchlock.vfs_port=; when the argument is absent, this default is dialed.
+const VsockPortVFSDefault = uint32(VsockPortVFS)
+
+// parseVFSPortFromCmdline resolves the VFS vsock port to dial from the kernel
+// command line. It is the single source of truth for port resolution:
+//
+//   - Argument absent: return the default VFS port (Firecracker/Darwin).
+//   - Explicit valid decimal port: return it, preserving all 32 bits.
+//   - Empty, malformed, negative, zero, overflow, or VMADDR_PORT_ANY: return an
+//     error (fail-closed — never silently fall back to a wrong port).
+//   - Duplicate explicit arguments: reject (ambiguous), even when the first is
+//     empty.
+//
+// AF_VSOCK ports are 32-bit, so a kernel-allocated port may exceed 65535 and
+// must not be clamped to 16 bits.
+func parseVFSPortFromCmdline(cmdline string) (uint32, error) {
+	var (
+		found string
+		seen  bool
+	)
+	for _, part := range strings.Fields(cmdline) {
+		if !strings.HasPrefix(part, "matchlock.vfs_port=") {
+			continue
+		}
+		if seen {
+			return 0, fmt.Errorf("matchlock.vfs_port specified more than once")
+		}
+		seen = true
+		found = strings.TrimPrefix(part, "matchlock.vfs_port=")
+	}
+	if !seen {
+		return VsockPortVFSDefault, nil
+	}
+	if found == "" {
+		return 0, fmt.Errorf("matchlock.vfs_port is empty")
+	}
+	p, err := strconv.ParseUint(found, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("matchlock.vfs_port=%q is not a valid 32-bit port: %w", found, err)
+	}
+	port := uint32(p)
+	if port == 0 {
+		return 0, fmt.Errorf("matchlock.vfs_port=0 is invalid")
+	}
+	if port == VMADDR_PORT_ANY {
+		return 0, fmt.Errorf("matchlock.vfs_port=%d is reserved (VMADDR_PORT_ANY)", port)
+	}
+	return port, nil
 }
 
 func (c *VFSClient) Close() error {

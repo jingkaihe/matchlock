@@ -484,9 +484,17 @@ func (s *VFSServer) ServeUDSBackground(socketPath string) (stop func(), err erro
 		return nil, err
 	}
 
+	return s.ServeListenerBackground(listener), nil
+}
+
+// ServeListenerBackground starts the VFS server on an arbitrary net.Listener
+// (e.g. an AF_VSOCK listener for the QEMU backend) in a goroutine and returns a
+// stop function that closes the listener. It is the shared entry point for both
+// the UDS path (Firecracker/Darwin) and the per-sandbox vsock path (QEMU).
+func (s *VFSServer) ServeListenerBackground(listener net.Listener) (stop func()) {
 	go s.Serve(listener)
 
 	return func() {
 		listener.Close()
-	}, nil
+	}
 }

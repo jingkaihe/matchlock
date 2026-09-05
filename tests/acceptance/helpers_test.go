@@ -38,6 +38,11 @@ func launchAlpineWithWorkspace(t *testing.T) *sdk.Client {
 
 func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	t.Helper()
+	return launchWithBuilderTimeout(t, builder, launchTimeout)
+}
+
+func launchWithBuilderTimeout(t *testing.T, builder *sdk.SandboxBuilder, timeout time.Duration) *sdk.Client {
+	t.Helper()
 	if builder.Options().CPUs == 0 {
 		builder.WithCPUs(acceptanceDefaultCPUs)
 	}
@@ -63,10 +68,12 @@ func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 	select {
 	case result := <-done:
 		require.NoError(t, result.err, "Launch")
-	case <-time.After(launchTimeout):
+	case <-time.After(timeout):
+		// Preserve identity before cleanup so the super can diagnose a slow
+		// TCG/ready launch rather than guessing at the cause.
 		_ = client.Close(0)
 		_ = client.Remove()
-		require.FailNowf(t, "Launch timed out", "image=%s timeout=%s", builder.Options().Image, launchTimeout)
+		require.FailNowf(t, "Launch timed out", "image=%s timeout=%s (VMID=%s)", builder.Options().Image, timeout, client.VMID())
 	}
 
 	return client

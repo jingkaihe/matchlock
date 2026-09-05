@@ -14,8 +14,10 @@ When you pass `--allow-host` or `--secret`, Matchlock seals the network - only t
 
 ### System Requirements
 
-- **Linux** with KVM support
+- **Linux** — a KVM-capable host (Firecracker) or, as a fallback, QEMU TCG (Software) when `/dev/kvm` is unavailable
 - **macOS** on Apple Silicon
+
+Matchlock selects a VM backend automatically. On Linux it prefers the KVM-accelerated **Firecracker** backend and falls back to the **QEMU TCG** (software-emulation) backend when `/dev/kvm` is absent or unusable. You can force a choice with `MATCHLOCK_BACKEND=firecracker|qemu`. QEMU TCG needs no KVM — it emulates the CPU — but still requires `/dev/vhost-vsock` access (your user must be in the `kvm` group; re-login after `sudo matchlock setup user <name>`). For details see [`docs/linux-packaging.md`](./docs/linux-packaging.md).
 
 ### Install
 
@@ -358,7 +360,7 @@ graph LR
         Policy --> Proxy
     end
 
-    subgraph VM["Micro-VM (Firecracker / Virtualization.framework)"]
+    subgraph VM["Micro-VM (Firecracker / QEMU TCG / Virtualization.framework)"]
         Agent["Guest Agent"]
         FUSE["/workspace (FUSE)"]
         Image["Any OCI Image (Alpine, Ubuntu, etc.)"]
@@ -375,7 +377,8 @@ graph LR
 
 | Platform | Mode | Mechanism |
 |----------|------|-----------|
-| Linux | Transparent proxy | nftables DNAT on ports 80/443 |
+| Linux (Firecracker) | Transparent proxy | nftables DNAT on ports 80/443 |
+| Linux (QEMU TCG) | Transparent proxy | nftables DNAT on ports 80/443; guest on a TAP device with a static IP |
 | macOS | NAT (default) | Virtualization.framework built-in NAT |
 | macOS | Interception (with `--allow-host`/`--secret`) | gVisor userspace TCP/IP at L4 |
 

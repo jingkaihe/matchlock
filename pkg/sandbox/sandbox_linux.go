@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/kvm"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
@@ -89,7 +91,22 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrRegisterState, err)
 	}
 	lifecycleStore := lifecycle.NewStore(stateMgr.Dir(id))
-	if err := lifecycleStore.Init(id, "firecracker", stateMgr.Dir(id)); err != nil {
+
+	// Choose the VM backend before initializing the lifecycle record so its
+	// backend label is accurate. Prefer the KVM-accelerated Firecracker backend
+	// and fall back to QEMU TCG only when KVM is definitively unavailable.
+	backendKind, selectionErr := selectBackendKind(kvm.Check(), qemuAvailable)
+	if selectionErr != nil {
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrCreateVM, selectionErr)
+	}
+	// Validate backend constraints before provisioning networking or injecting
+	// certificates so unsupported configurations fail without resource side effects.
+	if err := validateBackendConstraints(backendKind, config); err != nil {
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrCreateVM, err)
+	}
+	if err := lifecycleStore.Init(id, backendKind.String(), stateMgr.Dir(id)); err != nil {
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrLifecycleInit, err)
 	}
@@ -206,9 +223,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 
-	backend := linux.NewLinuxBackend()
+	backend := defaultVMBackendFactory(backendKind)
 
-	kernelPath, err := resolveKernelForConfig(ctx, config, opts, lifecycleStore)
+	kernelPath, err := resolveLinuxKernelForConfig(ctx, config, opts, lifecycleStore, backendKind)
 	if err != nil {
 		releaseSubnet()
 		cleanupRootDisks()
@@ -287,8 +304,16 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 
-	linuxMachine := machine.(*linux.LinuxMachine)
-	if tapName := linuxMachine.TapName(); tapName != "" {
+	// TapName is set only by the Firecracker backend; the QEMU backend never
+	// configures TAP networking (it is a --no-network fallback). A type
+	// assertion on *linux.LinuxMachine would panic for QEMU, so read it through
+	// a small interface that both machines satisfy (LinuxMachine and
+	// qemu.Machine implement TapName()).
+	var tapName string
+	if tm, ok := machine.(interface{ TapName() string }); ok {
+		tapName = tm.TapName()
+	}
+	if tapName != "" {
 		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 			r.TAPName = tapName
 			r.FirewallTable = "matchlock_" + tapName
@@ -350,7 +375,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			return nil, errx.Wrap(ErrCreateProxy, err)
 		}
 
-		nfRules := sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
+		nfRules := sandboxnet.NewNFTablesRules(tapName, gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
 		nfRules.SetDNSForwarderPort(dnsForwarder.Port())
 		fwRules = nfRules
 		if err := fwRules.Setup(); err != nil {
@@ -366,7 +391,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Set up basic NAT for guest network access using nftables
 	var natRules *sandboxnet.NFTablesNAT
 	if !noNetwork {
-		natRules = sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+		natRules = sandboxnet.NewNFTablesNAT(tapName)
 		if err := natRules.Setup(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
 			natRules = nil
@@ -413,12 +438,24 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		// Create VFS server for guest FUSE daemon connections
 		vfsServer = vfs.NewVFSServer(vfsRoot)
 
-		// Start VFS server on the vsock UDS path for VFS port
-		vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
-		vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
-		if err != nil {
-			cleanupVM()
-			return nil, errx.Wrap(ErrVFSServer, err)
+		// Start the VFS server. Firecracker/Darwin expose port 5001 as a UDS
+		// (vmConfig.VsockPath_5001). The QEMU backend instead serves a per-sandbox
+		// AF_VSOCK listener: guest-fused dials the kernel-assigned port passed via
+		// matchlock.vfs_port. Both paths are isolated per-sandbox.
+		if vfsListener, ok := machine.(interface{ VFSListener() (net.Listener, error) }); ok {
+			ln, lErr := vfsListener.VFSListener()
+			if lErr != nil {
+				cleanupVM()
+				return nil, errx.Wrap(ErrVFSServer, lErr)
+			}
+			vfsStopFunc = vfsServer.ServeListenerBackground(ln)
+		} else {
+			vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
+			vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
+			if err != nil {
+				cleanupVM()
+				return nil, errx.Wrap(ErrVFSServer, err)
+			}
 		}
 	}
 
@@ -437,7 +474,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		vfsStopFunc:      vfsStopFunc,
 		events:           events,
 		stateMgr:         stateMgr,
-		tapName:          linuxMachine.TapName(),
+		tapName:          tapName,
 		caPool:           caPool,
 		subnetInfo:       subnetInfo,
 		subnetAlloc:      subnetAlloc,

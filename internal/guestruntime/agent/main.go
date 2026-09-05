@@ -25,11 +25,28 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"golang.org/x/sys/unix"
 )
 
 const (
 	cancelGracePeriod = 5 * time.Second
 	maxReadFileBytes  = 16 * 1024 * 1024
+
+	// cancelPollInterval bounds how long the cancellation watcher blocks in one
+	// unix.Poll call before re-checking its stop channel. It is short because a
+	// normal exec completion must wait for the watcher to exit before the caller
+	// closes the fd (so the watcher can never observe a recycled fd number).
+	cancelPollInterval = 25 * time.Millisecond
+
+	// soVMSocketsBufferSize is the AF_VSOCK-level setsockopt (optname 0) that
+	// sizes a socket's virtio-vsock receive buffer. Enlarging it gives the guest
+	// more headroom to drain the virtqueue while a workload is thrashing swap
+	// under TCG, which reduces the chance the transport resets an idle but live
+	// exec connection.
+	soVMSocketsBufferSize = 0
+
+	// vsockReceiveBufferBytes is the best-effort per-socket vsock receive budget.
+	vsockReceiveBufferBytes = 1 << 20
 
 	AF_VSOCK        = 40
 	VMADDR_CID_HOST = 2
@@ -232,15 +249,54 @@ func serveExecWithListener(listener int, acceptFn func(int) (int, error), stop <
 // due to cancellation) and gracefully terminates the child process using
 // process-group kill: SIGTERM → cancelGracePeriod → SIGKILL.
 //
-// Returns a channel that the caller MUST close after cmd.Wait() returns to
-// prevent signals being sent to a recycled PID.
-func monitorVsockCancel(fd int, cmd *exec.Cmd) chan struct{} {
-	waitDone := make(chan struct{})
+// The watcher uses a bounded unix.Poll, so it never blocks forever on an idle
+// connection. Callers MUST call Stop before syscall.Close(fd): Stop requests the
+// watcher to exit and blocks until the watcher goroutine has actually returned.
+// That ordering is what prevents the watcher from reading a fd number that the
+// caller closed and the kernel recycled for a different connection.
+type vsockCancelWatch struct {
+	waitDone chan struct{}
+	exited   chan struct{}
+}
+
+func monitorVsockCancel(fd int, cmd *exec.Cmd) *vsockCancelWatch {
+	w := &vsockCancelWatch{
+		waitDone: make(chan struct{}),
+		exited:   make(chan struct{}),
+	}
 	go func() {
-		buf := make([]byte, 1)
-		syscall.Read(fd, buf)
+		defer close(w.exited)
+
+		pollFds := []unix.PollFd{{
+			Fd:     int32(fd),
+			Events: unix.POLLIN | unix.POLLRDHUP | unix.POLLHUP | unix.POLLERR,
+		}}
+
+		// Wait until the host closes/sends on the connection, or until Stop is
+		// called. Polling (instead of a blocking read) means the watcher wakes up
+		// on its own even when the connection stays idle, so Stop always
+		// terminates it promptly.
+		watching := true
+		for watching {
+			select {
+			case <-w.waitDone:
+				return
+			default:
+			}
+			n, err := unix.Poll(pollFds, int(cancelPollInterval/time.Millisecond))
+			if err != nil {
+				if err == unix.EINTR {
+					continue
+				}
+				return
+			}
+			if n > 0 && pollFds[0].Revents&(unix.POLLIN|unix.POLLRDHUP|unix.POLLHUP|unix.POLLERR) != 0 {
+				watching = false
+			}
+		}
+
 		select {
-		case <-waitDone:
+		case <-w.waitDone:
 			return
 		default:
 		}
@@ -248,62 +304,95 @@ func monitorVsockCancel(fd int, cmd *exec.Cmd) chan struct{} {
 		syscall.Kill(-pid, syscall.SIGTERM)
 		timer := time.AfterFunc(cancelGracePeriod, func() {
 			select {
-			case <-waitDone:
+			case <-w.waitDone:
 				return
 			default:
 			}
 			syscall.Kill(-pid, syscall.SIGKILL)
 		})
-		go func() {
-			<-waitDone
-			timer.Stop()
-		}()
+		<-w.waitDone
+		timer.Stop()
 	}()
-	return waitDone
+	return w
+}
+
+// Stop requests the cancellation watcher to exit and blocks until it has. Call
+// it after cmd.Wait() and before closing the connection fd. It is idempotent.
+func (w *vsockCancelWatch) Stop() {
+	if w == nil {
+		return
+	}
+	select {
+	case <-w.waitDone:
+	default:
+		close(w.waitDone)
+	}
+	<-w.exited
 }
 
 func handleExec(fd int) {
-	// Read message header (type + length)
-	header := make([]byte, 5)
-	if _, err := readFull(fd, header); err != nil {
-		syscall.Close(fd)
-		return
+	for {
+		// Read message header (type + length)
+		header := make([]byte, 5)
+		if _, err := readFull(fd, header); err != nil {
+			syscall.Close(fd)
+			return
+		}
+
+		msgType := header[0]
+		length := uint32(header[1])<<24 | uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
+
+		// Read request data
+		data := make([]byte, length)
+		if _, err := readFull(fd, data); err != nil {
+			syscall.Close(fd)
+			return
+		}
+
+		if !serveExecMessage(fd, msgType, data) {
+			return
+		}
 	}
+}
 
-	msgType := header[0]
-	length := uint32(header[1])<<24 | uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
-
-	// Read request data
-	data := make([]byte, length)
-	if _, err := readFull(fd, data); err != nil {
-		syscall.Close(fd)
-		return
-	}
-
+// serveExecMessage dispatches one request frame read from an exec-service
+// connection. It reports whether the connection is still usable for another
+// sequential request.
+//
+// Batch and file operations leave the fd open and return true, so a host that
+// pools/reuses an exec connection can issue multiple requests without dialing a
+// fresh vsock connection per request (the churn that manufactures RST storms
+// under memory pressure). Pipe, TTY and port-forward are one-shot: they own and
+// close (or take over) the fd, so the serve loop must not read from it again.
+func serveExecMessage(fd int, msgType uint8, data []byte) bool {
 	switch msgType {
 	case MsgTypeExec:
 		handleExecBatch(fd, data)
-		syscall.Close(fd)
+		return true
 	case MsgTypeExecStream:
 		handleExecStreamBatch(fd, data)
-		syscall.Close(fd)
-	case MsgTypeExecPipe:
-		handleExecPipe(fd, data)
-	case MsgTypePortForward:
-		handlePortForward(fd, data)
-	case MsgTypeExecTTY:
-		handleExecTTY(fd, data)
+		return true
 	case MsgTypeWriteFile:
 		handleWriteFile(fd, data)
-		syscall.Close(fd)
+		return true
 	case MsgTypeReadFile:
 		handleReadFile(fd, data)
-		syscall.Close(fd)
+		return true
 	case MsgTypeListFiles:
 		handleListFile(fd, data)
-		syscall.Close(fd)
+		return true
+	case MsgTypeExecPipe:
+		handleExecPipe(fd, data)
+		return false
+	case MsgTypeExecTTY:
+		handleExecTTY(fd, data)
+		return false
+	case MsgTypePortForward:
+		handlePortForward(fd, data)
+		return false
 	default:
 		syscall.Close(fd)
+		return false
 	}
 }
 
@@ -417,7 +506,7 @@ func handleExecBatch(fd int, data []byte) {
 	waitDone := monitorVsockCancel(fd, cmd)
 
 	err := cmd.Wait()
-	close(waitDone)
+	waitDone.Stop()
 
 	resp := &ExecResponse{
 		Stdout: stdout.Bytes(),
@@ -510,7 +599,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 
 	wg.Wait()
 	cmdErr := cmd.Wait()
-	close(waitDone)
+	waitDone.Stop()
 
 	resp := &ExecResponse{}
 	if cmdErr != nil {
@@ -958,11 +1047,45 @@ func handleListFile(fd int, data []byte) {
 	sendFileResponse(fd, &FileResponse{Files: files})
 }
 
-func listenVsock(port uint32) (int, error) {
-	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
+// newStreamSocket creates a stream socket with FD_CLOEXEC set atomically.
+//
+// Raw syscall.Socket is used because AF_VSOCK is not reachable through net's
+// socket helpers. The CLOEXEC flag is essential, not hygiene: every workload
+// child is forked from the agent, and without it the child inherits the exec
+// listener and every live exec connection fd. The agent's close would then not
+// release a socket while a child still holds a dup, so the kernel's
+// SHUTDOWN/RST/close-timeout for one exec could fire later and overlap a
+// different connection's lifetime.
+func newStreamSocket(family int) (int, error) {
+	fd, err := syscall.Socket(family, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return -1, errx.Wrap(ErrSocket, err)
 	}
+	return fd, nil
+}
+
+// enlargeVsockReceiveBuffer best-effort enlarges a socket's virtio-vsock receive
+// budget. A kernel that rejects the value (or a non-vsock socket) leaves the
+// default in place; the call never fails the connection.
+func enlargeVsockReceiveBuffer(fd int) {
+	val := uint64(vsockReceiveBufferBytes)
+	_, _, _ = syscall.Syscall6(
+		syscall.SYS_SETSOCKOPT,
+		uintptr(fd),
+		uintptr(AF_VSOCK),
+		uintptr(soVMSocketsBufferSize),
+		uintptr(unsafe.Pointer(&val)),
+		unsafe.Sizeof(val),
+		0,
+	)
+}
+
+func listenVsock(port uint32) (int, error) {
+	fd, err := newStreamSocket(AF_VSOCK)
+	if err != nil {
+		return -1, err
+	}
+	enlargeVsockReceiveBuffer(fd)
 
 	addr := sockaddrVM{
 		Family: AF_VSOCK,
@@ -989,28 +1112,37 @@ func listenVsock(port uint32) (int, error) {
 	return fd, nil
 }
 
+// acceptVsock accepts a connection with FD_CLOEXEC set atomically via accept4,
+// so a workload child can never inherit another exec's connection. See
+// newStreamSocket for why that matters.
 func acceptVsock(listenFd int) (int, error) {
 	var addr sockaddrVM
 	addrLen := uint32(unsafe.Sizeof(addr))
 
-	nfd, _, errno := syscall.Syscall(
-		syscall.SYS_ACCEPT,
+	nfd, _, errno := syscall.Syscall6(
+		syscall.SYS_ACCEPT4,
 		uintptr(listenFd),
 		uintptr(unsafe.Pointer(&addr)),
 		uintptr(unsafe.Pointer(&addrLen)),
+		uintptr(syscall.SOCK_CLOEXEC),
+		0,
+		0,
 	)
 	if errno != 0 {
 		return -1, errno
 	}
 
-	return int(nfd), nil
+	fd := int(nfd)
+	enlargeVsockReceiveBuffer(fd)
+	return fd, nil
 }
 
 func dialVsock(cid, port uint32) (int, error) {
-	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
+	fd, err := newStreamSocket(AF_VSOCK)
 	if err != nil {
-		return -1, errx.Wrap(ErrSocket, err)
+		return -1, err
 	}
+	enlargeVsockReceiveBuffer(fd)
 
 	addr := sockaddrVM{
 		Family: AF_VSOCK,
