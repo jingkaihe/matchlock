@@ -3,7 +3,9 @@
 package net
 
 import (
+	"fmt"
 	"net"
+	"os"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -581,10 +583,21 @@ func (n *NFTablesNAT) Setup() error {
 		return errx.Wrap(ErrNFTablesApply, err)
 	}
 
+	// On Docker hosts the FORWARD policy drops the sandbox's forwarded guest
+	// traffic unless the TAP is accepted in the DOCKER-USER chain. Install the
+	// bidirectional accept so the guest can reach the internet. Non-fatal: if it
+	// fails (e.g. not a Docker host) the sandbox still runs, just without
+	// forwarded egress on such hosts.
+	if err := n.installForwardAccept(); err != nil {
+		fmt.Fprintf(os.Stderr, "matchlock: warning: TAP forward-accept not installed: %v\n", err)
+	}
+
 	return nil
 }
 
 func (n *NFTablesNAT) Cleanup() error {
+	n.removeForwardAccept()
+
 	if n.conn == nil {
 		conn, err := nftables.New()
 		if err != nil {

@@ -18,7 +18,17 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 )
 
+// Default build flags. These are tuned so the plain `matchlock build -t <tag> .`
+// works for heavy images (e.g. a full Ubuntu-based toolchain like bedlam):
+//   - overlayfs snapshotter (native stores full layer copies, which is space-heavy
+//     and can hit the ext4 reserved-block floor on big images)
+//   - a large cache disk so apt / layer data has room above the reserved-block floor
+//   - a large writable build disk
 const (
+	defaultBuildDisk        = 32768 // MB (32 GiB) writable root disk for the build VM
+	defaultBuildCacheSize   = 65536 // MB (64 GiB) BuildKit cache disk (holds /var/lib/buildkit)
+	defaultBuildSnapshotter = "overlayfs"
+
 	// defaultMaxBuildMemoryMB caps the *default* BuildKit VM memory
 	// (--build-memory 0 = "all available"). Handing the guest the host's entire
 	// RAM makes the kernel's early memory initialization dominate boot: on a
@@ -49,10 +59,12 @@ func init() {
 	buildCmd.Flags().StringP("file", "f", "Dockerfile", "Path to Dockerfile")
 	buildCmd.Flags().Float64("build-cpus", 0, "Number of CPUs for BuildKit VM (supports fractional values, 0 = all available)")
 	buildCmd.Flags().Int("build-memory", 0, fmt.Sprintf("Memory in MB for BuildKit VM (0 = all available, capped at %d MB)", defaultMaxBuildMemoryMB))
-	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
+	buildCmd.Flags().Int("build-disk", defaultBuildDisk, "Disk size in MB for BuildKit VM")
 	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
-	buildCmd.Flags().Int("build-cache-size", 10240, "BuildKit cache disk size in MB")
+	buildCmd.Flags().Int("build-cache-size", defaultBuildCacheSize, "BuildKit cache disk size in MB")
 	buildCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for BuildKit guest interface")
+	buildCmd.Flags().Int("build-timeout", 0, "Build timeout in seconds (0 = no timeout)")
+	buildCmd.Flags().String("build-snapshotter", defaultBuildSnapshotter, "OCI worker snapshotter (native or overlayfs)")
 
 	rootCmd.AddCommand(buildCmd)
 }
@@ -67,6 +79,58 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	}
 
 	return runDockerfileBuild(cmd, args[0], dockerfile, tag)
+}
+
+// buildTimeoutSeconds maps the --build-timeout flag (seconds) to a resource-level
+// timeout. A value of 0 means "no timeout"; we pass a generous sentinel so the
+// sandbox/RPC never interprets 0 as an immediate deadline.
+func buildTimeoutSeconds(sec int) int {
+	if sec <= 0 {
+		return 86400 // 24h: effectively no timeout
+	}
+	return sec
+}
+
+// buildScript renders the in-guest shell script that starts buildkitd and runs
+// buildctl. snapshotter must be one of the accepted --build-snapshotter values.
+// dockerfileDir is the guest path to the local dockerfile context; filenameOpt
+// and noCacheOpt are pre-built "  --opt filename=... \\" / "  --no-cache \\"
+// continuation lines (empty when not applicable).
+func buildScript(snapshotter, dockerfileDir, filenameOpt, noCacheOpt string) string {
+	return fmt.Sprintf(`#!/bin/sh
+set -e
+export HOME=/root
+export TMPDIR=/var/lib/buildkit/tmp
+mkdir -p $TMPDIR
+SOCK=/tmp/buildkit.sock
+buildkitd --root /var/lib/buildkit \
+  --addr unix://$SOCK \
+  --oci-worker-snapshotter %s \
+  >/tmp/buildkitd.log 2>&1 &
+BKPID=$!
+for i in $(seq 1 30); do [ -S $SOCK ] && break; sleep 1; done
+if [ ! -S $SOCK ]; then
+  echo "BuildKit daemon failed to start" >&2
+  cat /tmp/buildkitd.log >&2
+  exit 1
+fi
+echo "BuildKit daemon ready" >&2
+set +e
+buildctl --addr unix://$SOCK build \
+  --frontend dockerfile.v0 \
+  --local context=/workspace/context \
+  --local dockerfile=%s \
+%s%s  --output type=docker,dest=/workspace/output/image.tar
+RC=$?
+if [ $RC -ne 0 ]; then
+  echo "=== buildkitd log ===" >&2
+  cat /tmp/buildkitd.log >&2
+  kill $BKPID 2>/dev/null
+  exit $RC
+fi
+kill $BKPID 2>/dev/null
+exit 0
+`, snapshotter, dockerfileDir, filenameOpt, noCacheOpt)
 }
 
 // buildCachePath returns the path to the persistent BuildKit cache ext4 image.
@@ -223,9 +287,16 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	noCache, _ := cmd.Flags().GetBool("no-cache")
 	buildCacheSize, _ := cmd.Flags().GetInt("build-cache-size")
 	networkMTU, _ := cmd.Flags().GetInt("mtu")
+	buildTimeout, _ := cmd.Flags().GetInt("build-timeout")
+	buildSnapshotter, _ := cmd.Flags().GetString("build-snapshotter")
 
 	if networkMTU <= 0 {
 		return fmt.Errorf("--mtu must be > 0")
+	}
+	switch buildSnapshotter {
+	case "native", "overlayfs":
+	default:
+		return fmt.Errorf("--build-snapshotter must be \"native\" or \"overlayfs\", got %q", buildSnapshotter)
 	}
 
 	hostCPUs := runtime.NumCPU()
@@ -258,7 +329,13 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return fmt.Errorf("Dockerfile not found: %s", dockerfile)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if buildTimeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(buildTimeout)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 	ctx, cancel = contextWithSignal(ctx)
 	defer cancel()
@@ -300,25 +377,29 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	}
 
 	var extraDisks []api.DiskMount
-	if !noCache {
-		cachePath, err := buildCachePath()
-		if err != nil {
-			return errx.Wrap(ErrResolveCachePath, err)
-		}
-		lockFile, err := lockBuildCache(cachePath)
-		if err != nil {
-			return errx.Wrap(ErrLockBuildCache, err)
-		}
-		defer lockFile.Close()
-		if err := ensureBuildCacheImage(cachePath, buildCacheSize); err != nil {
-			return errx.Wrap(ErrPrepareBuildCache, err)
-		}
-		extraDisks = append(extraDisks, api.DiskMount{
-			HostPath:   cachePath,
-			GuestMount: "/var/lib/buildkit",
-		})
-		fmt.Fprintf(os.Stderr, "Using build cache at %s\n", cachePath)
+	// Always attach the BuildKit cache disk. Its placement (/var/lib/buildkit) is
+	// independent of cache-reuse policy: the snapshotter (native/overlayfs) needs a
+	// real backing filesystem for layer data regardless of whether we reuse it.
+	// --no-cache only controls BuildKit's layer-cache reuse via the buildctl flag
+	// below; it must NOT detach the cache disk (which would move the builder root
+	// onto the small overlay rootfs and break overlayfs snapshotting).
+	cachePath, err := buildCachePath()
+	if err != nil {
+		return errx.Wrap(ErrResolveCachePath, err)
 	}
+	lockFile, err := lockBuildCache(cachePath)
+	if err != nil {
+		return errx.Wrap(ErrLockBuildCache, err)
+	}
+	defer lockFile.Close()
+	if err := ensureBuildCacheImage(cachePath, buildCacheSize); err != nil {
+		return errx.Wrap(ErrPrepareBuildCache, err)
+	}
+	extraDisks = append(extraDisks, api.DiskMount{
+		HostPath:   cachePath,
+		GuestMount: "/var/lib/buildkit",
+	})
+	fmt.Fprintf(os.Stderr, "Using build cache at %s\n", cachePath)
 
 	config := &api.Config{
 		Image:      buildkitImage,
@@ -327,7 +408,7 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 			CPUs:           cpus,
 			MemoryMB:       memory,
 			DiskSizeMB:     disk,
-			TimeoutSeconds: 1800,
+			TimeoutSeconds: buildTimeoutSeconds(buildTimeout),
 		},
 		Network: &api.NetworkConfig{
 			MTU: networkMTU,
@@ -375,36 +456,9 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		noCacheOpt = "  --no-cache \\\n"
 	}
 
-	buildScript := fmt.Sprintf(`#!/bin/sh
-set -e
-export HOME=/root
-export TMPDIR=/var/lib/buildkit/tmp
-mkdir -p $TMPDIR
-SOCK=/tmp/buildkit.sock
-buildkitd --root /var/lib/buildkit \
-  --addr unix://$SOCK \
-  --oci-worker-snapshotter native \
-  >/tmp/buildkitd.log 2>&1 &
-BKPID=$!
-for i in $(seq 1 30); do [ -S $SOCK ] && break; sleep 1; done
-if [ ! -S $SOCK ]; then
-  echo "BuildKit daemon failed to start" >&2
-  cat /tmp/buildkitd.log >&2
-  exit 1
-fi
-echo "BuildKit daemon ready" >&2
-buildctl --addr unix://$SOCK build \
-  --frontend dockerfile.v0 \
-  --local context=/workspace/context \
-  --local dockerfile=%s \
-%s%s  --output type=docker,dest=/workspace/output/image.tar
-RC=$?
-[ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
-kill $BKPID 2>/dev/null
-exit $RC
-`, guestDockerfileDir, filenameOpt, noCacheOpt)
+	buildScriptData := buildScript(buildSnapshotter, guestDockerfileDir, filenameOpt, noCacheOpt)
 
-	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScript), 0755); err != nil {
+	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScriptData), 0755); err != nil {
 		return errx.Wrap(ErrWriteBuildScript, err)
 	}
 
