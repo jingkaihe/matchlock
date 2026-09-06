@@ -542,10 +542,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
-			if rm {
-				if cleanupErr := cleanupSandbox(true); cleanupErr != nil {
-					return errors.Join(errx.Wrap(ErrExecCommand, err), cleanupErr)
-				}
+			// On error — including interruption of an in-flight command by a
+			// SIGTERM/SIGINT (which cancels ctx) — the sandbox must still be
+			// torn down, otherwise the QEMU child is orphaned (leaks its guest
+			// CID and /dev/vhost-vsock). For --rm we remove the VM record too;
+			// for --rm=false we stop the VM but keep the record so the caller
+			// can still inspect/log it.
+			cleanupErr := cleanupSandbox(rm)
+			if cleanupErr != nil {
+				return errors.Join(errx.Wrap(ErrExecCommand, err), cleanupErr)
 			}
 			return errx.Wrap(ErrExecCommand, err)
 		}
