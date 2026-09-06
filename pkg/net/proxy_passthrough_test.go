@@ -3,8 +3,10 @@
 package net
 
 import (
+	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,6 +184,60 @@ func TestHandlePassthrough_HalfClose(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "handlePassthrough should have exited after upstream closed")
 	}
+}
+
+// TestHandlePassthrough_DialsLiteralOriginalDst qualifies the passthrough DNS
+// path: handlePassthrough must dial the literal SO_ORIGINAL_DST IP (never re-
+// resolving it as a hostname), so a DNS change between the policy check and the
+// dial cannot redirect the passthrough TCP connection to an unverified address.
+func TestHandlePassthrough_DialsLiteralOriginalDst(t *testing.T) {
+	dns := newSyntheticDNS(t, syntheticDNSConfig{
+		// If the passthrough path ever treated the destination as a hostname and
+		// re-resolved it, it would resolve here to a private address and be denied
+		// (or worse, dialed) — the regression below must never trigger this.
+		"203.0.113.99.": {{"127.0.0.1"}},
+	})
+	dns.install()
+	defer dns.uninstall()
+
+	upstream := startEchoServer(t)
+	defer upstream.Close()
+	_, portStr, _ := net.SplitHostPort(upstream.Addr().String())
+
+	var dialed atomic.Value // string
+	tp := &TransparentProxy{
+		policy: policy.NewEngine(&api.NetworkConfig{BlockPrivateIPs: true}),
+		events: make(chan api.Event, 10),
+		dial: func(network, addr string) (net.Conn, error) {
+			dialed.Store(addr)
+			// Route to the owned echo server regardless of the requested address so
+			// the passthrough completes and we can observe the target it dialed.
+			return net.Dial("tcp", upstream.Addr().String())
+		},
+	}
+
+	client, server := net.Pipe()
+	defer client.Close()
+
+	go tp.handlePassthrough(server, "203.0.113.99", mustAtoi(portStr))
+
+	msg := []byte("hello passthrough")
+	client.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	_, err := client.Write(msg)
+	require.NoError(t, err)
+
+	buf := make([]byte, len(msg))
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, err = io.ReadFull(client, buf)
+	require.NoError(t, err)
+	assert.Equal(t, string(msg), string(buf), "passthrough must still forward traffic")
+
+	gotDial, _ := dialed.Load().(string)
+	assert.Equal(t, fmt.Sprintf("203.0.113.99:%s", portStr), gotDial,
+		"passthrough must dial the literal SO_ORIGINAL_DST IP, not a resolved hostname")
+
+	assert.Equal(t, 0, dns.aCount("203.0.113.99."),
+		"the literal destination IP must never be treated as a hostname and resolved")
 }
 
 func startEchoServer(t *testing.T) net.Listener {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -360,4 +361,72 @@ func TestValidateVFS_AllowsInterceptionWithMounts(t *testing.T) {
 	}
 
 	require.NoError(t, cfg.ValidateVFS())
+}
+
+func TestNetworkConfigAllowPrivateJSONUnmarshal(t *testing.T) {
+	var cfg Config
+	require.NoError(t, json.Unmarshal([]byte(`{"network":{"allow_private":["192.168.107.74:8888"]}}`), &cfg))
+
+	require.NotNil(t, cfg.Network)
+	assert.Equal(t, []string{"192.168.107.74:8888"}, cfg.Network.AllowPrivate)
+}
+
+func TestNetworkConfigAllowPrivateJSONTag(t *testing.T) {
+	cfg := &NetworkConfig{AllowPrivate: []string{"10.0.0.1:443", "[200::1]:8443"}}
+
+	raw, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"allow_private"`)
+
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	assert.Equal(t, cfg.AllowPrivate, decoded.AllowPrivate)
+
+	// omitempty: an unset list must not appear in the wire form.
+	empty, err := json.Marshal(&NetworkConfig{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(empty), "allow_private")
+}
+
+func TestNetworkConfigValidateNoNetworkWithAllowPrivate(t *testing.T) {
+	cfg := &NetworkConfig{
+		NoNetwork:    true,
+		AllowPrivate: []string{"192.168.1.1"},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network cannot be combined with network.allow_private")
+}
+
+func TestNetworkConfigValidateAllowPrivateWithoutNoNetwork(t *testing.T) {
+	cfg := &NetworkConfig{
+		BlockPrivateIPs: true,
+		AllowPrivate:    []string{"192.168.107.74:8888"},
+	}
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestConfigMergeReplacesNetworkAllowPrivate documents Config.Merge's
+// whole-Network replacement contract for the new allow_private field.
+func TestConfigMergeReplacesNetworkAllowPrivate(t *testing.T) {
+	base := &Config{Network: &NetworkConfig{
+		BlockPrivateIPs: true,
+		AllowPrivate:    []string{"10.0.0.1"},
+	}}
+
+	// A nil override Network preserves the base list.
+	preserved := base.Merge(&Config{})
+	require.NotNil(t, preserved.Network)
+	assert.Equal(t, []string{"10.0.0.1"}, preserved.Network.AllowPrivate)
+
+	// A non-nil override Network replaces the whole struct, list included.
+	replaced := base.Merge(&Config{Network: &NetworkConfig{
+		BlockPrivateIPs: true,
+		AllowPrivate:    []string{"192.168.107.74:8888"},
+	}})
+	require.NotNil(t, replaced.Network)
+	assert.Equal(t, []string{"192.168.107.74:8888"}, replaced.Network.AllowPrivate)
 }

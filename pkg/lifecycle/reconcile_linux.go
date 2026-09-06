@@ -33,28 +33,9 @@ func (r *Reconciler) reconcilePlatform(rec *Record, store *Store, report *Reconc
 	}
 	_ = store.MarkCleanup("tap_delete", errors.Join(tapErrs...))
 
-	tableCandidates := make([]string, 0, 4)
-	addTable := func(name string) {
-		if name == "" {
-			return
-		}
-		for _, existing := range tableCandidates {
-			if existing == name {
-				return
-			}
-		}
-		tableCandidates = append(tableCandidates, name)
-	}
-	addTable(rec.Resources.FirewallTable)
-	addTable(rec.Resources.NATTable)
-	for _, tap := range tapNameCandidates(rec.VMID, rec.Resources.TAPName) {
-		addTable("matchlock_" + tap)
-		addTable("matchlock_nat_" + tap)
-	}
-
 	var tableErrs []error
-	for _, table := range tableCandidates {
-		if err := deleteNFTTable(table); err != nil {
+	for _, table := range nftTableCandidates(rec) {
+		if err := deleteTable(table); err != nil {
 			report.addFailed("nft_table_delete:"+table, err)
 			wrapped := errx.With(ErrReconcileTable, " %s: %w", table, err)
 			errs = append(errs, wrapped)
@@ -81,6 +62,41 @@ func (r *Reconciler) reconcilePlatform(rec *Record, store *Store, report *Reconc
 	}
 	return nil
 }
+
+// nftTableCandidates returns the nftables tables to remove for a record: the
+// tables the record names, plus the per-TAP tables derived from its TAP-name
+// candidates - in BOTH families, so an orphaned ip6 table (matchlock6_<tap>) is
+// removed alongside the IPv4 one. Deduped and pure: nothing else is ever in
+// scope, so reconcile can never touch the shared host tables (filter,
+// DOCKER-USER and Docker's own rules).
+func nftTableCandidates(rec *Record) []string {
+	candidates := make([]string, 0, 6)
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		for _, existing := range candidates {
+			if existing == name {
+				return
+			}
+		}
+		candidates = append(candidates, name)
+	}
+	add(rec.Resources.FirewallTable)
+	add(rec.Resources.FirewallTableV6)
+	add(rec.Resources.NATTable)
+	for _, tap := range tapNameCandidates(rec.VMID, rec.Resources.TAPName) {
+		add(sandboxnet.FirewallTableName(tap))
+		add(sandboxnet.FirewallTableV6Name(tap))
+		add("matchlock_nat_" + tap)
+	}
+	return candidates
+}
+
+// deleteTable removes one table from the host ruleset. It is a package-level
+// seam so tests can assert exactly which tables reconcile deletes without root
+// and without mutating the host's ruleset.
+var deleteTable = deleteNFTTable
 
 // reconcileDockerUserForwardRules removes DOCKER-USER accept rules that
 // matchlock installed for a TAP that no longer exists. The rules are tagged

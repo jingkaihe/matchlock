@@ -22,6 +22,13 @@ import (
 // (which succeeded on .102): a stale TAP/route or reverse-path issue on .100 would
 // show here because we inspect BEFORE teardown removes the TAP. All evidence is
 // logged; assertions are intentionally permissive (this is a diagnostic).
+//
+// CONTRACT CHANGE: the sandbox this diag creates is now intercepted on BOTH
+// families, so the host inventory below also captures the per-TAP ip/ip6 nftables
+// tables (a dual-stack sandbox must install matchlock_<tap> AND matchlock6_<tap>)
+// and the qm-* TAP's IPv6 addressing. Nothing here asserts the old
+// "IPv6 is fully dropped" state - the guest IPv6 line was already logged only -
+// so this diagnostic describes the new redirected-not-dropped contract.
 func TestSDKIPv6NetDiag(t *testing.T) {
 	if runtime.GOOS != "linux" || os.Getenv("MATCHLOCK_BACKEND") != "qemu" {
 		t.Skip("diag is linux/QEMU-specific")
@@ -54,6 +61,9 @@ func TestSDKIPv6NetDiag(t *testing.T) {
 		"cat /proc/sys/net/ipv4/conf/all/rp_filter 2>&1",
 		fmt.Sprintf("cat /proc/sys/net/ipv4/conf/%s/rp_filter 2>&1", tap),
 		fmt.Sprintf("cat /proc/sys/net/ipv4/conf/%s/route_localnet 2>&1", tap),
+		"nft list tables 2>&1 | grep -E 'matchlock6?_' || true",
+		"ip -6 -o addr show 2>&1 | grep -E 'qm-|fc-' || true",
+		"ip -6 route show table all 2>&1 | head -20",
 	}
 	for _, c := range hostCmds {
 		out, err := exec.Command("sh", "-c", c).CombinedOutput()

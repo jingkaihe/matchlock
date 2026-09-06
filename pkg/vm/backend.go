@@ -38,6 +38,9 @@ type VMConfig struct {
 	GatewayIP           string              // Host TAP IP (e.g., 192.168.100.1)
 	GuestIP             string              // Guest IP (e.g., 192.168.100.2)
 	SubnetCIDR          string              // CIDR notation (e.g., 192.168.100.1/24)
+	GatewayIPv6         string              // Host TAP IPv6 gateway, a per-VM unique-local address (e.g., fd00:100::1)
+	GuestIPv6           string              // Guest IPv6 address (e.g., fd00:100::2)
+	Subnet6CIDR         string              // IPv6 subnet prefix on the TAP (e.g., fd00:100::1/64); the TAP address is always GatewayIPv6
 	Workspace           string              // Guest VFS mount point (empty when VFS is disabled)
 	ExactMounts         []string            // Additional exact-destination guest paths to mount FUSE at (empty unless exact_destinations)
 	UseInterception     bool                // Use network interception (MITM proxy)

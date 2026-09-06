@@ -84,6 +84,9 @@ type bootConfig struct {
 	NoNetwork   bool
 	Disks       []diskMount
 	Overlay     overlayBootConfig
+	// IPv6 is the guest side of the per-VM IPv6 link announced by the host, or
+	// nil when the boot has no IPv6 link (see activeIPv6Link).
+	IPv6 *ipv6Link
 }
 
 type overlayBootConfig struct {
@@ -143,6 +146,21 @@ func runInit() {
 
 	if !cfg.NoNetwork {
 		bringUpNetwork(networkInterface, cfg.MTU)
+		// The guest side of the IPv6 link is installed here, while guest-init
+		// still runs as PID 1 and before the workload starts: the kernel's ip=
+		// boot argument configures IPv4 only, so the address and the default
+		// route come from netlink (see network_ipv6.go).
+		//
+		// A failure is reported, not fatal: without the guest address there is
+		// simply no IPv6 traffic, which is exactly the fail-closed state the ip6
+		// interception table enforces, and an otherwise usable IPv4 sandbox
+		// should still boot. bringUpNetwork treats MTU/link failures the same
+		// way.
+		if link := cfg.activeIPv6Link(); link != nil {
+			if err := configureGuestIPv6(networkInterface, *link); err != nil {
+				warnf("configure guest ipv6 %s: %v", link, err)
+			}
+		}
 	}
 	if err := mountExtraDisks(cfg.Disks); err != nil {
 		fatal(err)
@@ -238,6 +256,19 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 					}
 				}
 			}
+
+		case strings.HasPrefix(field, ipv6FieldPrefix):
+			v := strings.TrimPrefix(field, ipv6FieldPrefix)
+			if v == "" {
+				// An empty field means "no IPv6 link": an IPv4-only boot must
+				// behave exactly as before, so nothing is configured for it.
+				continue
+			}
+			link, parseErr := parseIPv6LinkField(v)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			cfg.IPv6 = &link
 
 		case strings.HasPrefix(field, "matchlock.mtu="):
 			v := strings.TrimPrefix(field, "matchlock.mtu=")

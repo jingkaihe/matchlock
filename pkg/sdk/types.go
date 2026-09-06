@@ -33,6 +33,12 @@ type CreateOptions struct {
 	// BlockPrivateIPsSet marks whether BlockPrivateIPs was explicitly set.
 	// When false, the SDK preserves API defaults for private IP blocking.
 	BlockPrivateIPsSet bool
+	// AllowPrivate lists otherwise-blocked private destinations that are exempt
+	// from BlockPrivateIPs. Entries are host names, IP literals or CIDRs with an
+	// optional :port / [v6]:port; a bare entry means any port. This only lifts
+	// the private-IP block: it does not widen AllowedHosts and NoNetwork still
+	// wins.
+	AllowPrivate []string
 	// NoNetwork disables guest network egress entirely (no guest NIC).
 	NoNetwork bool
 	// ForceInterception forces network interception even when allow-list/secrets are empty.

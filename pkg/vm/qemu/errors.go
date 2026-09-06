@@ -73,8 +73,13 @@ var (
 	// Network errors
 	ErrCreateTAP    = errors.New("create tap")
 	ErrTAPConfigure = errors.New("configure tap")
-	ErrTAPSetMTU    = errors.New("set tap mtu")
-	ErrTeardownTAP  = errors.New("teardown tap")
+	// ErrTAPConfigureIPv6 covers installing the per-VM IPv6 guest link (gateway
+	// address/prefix) on the TAP. It is separate from ErrTAPConfigure so a
+	// missing IPv6 link, which the interception proxy and the ip6 table depend
+	// on, is diagnosable without parsing the message text.
+	ErrTAPConfigureIPv6 = errors.New("configure tap ipv6 address")
+	ErrTAPSetMTU        = errors.New("set tap mtu")
+	ErrTeardownTAP      = errors.New("teardown tap")
 	// ErrNetworkUnsupported covers network modes the QEMU backend rejects.
 	ErrNetworkUnsupported = errors.New("network mode unsupported")
 )

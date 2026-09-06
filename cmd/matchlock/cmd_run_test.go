@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
@@ -453,4 +454,74 @@ func TestLoadSecretsFileTrimsHosts(t *testing.T) {
 	require.Contains(t, secrets, "GH_TOKEN")
 	assert.Equal(t, "gho_sandbox_placeholder", secrets["GH_TOKEN"].Placeholder)
 	assert.Equal(t, []string{"github.com", "api.github.com"}, secrets["GH_TOKEN"].Hosts)
+}
+
+func TestRunAllowPrivateFlagRegistered(t *testing.T) {
+	flag := runCmd.Flags().Lookup("allow-private")
+	require.NotNil(t, flag, "--allow-private must be registered on the run command")
+	assert.Equal(t, "stringArray", flag.Value.Type(), "--allow-private must be a repeatable string array")
+	assert.Equal(t, "[]", flag.DefValue, "--allow-private must default to empty")
+	assert.Contains(t, flag.Usage, ":port", "--allow-private usage must document the optional :port suffix")
+}
+
+func TestAllowPrivateFlagIsRepeatable(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination")
+
+	err := cmd.ParseFlags([]string{
+		"--allow-private", "192.168.107.74:8888",
+		"--allow-private", "200:1234::1",
+		"--allow-private", "[fd00::1]:443",
+	})
+	require.NoError(t, err)
+
+	got, err := cmd.Flags().GetStringArray("allow-private")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"192.168.107.74:8888", "200:1234::1", "[fd00::1]:443"}, got)
+}
+
+func TestBuildRunNetworkConfigCarriesAllowPrivate(t *testing.T) {
+	cfg := buildRunNetworkConfig(
+		[]string{"api.openai.com"},
+		nil,
+		[]string{"192.168.107.74:8888", "200:1234::1"},
+		false,
+		true,
+		nil,
+		[]string{"8.8.8.8"},
+		"demo",
+		1400,
+	)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"192.168.107.74:8888", "200:1234::1"}, cfg.AllowPrivate)
+	// The CLI always keeps the private block on; --allow-private is the only
+	// escape hatch and must never turn the block off.
+	assert.True(t, cfg.BlockPrivateIPs)
+	assert.Equal(t, []string{"api.openai.com"}, cfg.AllowedHosts)
+	assert.True(t, cfg.Intercept)
+	assert.Equal(t, 1400, cfg.MTU)
+}
+
+func TestRunNoNetworkRejectsAllowPrivate(t *testing.T) {
+	cmd := &cobra.Command{RunE: runRun}
+	cmd.Flags().Float64("cpus", 1, "Number of CPUs")
+	cmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
+	cmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
+	cmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination")
+
+	require.NoError(t, cmd.ParseFlags([]string{
+		"--no-network",
+		"--allow-private", "192.168.107.74:8888",
+	}))
+
+	err := runRun(cmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--no-network cannot be combined with --allow-private")
+}
+
+func TestRunHelpMentionsAllowPrivate(t *testing.T) {
+	assert.Contains(t, runCmd.Long, "--allow-private")
+	assert.Contains(t, runCmd.Long, ":port")
+	// Cobra renders registered flags into the help/usage output.
+	assert.Contains(t, runCmd.UsageString(), "--allow-private")
 }

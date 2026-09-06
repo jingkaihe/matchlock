@@ -96,6 +96,25 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 			return nil, errx.Wrap(ErrTAPConfigure, err)
 		}
 
+		// The IPv6 guest link goes on next to the IPv4 one. It is skipped
+		// entirely when the config carries no IPv6 fields, so an IPv4-only
+		// sandbox keeps the exact TAP state it had before. IPv6 addresses are
+		// installed over rtnetlink because the IPv4 SIOCSIFADDR ioctl cannot
+		// carry a 128-bit address (see ConfigureInterfaceIPv6).
+		link, hasLink, err := ParseIPv6Link(config)
+		if err != nil {
+			syscall.Close(tapFD)
+			DeleteInterface(tapName)
+			return nil, errx.Wrap(ErrTAPConfigureIPv6, err)
+		}
+		if hasLink {
+			if err := ConfigureInterfaceIPv6(tapName, link.TapCIDR()); err != nil {
+				syscall.Close(tapFD)
+				DeleteInterface(tapName)
+				return nil, errx.Wrap(ErrTAPConfigureIPv6, err)
+			}
+		}
+
 		if err := SetMTU(tapName, effectiveMTU(config.MTU)); err != nil {
 			syscall.Close(tapFD)
 			DeleteInterface(tapName)
@@ -224,6 +243,14 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		}
 		_ = ConfigureInterface(m.tapName, subnetCIDR)
 		_ = SetMTU(m.tapName, effectiveMTU(m.config.MTU))
+
+		// Firecracker resets the interface when it opens the TAP, so the IPv6
+		// address Create installed is re-applied here too. Best effort like the
+		// IPv4 re-configuration above: Create already rejected a malformed link,
+		// and the guest boot waits on the ready signal either way.
+		if link, hasLink, err := ParseIPv6Link(m.config); err == nil && hasLink {
+			_ = ConfigureInterfaceIPv6(m.tapName, link.TapCIDR())
+		}
 	}
 
 	// Wait for VM to be ready
@@ -422,6 +449,75 @@ func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
 	return m.dialVsock(port)
 }
 
+// IPv6Link is the per-VM IPv6 guest link derived from a VMConfig: the host-side
+// gateway address that sits on the TAP, the guest address, and the prefix length
+// of the unique-local /64 the subnet allocator hands the VM.
+//
+// It is exported because every Linux VM backend installs the SAME link on its
+// own TAP: the Firecracker path here and the QEMU TCG path (pkg/vm/qemu) both
+// call ParseIPv6Link and then ConfigureInterfaceIPv6/IPv6KernelArg, so the two
+// backends cannot drift apart. A backend that skips the install leaves the
+// sandbox's proxy bound to an address that does not exist (EADDRNOTAVAIL) while
+// the ip6 table is already fail-closed for a guest with no IPv6.
+type IPv6Link struct {
+	Gateway   string
+	Guest     string
+	PrefixLen int
+}
+
+// TapCIDR is the address/prefix to configure on the TAP. It always carries the
+// gateway address (never a network address), so a Subnet6CIDR supplied in
+// network form still puts the gateway on the link.
+func (l IPv6Link) TapCIDR() string {
+	return fmt.Sprintf("%s/%d", l.Gateway, l.PrefixLen)
+}
+
+// KernelArg is the matchlock.ipv6=<guest>/<prefixlen>,<gateway> cmdline field.
+// guest-init uses it to configure the guest address and its ::/0 route, because
+// the kernel ip= boot argument configures IPv4 only.
+func (l IPv6Link) KernelArg() string {
+	return fmt.Sprintf(" matchlock.ipv6=%s/%d,%s", l.Guest, l.PrefixLen, l.Gateway)
+}
+
+// ParseIPv6Link derives the optional IPv6 guest link of a VMConfig. It is the
+// shared entry point of every Linux backend (see IPv6Link). hasLink is
+// false when the config carries no IPv6 fields at all (IPv4-only sandbox or
+// --no-network), which keeps those boot args and TAP configurations
+// byte-identical to before; a partially-set or malformed link is an error
+// rather than a silently missing half-configured link.
+func ParseIPv6Link(cfg *vm.VMConfig) (IPv6Link, bool, error) {
+	if cfg == nil || cfg.GatewayIPv6 == "" || cfg.GuestIPv6 == "" || cfg.Subnet6CIDR == "" {
+		return IPv6Link{}, false, nil
+	}
+	for _, addr := range []string{cfg.GatewayIPv6, cfg.GuestIPv6} {
+		ip := net.ParseIP(addr)
+		if ip == nil || ip.To4() != nil {
+			return IPv6Link{}, false, errx.With(ErrInvalidIPv6Address, ": %q is not an IPv6 address", addr)
+		}
+	}
+	_, ipNet, err := net.ParseCIDR(cfg.Subnet6CIDR)
+	if err != nil {
+		return IPv6Link{}, false, errx.With(ErrInvalidCIDR, " %s: %w", cfg.Subnet6CIDR, err)
+	}
+	prefixLen, bits := ipNet.Mask.Size()
+	if bits != 128 {
+		return IPv6Link{}, false, errx.With(ErrInvalidCIDR, ": %s is not an IPv6 CIDR", cfg.Subnet6CIDR)
+	}
+	return IPv6Link{Gateway: cfg.GatewayIPv6, Guest: cfg.GuestIPv6, PrefixLen: prefixLen}, true, nil
+}
+
+// IPv6KernelArg returns the matchlock.ipv6= cmdline field for cfg, or "" when no
+// IPv6 link is configured. A malformed link can only reach a boot arg if the
+// backend is driven without Create, which validates the same derivation before
+// any host resource is created.
+func IPv6KernelArg(cfg *vm.VMConfig) string {
+	link, hasLink, err := ParseIPv6Link(cfg)
+	if err != nil || !hasLink {
+		return ""
+	}
+	return link.KernelArg()
+}
+
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	// One effective vCPU count drives both the VMM machine-config and the
 	// guest's matchlock.cpus= boot arg, so the guest never sees more CPUs than
@@ -460,6 +556,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 			mtu := effectiveMTU(m.config.MTU)
 			kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.0::eth0:off%s matchlock.mtu=%d",
 				guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), mtu)
+			// The kernel ip= argument is IPv4-only, so the IPv6 address and
+			// default route travel in their own field next to it.
+			kernelArgs += IPv6KernelArg(m.config)
 		}
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"

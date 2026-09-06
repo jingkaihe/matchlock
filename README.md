@@ -172,11 +172,61 @@ func main() {
 }
 ```
 
-Go SDK private-IP behavior (`10/8`, `172.16/12`, `192.168/16`):
+Go SDK private-IP behavior:
+
+With `block_private_ips` enabled, a destination is denied when any address it
+targets (or resolves to) falls in one of these ranges:
+
+- IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`,
+  `169.254.0.0/16` (link-local), `100.64.0.0/10` (CGNAT / Tailscale-style)
+- IPv6: `::1/128`, `fc00::/7` (unique local), `fe80::/10` (link-local),
+  `200::/7` (Yggdrasil overlay)
+- IPv4-mapped IPv6 (`::ffff:0:0/96`): the embedded IPv4 address is checked
+  against the IPv4 ranges above, so `::ffff:192.168.1.1` is private while
+  `::ffff:8.8.8.8` is public. The mapped prefix is handled explicitly rather
+  than added as a CIDR entry, because `net.ParseCIDR("::ffff:0:0/96")`
+  normalizes to `0.0.0.0/0` and would otherwise mark every IPv4 address private.
+
+The same policy decides IPv6 destinations. Under interception every guest IPv6
+connection is redirected into the same proxy, so an address in `::1/128`,
+`fc00::/7` (unique local), `fe80::/10` (link-local) or `200::/7` (Yggdrasil
+overlay) is refused unless an `allow_private` entry exempts it. IPv6 is not a
+side channel around the network policy — see [IPv6 Interception](#ipv6-interception).
+
+Reach specific private endpoints without disabling the block (`--allow-private`):
+
+- CLI: `matchlock run --allow-private <entry>` is repeatable. An entry is a host
+  name, IP literal or CIDR, optionally suffixed with `:port` (or `[v6]:port`); a
+  bare entry matches any port. `--allow-private` lifts the private block only for
+  exactly those destinations. It never widens `--allow-host` and cannot be
+  combined with `--no-network`.
+- Wire API (`create`): set `network.allow_private` on the create request.
+- A name entry is a rebinding-safe exception: it is honored only when every
+  address the name resolves to is either public or covered by an address entry
+  (literal/CIDR) in the same list. A name that resolves to any unlisted private
+  address is still refused.
+
+```bash
+matchlock run --image alpine:latest \
+  --allow-private 192.168.107.74:8888 \
+  --allow-private 200:1234::1 -- curl http://192.168.107.74:8888/health
+```
+
+Control it via the Go SDK:
 
 - Default (unset): private IPs are blocked whenever a network config is sent.
 - Explicit block: call `.WithBlockPrivateIPs(true)` (or `.BlockPrivateIPs()`).
-- Explicit allow: call `.AllowPrivateIPs()` or `.WithBlockPrivateIPs(false)`.
+- Exempt specific endpoints: call `.WithAllowPrivate("<entry>", ...)`
+  (repeatable). It keeps the private block on and lifts it only for the listed
+  destinations — it is not the same as `.AllowPrivateIPs()`.
+- Disable the block entirely: call `.AllowPrivateIPs()` or
+  `.WithBlockPrivateIPs(false)`.
+
+```go
+sandbox := sdk.New("alpine:latest").
+	WithBlockPrivateIPs(true).
+	WithAllowPrivate("192.168.107.74:8888", "[200:1234::1]:443")
+```
 
 ```go
 sandbox := sdk.New("alpine:latest").
@@ -345,6 +395,58 @@ More examples in the [`examples/`](examples/) directory:
 | Streamlit chatbot using Agent Client Protocol | [`examples/agent-client-protocol/`](examples/agent-client-protocol/) |
 | Browser automation with Kodelet and Playwright MCP | [`examples/playwright/`](examples/playwright/) |
 
+## IPv6 Interception
+
+On Linux, an intercepted sandbox gets a first-class IPv6 link and its IPv6
+traffic is policed by the same proxy, the same DNS forwarder and the same policy
+engine that handle IPv4. The allow-list, `block_private_ips` and `allow_private`
+decisions are identical for IPv6 destinations.
+
+Guest link:
+
+- Every VM is leased a unique-local IPv6 /64 next to its IPv4 /24, derived from
+  the same per-VM octet: octet `N` yields `fd00:N::/64`, with the gateway
+  `fd00:N::1` on the VM's TAP and the guest address `fd00:N::2` — for example
+  `fd00:100::/64`, gateway `fd00:100::1`, guest `fd00:100::2`.
+- Both Linux backends (Firecracker and QEMU TCG) put the gateway address on the
+  TAP, and `guest-init` configures the guest address and its `::/0` route from
+  the `matchlock.ipv6=<guest>/<prefix>,<gateway>` kernel cmdline field, because
+  the kernel's `ip=` boot argument only configures IPv4.
+- The link exists only when interception is active; a plain NAT sandbox and a
+  `--no-network` sandbox stay IPv4-only.
+
+Interception:
+
+- An `ip6` nftables table (`matchlock6_<tap>`) mirrors the IPv4 table: TCP 80 and
+  443 are DNAT'd to the HTTP/HTTPS proxy, every other TCP destination is DNAT'd
+  to the passthrough proxy, and DNS (UDP and TCP 53) is DNAT'd to the DNS
+  forwarder. The proxy also listens on the IPv6 gateway and recovers the pre-DNAT
+  destination with `IP6T_SO_ORIGINAL_DST`, so the HTTP(S), passthrough and DNS
+  paths enforce exactly the same rules as their IPv4 counterparts.
+- Everything that was not redirected is dropped; ICMPv6 neighbour discovery is
+  the only other traffic the guest may exchange with the host. That replaces the
+  previous blanket IPv6 drop with "drop what is not redirected", so a raw connect
+  to an IPv6 destination the proxy does not handle gets no answer — there is no
+  IPv6 path around the proxy. It is fail closed: if the `ip6` table cannot be
+  installed, sandbox creation fails instead of running with a half-applied
+  policy.
+- IPv6 names resolve through the same DNS forwarder, which relays AAAA answers
+  unchanged; a name that resolves only to an unlisted private IPv6 address is
+  still refused.
+
+Private IPv6 destinations are blocked by default just like IPv4 ones — exempt
+individual endpoints with `--allow-private` while the block stays on:
+
+```bash
+matchlock run --image alpine:latest \
+  --allow-private 200:1234::1 \
+  --allow-private '[fd00::/8]:8888' \
+  -- nc -w 5 200:1234::1 8080
+```
+
+macOS keeps its existing IPv4 interception behaviour; the per-VM ULA link and the
+`ip6` table are Linux-only.
+
 ## Architecture
 
 ```mermaid
@@ -379,6 +481,7 @@ graph LR
 |----------|------|-----------|
 | Linux (Firecracker) | Transparent proxy | nftables DNAT on ports 80/443 |
 | Linux (QEMU TCG) | Transparent proxy | nftables DNAT on ports 80/443; guest on a TAP device with a static IP |
+| Linux (Firecracker / QEMU TCG) | Transparent proxy over IPv6 | ip6 nftables DNAT of 80/443, catch-all TCP and DNS to the same proxy/DNS forwarder; all other guest IPv6 dropped |
 | macOS | NAT (default) | Virtualization.framework built-in NAT |
 | macOS | Interception (with `--allow-host`/`--secret`) | gVisor userspace TCP/IP at L4 |
 

@@ -352,7 +352,9 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
 		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
-		if !ns.policy.IsHostAllowed(host) {
+		// Port-aware policy check so a port-scoped allow_private entry is
+		// honored; the destination is the ORIGINAL guest-visible one.
+		if !ns.policy.IsHostAllowedPort(dstIP, int(dstPort)) {
 			ns.emitBlockedEvent(host, "host not in allowlist")
 			guestConn.Close()
 			return
@@ -364,7 +366,7 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
 	defer guestConn.Close()
 
-	if !ns.policy.IsHostAllowed(dstIP) {
+	if !ns.policy.IsHostAllowedPort(dstIP, int(dstPort)) {
 		ns.emitBlockedEvent(net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)), "host not in allowlist")
 		return
 	}

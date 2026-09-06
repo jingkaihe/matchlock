@@ -94,7 +94,21 @@ Wildcard Patterns for --allow-host:
 
 Custom hosts with --add-host:
   --add-host api.internal:10.0.0.10
-  --add-host db.internal:10.0.0.11`,
+  --add-host db.internal:10.0.0.11
+
+Private-IP exemptions with --allow-private:
+  Private, link-local, CGNAT and Yggdrasil destinations are blocked by default.
+  --allow-private lifts that block for exactly the listed destinations. Entries
+  are a host name, IP literal or CIDR, optionally suffixed with :port (or
+  [v6]:port); a bare entry matches any port. Repeat the flag for more entries.
+  --allow-private never widens --allow-host and cannot be combined with
+  --no-network.
+
+  Examples:
+    --allow-private 192.168.107.74:8888
+    --allow-private 200:1234::1
+    --allow-private [fd00::1]:443
+    --allow-private 100.64.0.0/10`,
 	Example: `  matchlock run --image alpine:latest -it sh
 	  matchlock run --image python:3.12-alpine python3 -c 'print(42)'
 	  matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
@@ -119,6 +133,7 @@ func init() {
 	runCmd.Flags().String("workspace", "", "Guest mount point for VFS (required with --volume)")
 	runCmd.Flags().String("kernel", "", "Guest kernel ref: file:///absolute/path or OCI image reference")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
+	runCmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination (host, IP or CIDR with optional :port; repeatable)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringArrayP("volume", "v", nil, fmt.Sprintf("Volume mount, repeatable (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount; host_fs supports uid/gid owner options)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
 	runCmd.Flags().StringArray("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:option[,option...]] or @volume_name:guest_mount[:option[,option...]])")
@@ -154,6 +169,7 @@ func init() {
 	viper.BindPFlag("run.workspace", runCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("run.kernel", runCmd.Flags().Lookup("kernel"))
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
+	viper.BindPFlag("run.allow-private", runCmd.Flags().Lookup("allow-private"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
 	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
@@ -179,6 +195,36 @@ func init() {
 	viper.BindPFlag("run.rm", runCmd.Flags().Lookup("rm"))
 
 	rootCmd.AddCommand(runCmd)
+}
+
+// buildRunNetworkConfig assembles the network config from resolved `run` flag
+// values. The CLI always requests BlockPrivateIPs and uses AllowPrivate as the
+// explicit exemption list, so CLI runs never disable the private block. Keeping
+// this separate makes the flag -> api.NetworkConfig wiring testable without
+// booting a sandbox.
+func buildRunNetworkConfig(
+	allowHosts []string,
+	addHosts []api.HostIPMapping,
+	allowPrivate []string,
+	noNetwork bool,
+	networkIntercept bool,
+	secrets map[string]api.Secret,
+	dnsServers []string,
+	hostname string,
+	mtu int,
+) *api.NetworkConfig {
+	return &api.NetworkConfig{
+		AllowedHosts:    allowHosts,
+		AddHosts:        addHosts,
+		AllowPrivate:    allowPrivate,
+		BlockPrivateIPs: true,
+		NoNetwork:       noNetwork,
+		Intercept:       networkIntercept,
+		Secrets:         secrets,
+		DNSServers:      dnsServers,
+		Hostname:        hostname,
+		MTU:             mtu,
+	}
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -215,6 +261,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
+	allowPrivate, _ := cmd.Flags().GetStringArray("allow-private")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringArray("volume")
 	diskMountSpecs, _ := cmd.Flags().GetStringArray("disk")
@@ -245,6 +292,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if noNetwork {
 		if len(allowHosts) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --allow-host")
+		}
+		if len(allowPrivate) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --allow-private")
 		}
 		if len(secrets) > 0 || secretFile != "" || len(secretPlaceholders) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --secret")
@@ -413,17 +463,17 @@ func runRun(cmd *cobra.Command, args []string) error {
 			DiskSizeMB:     diskSize,
 			TimeoutSeconds: timeout,
 		},
-		Network: &api.NetworkConfig{
-			AllowedHosts:    allowHosts,
-			AddHosts:        addHosts,
-			BlockPrivateIPs: true,
-			NoNetwork:       noNetwork,
-			Intercept:       networkIntercept,
-			Secrets:         parsedSecrets,
-			DNSServers:      dnsServers,
-			Hostname:        hostname,
-			MTU:             networkMTU,
-		},
+		Network: buildRunNetworkConfig(
+			allowHosts,
+			addHosts,
+			allowPrivate,
+			noNetwork,
+			networkIntercept,
+			parsedSecrets,
+			dnsServers,
+			hostname,
+			networkMTU,
+		),
 		VFS:        vfsConfig,
 		Env:        parsedEnv,
 		ExtraDisks: extraDisks,

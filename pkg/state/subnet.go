@@ -30,7 +30,43 @@ type SubnetInfo struct {
 	GatewayIP string `json:"gateway_ip"` // Host TAP IP (e.g., 192.168.100.1)
 	GuestIP   string `json:"guest_ip"`   // Guest IP (e.g., 192.168.100.2)
 	Subnet    string `json:"subnet"`     // CIDR notation (e.g., 192.168.100.0/24)
-	VMID      string `json:"vm_id"`
+	// IPv6 unique-local addressing for the same VM, derived from Octet so the
+	// v6 /64 is as unique as the v4 /24 (see ipv6ForOctet).
+	GatewayIPv6 string `json:"gateway_ipv6"` // Host TAP IPv6 (e.g., fd00:100::1)
+	GuestIPv6   string `json:"guest_ipv6"`   // Guest IPv6 (e.g., fd00:100::2)
+	Subnet6     string `json:"subnet6"`      // IPv6 CIDR (e.g., fd00:100::/64)
+	VMID        string `json:"vm_id"`
+}
+
+// ipv6ForOctet derives the per-VM IPv6 unique-local (ULA) addressing from the
+// same third octet that selects the IPv4 /24, so a single lease yields a
+// collision-free v6 /64 next to it. The octet is rendered as the second 16-bit
+// group of an fd00::/8 prefix: octet 100 -> fd00:100::/64, gateway fd00:100::1,
+// guest fd00:100::2. All callers (Allocate, Get, backfill) go through this
+// helper so the mapping can never drift.
+func ipv6ForOctet(octet int) (gatewayIPv6, guestIPv6, subnet6 string) {
+	return fmt.Sprintf("fd00:%d::1", octet),
+		fmt.Sprintf("fd00:%d::2", octet),
+		fmt.Sprintf("fd00:%d::/64", octet)
+}
+
+// fillIPv6 derives any missing IPv6 field from Octet. Rows written before the
+// v6 columns existed (or with NULL columns) keep working instead of surfacing
+// an empty address to the caller.
+func (s *SubnetInfo) fillIPv6() {
+	if s.GatewayIPv6 != "" && s.GuestIPv6 != "" && s.Subnet6 != "" {
+		return
+	}
+	gatewayIPv6, guestIPv6, subnet6 := ipv6ForOctet(s.Octet)
+	if s.GatewayIPv6 == "" {
+		s.GatewayIPv6 = gatewayIPv6
+	}
+	if s.GuestIPv6 == "" {
+		s.GuestIPv6 = guestIPv6
+	}
+	if s.Subnet6 == "" {
+		s.Subnet6 = subnet6
+	}
 }
 
 func NewSubnetAllocator() *SubnetAllocator {
@@ -111,22 +147,29 @@ func (a *SubnetAllocator) allocate(vmID string, hook func(octet int)) (*SubnetIn
 			hook(octet)
 		}
 
+		gatewayIPv6, guestIPv6, subnet6 := ipv6ForOctet(octet)
 		info := &SubnetInfo{
-			Octet:     octet,
-			GatewayIP: fmt.Sprintf("192.168.%d.1", octet),
-			GuestIP:   fmt.Sprintf("192.168.%d.2", octet),
-			Subnet:    fmt.Sprintf("192.168.%d.0/24", octet),
-			VMID:      vmID,
+			Octet:       octet,
+			GatewayIP:   fmt.Sprintf("192.168.%d.1", octet),
+			GuestIP:     fmt.Sprintf("192.168.%d.2", octet),
+			Subnet:      fmt.Sprintf("192.168.%d.0/24", octet),
+			GatewayIPv6: gatewayIPv6,
+			GuestIPv6:   guestIPv6,
+			Subnet6:     subnet6,
+			VMID:        vmID,
 		}
 
 		_, err = a.db.Exec(
-			`INSERT INTO subnet_allocations (vm_id, octet, gateway_ip, guest_ip, subnet, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO subnet_allocations (vm_id, octet, gateway_ip, guest_ip, subnet, gateway_ip6, guest_ip6, subnet6, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			info.VMID,
 			info.Octet,
 			info.GatewayIP,
 			info.GuestIP,
 			info.Subnet,
+			info.GatewayIPv6,
+			info.GuestIPv6,
+			info.Subnet6,
 			time.Now().UTC().Format(time.RFC3339Nano),
 		)
 		if err == nil {
@@ -186,14 +229,29 @@ func (a *SubnetAllocator) Get(vmID string) (*SubnetInfo, error) {
 		return nil, err
 	}
 
-	row := a.db.QueryRow(`SELECT octet, gateway_ip, guest_ip, subnet, vm_id FROM subnet_allocations WHERE vm_id = ?`, vmID)
-	var info SubnetInfo
-	if err := row.Scan(&info.Octet, &info.GatewayIP, &info.GuestIP, &info.Subnet, &info.VMID); err != nil {
+	row := a.db.QueryRow(
+		`SELECT octet, gateway_ip, guest_ip, subnet, gateway_ip6, guest_ip6, subnet6, vm_id
+		 FROM subnet_allocations WHERE vm_id = ?`, vmID)
+	var (
+		info                        SubnetInfo
+		gatewayIPv6, guestIPv6, sub6 sql.NullString
+	)
+	if err := row.Scan(
+		&info.Octet, &info.GatewayIP, &info.GuestIP, &info.Subnet,
+		&gatewayIPv6, &guestIPv6, &sub6, &info.VMID,
+	); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("subnet allocation not found for %s", vmID)
 		}
 		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
 	}
+	// Legacy rows (written before the v6 columns existed, or with a NULL
+	// column) leave these empty; derive them from the octet so an in-flight
+	// state.db keeps working.
+	info.GatewayIPv6 = gatewayIPv6.String
+	info.GuestIPv6 = guestIPv6.String
+	info.Subnet6 = sub6.String
+	info.fillIPv6()
 	return &info, nil
 }
 

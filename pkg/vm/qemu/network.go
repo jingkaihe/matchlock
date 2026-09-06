@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"github.com/jingkaihe/matchlock/pkg/vm"
 	linuxvm "github.com/jingkaihe/matchlock/pkg/vm/linux"
 )
 
@@ -56,11 +57,46 @@ func (m *Machine) setupNetwork() (*networkSetup, error) {
 	if err := linuxvm.ConfigureInterface(tapName, subnetCIDR); err != nil {
 		return nil, fail(errx.Wrap(ErrTAPConfigure, err))
 	}
+
+	// The IPv6 guest link goes on next to the IPv4 one, exactly as the
+	// Firecracker backend does it (linuxvm.ConfigureInterfaceIPv6). It MUST be
+	// installed here, before Start: the sandbox binds the interception proxy and
+	// the DNS forwarder to this very gateway address and installs the per-TAP
+	// ip6 table that redirects to them, so a TAP without the address makes every
+	// intercepted sandbox fail to launch (EADDRNOTAVAIL) and leaves a
+	// fail-closed ip6 table in front of a guest that has no IPv6 at all. The
+	// address is skipped entirely when the config carries no IPv6 link
+	// (IPv4-only or --no-network sandbox), which keeps those runs
+	// byte-identical to before.
+	if tapCIDR, _, hasLink, err := ipv6TapLink(m.config); err != nil {
+		return nil, fail(errx.Wrap(ErrTAPConfigureIPv6, err))
+	} else if hasLink {
+		if err := linuxvm.ConfigureInterfaceIPv6(tapName, tapCIDR); err != nil {
+			return nil, fail(errx.Wrap(ErrTAPConfigureIPv6, err))
+		}
+	}
+
 	if err := linuxvm.SetMTU(tapName, effectiveMTU(m.config.MTU)); err != nil {
 		return nil, fail(errx.Wrap(ErrTAPSetMTU, err))
 	}
 
 	return &networkSetup{tapName: tapName, tapFile: tapFile}, nil
+}
+
+// ipv6TapLink derives the IPv6 guest link a QEMU TAP must carry from the shared
+// linux-backend derivation (linuxvm.ParseIPv6Link), so the Firecracker and QEMU
+// backends install the same addressing from the same VMConfig. It returns the
+// TAP address/prefix to configure, the guest-side kernel-cmdline field, and
+// hasLink=false when the config routes no IPv6 link (no IPv6 fields, or a
+// partially-set triple). A malformed fully-set link is an error rather than a
+// silently missing IPv6 path: the IPv6 state the sandbox already provisioned
+// (proxy bind address, ip6 table) depends on it.
+func ipv6TapLink(cfg *vm.VMConfig) (tapCIDR, kernelArg string, hasLink bool, err error) {
+	link, hasLink, err := linuxvm.ParseIPv6Link(cfg)
+	if err != nil || !hasLink {
+		return "", "", false, err
+	}
+	return link.TapCIDR(), link.KernelArg(), true, nil
 }
 
 // teardownNetwork releases the host-side TAP. It must be called only after the
@@ -128,8 +164,16 @@ func (m *Machine) networkBootArgs() string {
 	}
 	mtu := effectiveMTU(m.config.MTU)
 	// ip=<guest_ip>::<gateway>:<netmask>::eth0:off<dns_suffix>
-	return fmt.Sprintf(" ip=%s::%s:255.255.255.0::eth0:off%s matchlock.mtu=%d",
+	args := fmt.Sprintf(" ip=%s::%s:255.255.255.0::eth0:off%s matchlock.mtu=%d",
 		guestIP, gatewayIP, kernelIPDNSSuffix(m.config.DNSServers), mtu)
+	// The kernel ip= argument is IPv4-only, so the guest's IPv6 address and ::/0
+	// route travel in their own field next to it, exactly as the Firecracker
+	// backend emits it. "" when the config carries no IPv6 link, which keeps an
+	// IPv4-only boot line byte-identical to before.
+	if _, kernelArg, hasLink, err := ipv6TapLink(m.config); err == nil && hasLink {
+		args += kernelArg
+	}
+	return args
 }
 
 // kernelIPDNSSuffix returns the ip= DNS suffix (max two servers, per the ip=

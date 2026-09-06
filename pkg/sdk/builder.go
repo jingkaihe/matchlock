@@ -130,6 +130,16 @@ func (b *SandboxBuilder) UnsetBlockPrivateIPs() *SandboxBuilder {
 	return b
 }
 
+// WithAllowPrivate exempts otherwise-blocked private destinations from
+// BlockPrivateIPs. Each entry is a host name, IP literal or CIDR, optionally
+// scoped with :port (or [v6]:port); a bare entry matches any port. Unlike
+// AllowPrivateIPs, this keeps the private-IP block enabled and only lifts it for
+// the listed destinations. Calls accumulate.
+func (b *SandboxBuilder) WithAllowPrivate(entries ...string) *SandboxBuilder {
+	b.opts.AllowPrivate = append(b.opts.AllowPrivate, entries...)
+	return b
+}
+
 // AddSecret registers a secret for MITM injection. The secret is exposed as a
 // placeholder environment variable inside the VM, and the real value is injected
 // into HTTP requests to the specified hosts.

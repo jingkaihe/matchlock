@@ -85,8 +85,13 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts    []string                   `json:"allowed_hosts,omitempty"`
-	AddHosts        []HostIPMapping            `json:"add_hosts,omitempty"`
+	AllowedHosts []string        `json:"allowed_hosts,omitempty"`
+	AddHosts     []HostIPMapping `json:"add_hosts,omitempty"`
+	// AllowPrivate lists destinations exempt from BlockPrivateIPs. Entries are
+	// host names, IP literals or CIDRs, optionally suffixed with :port (or
+	// [v6]:port); a bare entry matches any port. It only lifts the private
+	// block and never widens AllowedHosts or overrides NoNetwork.
+	AllowPrivate    []string                   `json:"allow_private,omitempty"`
 	BlockPrivateIPs bool                       `json:"block_private_ips,omitempty"`
 	NoNetwork       bool                       `json:"no_network,omitempty"`
 	Intercept       bool                       `json:"intercept,omitempty"`
@@ -127,6 +132,9 @@ func (n *NetworkConfig) Validate() error {
 	}
 	if len(n.AllowedHosts) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.allowed_hosts")
+	}
+	if len(n.AllowPrivate) > 0 {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.allow_private")
 	}
 	if len(n.Secrets) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
