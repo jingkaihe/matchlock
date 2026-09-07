@@ -7,6 +7,7 @@ var (
 	ErrGetHomeDir          = errors.New("get home dir")
 	ErrCreateCacheDir      = errors.New("create cache dir")
 	ErrCreateCacheImage    = errors.New("create cache image")
+	ErrStatCacheImage      = errors.New("stat cache image")
 	ErrTruncateCacheImage  = errors.New("truncate cache image")
 	ErrOpenLockFile        = errors.New("open lock file")
 	ErrAcquireLock         = errors.New("acquire lock")

@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -156,13 +158,15 @@ func ensureBuildCacheImage(cachePath string, sizeMB int) error {
 
 	targetBytes := int64(sizeMB) * 1024 * 1024
 
-	if fi, err := os.Stat(cachePath); err == nil {
-		if fi.Size() >= targetBytes {
-			return nil
-		}
-		return growExt4Image(cachePath, targetBytes)
+	if _, err := os.Stat(cachePath); err == nil {
+		return ensureExistingCacheGrown(cachePath, targetBytes)
+	} else if !os.IsNotExist(err) {
+		// A real stat failure (not "absent") must be surfaced, not treated as
+		// "create new".
+		return errx.Wrap(ErrStatCacheImage, err)
 	}
 
+	// Cache does not exist: create it, and only then format.
 	f, err := os.Create(cachePath)
 	if err != nil {
 		return errx.Wrap(ErrCreateCacheImage, err)
@@ -183,22 +187,70 @@ func ensureBuildCacheImage(cachePath string, sizeMB int) error {
 	return nil
 }
 
-// growExt4Image expands an existing ext4 image to targetBytes using truncate + resize2fs.
+// ensureExistingCacheGrown grows an existing cache to at least targetBytes.
+// It only ever enlarges (never shrinks) and refuses to grow a file it cannot
+// inspect: an interrupted prior grow (truncate succeeded but resize2fs did
+// not) leaves a big file with a small FS, which this repairs by re-running
+// the grow when the FS is measurably short.
+func ensureExistingCacheGrown(cachePath string, targetBytes int64) error {
+	fi, err := os.Stat(cachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return errx.Wrap(ErrStatCacheImage, err)
+	}
+	if fi.Size() < targetBytes {
+		// File is smaller than target: expand it.
+		return growExt4Image(cachePath, targetBytes)
+	}
+
+	// File is already at/above target. The only case worth repairing is a FS
+	// that failed to grow while the file grew (truncate succeeded, resize2fs
+	// did not). Inspect once; if we cannot read the FS size, leave the big
+	// file untouched — an uninspectable-but-big-enough cache is the normal
+	// happy path and must not fail the build, and must not be resized.
+	size, err := ext4FSSizeBytes(cachePath)
+	if err != nil {
+		return nil
+	}
+	if size < targetBytes {
+		return growExt4Image(cachePath, targetBytes)
+	}
+	return nil
+}
+
+// growExt4Image expands an existing ext4 image to targetBytes using truncate +
+// e2fsck + resize2fs, then VERIFIES the filesystem actually grew. It never
+// shrinks the file: if the backing file is already larger than targetBytes it
+// only grows the filesystem to fit the existing (larger) file.
 func growExt4Image(path string, targetBytes int64) error {
 	fmt.Fprintf(os.Stderr, "Growing build cache to %d MB...\n", targetBytes/(1024*1024))
 
-	if err := os.Truncate(path, targetBytes); err != nil {
-		return errx.Wrap(ErrTruncateCacheImage, err)
+	// Preflight the tooling before mutating anything, so a missing e2fsprogs
+	// fails fast instead of truncating the file and leaving a partial FS.
+	resize2fs, err := exec.LookPath("resize2fs")
+	if err != nil {
+		// resize2fs missing: return an actionable error rather than masking a
+		// cache that is effectively empty (the Mac host hit exactly this).
+		return fmt.Errorf("resize2fs not found; install e2fsprogs to grow cache")
+	}
+
+	if fi, err := os.Stat(path); err == nil {
+		current := fi.Size()
+		if current < targetBytes {
+			// Only expand; never truncate down. A cache can already be larger
+			// than the requested target (e.g. grown earlier to 96 GiB), and
+			// shrinking it would destroy cached layers.
+			if err := os.Truncate(path, targetBytes); err != nil {
+				return errx.Wrap(ErrTruncateCacheImage, err)
+			}
+		}
 	}
 
 	if e2fsck, err := exec.LookPath("e2fsck"); err == nil {
-		cmd := exec.Command(e2fsck, "-fy", path)
-		cmd.CombinedOutput()
-	}
-
-	resize2fs, err := exec.LookPath("resize2fs")
-	if err != nil {
-		return fmt.Errorf("resize2fs not found; install e2fsprogs to grow cache")
+		// e2fsck -fy is best-effort; resize2fs below is the source of truth.
+		_ = exec.Command(e2fsck, "-fy", path).Run()
 	}
 
 	cmd := exec.Command(resize2fs, "-f", path)
@@ -206,7 +258,67 @@ func growExt4Image(path string, targetBytes int64) error {
 		return fmt.Errorf("resize2fs: %w: %s", err, out)
 	}
 
+	// Verify the filesystem (not the backing file) reached the target. A grow
+	// can truncate the file and then fail to enlarge the FS (e.g. resize2fs
+	// missing or interrupted); without this the next run would trust the file
+	// size and never repair it.
+	if size, err := ext4FSSizeBytes(path); err != nil || size < targetBytes {
+		return fmt.Errorf("resize2fs finished but the filesystem is still below %d bytes; cache not actually grown", targetBytes)
+	}
+
 	return nil
+}
+
+// fsSizeBytesAtLeast reports whether the ext4 image's total filesystem size
+// (block count × block size) is at least targetBytes.
+func fsSizeBytesAtLeast(path string, targetBytes int64) bool {
+	size, err := ext4FSSizeBytes(path)
+	if err != nil {
+		return false
+	}
+	return size >= targetBytes
+}
+
+// dumpe2fsBlockField extracts a numeric field from a `dumpe2fs -h` line that is
+// shaped like "Label:<padding><number>". Returns (0, false) if the label does
+// not match or the value is not a positive integer.
+func dumpe2fsBlockField(out []byte, prefix string) (int64, bool) {
+	for _, raw := range strings.Split(string(out), "\n") {
+		line := strings.TrimSpace(raw)
+		body, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		body = strings.TrimSpace(body)
+		// The body is "12345" only; any extra spaces already trimmed. It must not
+		// contain a second token (e.g. a trailing comment).
+		if body == "" || strings.ContainsAny(body, " 	") {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(body, 10, 64)
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// ext4FSSizeBytes returns the total filesystem size (block count × block size)
+// of an ext4 image. Uses dumpe2fs -h so it works on image files without a
+// mount. Returns an error only when dumpe2fs is unavailable or the image is not
+// a parseable ext4 filesystem.
+func ext4FSSizeBytes(path string) (int64, error) {
+	out, err := exec.Command("dumpe2fs", "-h", path).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("dumpe2fs -h %s: %w: %s", path, err, out)
+	}
+	blockCount, okCount := dumpe2fsBlockField(out, "Block count:")
+	blockSize, okSize := dumpe2fsBlockField(out, "Block size:")
+	if !okCount || !okSize {
+		return 0, fmt.Errorf("dumpe2fs -h %s: could not parse 'Block count'/'Block size'", path)
+	}
+	return blockCount * blockSize, nil
 }
 
 // lockBuildCache acquires an exclusive file lock on the build cache.
