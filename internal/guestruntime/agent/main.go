@@ -135,11 +135,39 @@ func Run() {
 	// Mount /proc inside new PID namespace (children need it)
 	ensureProcMounted()
 
-	// Start ready listener first
-	go serveReady()
+	// Bind the exec service listener SYNCHRONOUSLY before any ready signal.
+	// The host's waitReady (port 5002) dials and returns the moment the ready
+	// listener accepts, then immediately dials the exec service (port 5000) via
+	// startImageEntrypoint -> Exec. If the exec listener is not yet bound when
+	// that dial lands, the kernel answers with ECONNRESET ("connection reset by
+	// peer"), and a cold sandbox Launch fails intermittently. By binding 5000
+	// before we ever accept on 5002, we close that race window deterministically.
+	runServices(startupListenFn, acceptVsock, serveReady, nil)
+}
 
-	// Start exec service
-	serveExec()
+// startupListenFn is how the agent acquires a listening socket for a vsock
+// port. It is a variable so tests can observe the bind ordering without
+// requiring a real vsock device (AF_VSOCK is unavailable in unit-test sandboxes).
+var startupListenFn = listenVsock
+
+// runServices starts the agent's listener services. It binds the exec service
+// (port 5000) synchronously first, and only then runs the ready signal loop
+// (port 5002) and the exec accept loop. listenFn and acceptFn are injected so
+// tests can observe the bind ordering and drive the accept loops without a real
+// AF_VSOCK device. readyFn runs the ready-signal loop; it is called in a
+// goroutine AFTER the exec listener is bound. stop, when non-nil, is closed to
+// make both accept loops return (used by tests). Production passes nil so the
+// loops run for the guest's lifetime and Run() never returns.
+func runServices(listenFn func(uint32) (int, error), acceptFn func(int) (int, error), readyFn func(func(uint32) (int, error), func(int) (int, error), <-chan struct{}), stop <-chan struct{}) {
+	execFd, err := listenFn(VsockPortExec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to listen on exec port: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Exec listener is bound; only now it is safe to advertise readiness.
+	go readyFn(listenFn, acceptFn, stop)
+	serveExecWithListener(execFd, acceptFn, stop)
 }
 
 // ensureProcMounted ensures /proc is mounted. When child processes run in a new
@@ -149,8 +177,11 @@ func ensureProcMounted() {
 	syscall.Mount("proc", "/proc", "proc", 0, "")
 }
 
-func serveReady() {
-	listener, err := listenVsock(VsockPortReady)
+// serveReady listens on the ready port and accepts+closes each connection (a
+// successful accept is how the host learns the VM is ready). It returns when a
+// closed stop channel is delivered (tests) or the listener fails to bind.
+func serveReady(listenFn func(uint32) (int, error), acceptFn func(int) (int, error), stop <-chan struct{}) {
+	listener, err := listenFn(VsockPortReady)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to listen on ready port: %v\n", err)
 		return
@@ -160,7 +191,12 @@ func serveReady() {
 	fmt.Println("Ready signal listener started on port", VsockPortReady)
 
 	for {
-		conn, err := acceptVsock(listener)
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		conn, err := acceptFn(listener)
 		if err != nil {
 			continue
 		}
@@ -170,17 +206,32 @@ func serveReady() {
 }
 
 func serveExec() {
-	listener, err := listenVsock(VsockPortExec)
+	// serveExec is only used by the fused/legacy entrypoint; the primary path
+	// passes a pre-bound listener to serveExecWithListener so the exec bind
+	// happens before the ready signal.
+	fd, err := listenVsock(VsockPortExec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to listen on exec port: %v\n", err)
 		os.Exit(1)
 	}
+	serveExecWithListener(fd, acceptVsock, nil)
+}
+
+// serveExecWithListener accepts and dispatches exec-service connections on the
+// already-bound listener fd. It runs for the guest's lifetime in production; in
+// tests a closed stop channel makes it return.
+func serveExecWithListener(listener int, acceptFn func(int) (int, error), stop <-chan struct{}) {
 	defer syscall.Close(listener)
 
 	fmt.Println("Exec service started on port", VsockPortExec)
 
 	for {
-		conn, err := acceptVsock(listener)
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		conn, err := acceptFn(listener)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Accept error: %v\n", err)
 			continue
