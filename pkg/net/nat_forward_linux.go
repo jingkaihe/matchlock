@@ -12,11 +12,22 @@ import (
 // DOCKER-USER content.
 const forwardAcceptMarker = "matchlock-tap-accept"
 
+// ForwardAcceptMarker is the exported prefix for the DOCKER-USER accept rules
+// matchlock installs for a sandbox TAP. The full marker is
+// ForwardAcceptMarker + ":" + tap. It is exported so the lifecycle reconciler
+// can find and remove orphaned rules for taps that no longer exist.
+const ForwardAcceptMarker = forwardAcceptMarker
+
 // tapAcceptMarker returns the per-TAP marker used to tag the rules for a given
 // interface. Encoding the TAP keeps concurrent sandboxes' rules distinguishable,
 // so one sandbox's cleanup never deletes another's.
 func tapAcceptMarker(tap string) string {
 	return forwardAcceptMarker + ":" + tap
+}
+
+// TapAcceptMarker returns the exported per-TAP marker (ForwardAcceptMarker + ":" + tap).
+func TapAcceptMarker(tap string) string {
+	return tapAcceptMarker(tap)
 }
 
 // installForwardAccept inserts bidirectional accept rules for the sandbox TAP

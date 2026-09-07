@@ -13,4 +13,5 @@ var (
 	ErrInvalidPhase    = errors.New("invalid lifecycle phase transition")
 	ErrReconcileTable  = errors.New("reconcile nftables table")
 	ErrReconcileTap    = errors.New("reconcile TAP interface")
+	ErrReconcileRule   = errors.New("reconcile nftables rule")
 )

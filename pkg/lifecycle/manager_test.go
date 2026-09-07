@@ -16,6 +16,9 @@ func TestVMManagerPrune(t *testing.T) {
 	stateMgr := state.NewManagerWithDir(vmDir)
 	subnetAlloc := state.NewSubnetAllocatorWithDir(subnetDir)
 	mgr := NewVMManagerWithDeps(stateMgr, subnetAlloc)
+	// Stub the nftables seam so the reconciler's DOCKER-USER sweep does not
+	// depend on a real netlink connection in this environment.
+	injectReconcileSeams(t)
 
 	stoppedID := "vm-stopped1"
 	require.NoError(t, stateMgr.Register(stoppedID, map[string]string{"image": "alpine:latest"}))
@@ -42,6 +45,7 @@ func TestVMManagerRemove_ReconcileFailureKeepsState(t *testing.T) {
 	stateMgr := state.NewManagerWithDir(vmDir)
 	subnetAlloc := state.NewSubnetAllocatorWithDir(subnetDir)
 	mgr := NewVMManagerWithDeps(stateMgr, subnetAlloc)
+	injectReconcileSeams(t)
 
 	vmID := "vm-stopped2"
 	require.NoError(t, stateMgr.Register(vmID, map[string]string{"image": "alpine:latest"}))
@@ -74,6 +78,7 @@ func TestVMManagerPrune_ReconcileFailureDoesNotRemove(t *testing.T) {
 	stateMgr := state.NewManagerWithDir(vmDir)
 	subnetAlloc := state.NewSubnetAllocatorWithDir(subnetDir)
 	mgr := NewVMManagerWithDeps(stateMgr, subnetAlloc)
+	injectReconcileSeams(t)
 
 	vmID := "vm-stopped3"
 	require.NoError(t, stateMgr.Register(vmID, map[string]string{"image": "alpine:latest"}))
