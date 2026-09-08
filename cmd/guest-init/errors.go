@@ -22,5 +22,7 @@ var (
 	ErrStartGuestFused    = errors.New("start guest-fused")
 	ErrWorkspaceMount     = errors.New("check workspace mount")
 	ErrWorkspaceMountWait = errors.New("workspace mount timeout")
+	ErrInvalidExactMount  = errors.New("invalid matchlock.exact.mounts")
+	ErrExactMountPrep     = errors.New("prepare exact destination mount")
 	ErrExecGuestAgent     = errors.New("exec guest-agent")
 )

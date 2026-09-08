@@ -287,6 +287,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		GuestIP:             guestIP,
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
+		ExactMounts:         exactFUSEMountpoints(config),
 		Privileged:          config.Privileged,
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),

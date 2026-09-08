@@ -287,8 +287,10 @@ func (p *RealFSProvider) leafMatches(fi os.FileInfo) bool {
 // and verifies it is still the pinned file. Because os.Root refuses symlinks
 // that resolve outside the parent and the identity check rejects any other
 // replacement, a source swapped after construction is never followed to an
-// outside file. Callers must NOT pass O_CREATE/O_EXCL here to avoid creating a
-// new inode that would not match the pinned source.
+// outside file. Callers must NOT pass O_CREATE/O_EXCL here (avoid creating a
+// new inode that would not match the pinned source) and must NOT pass O_TRUNC
+// here (truncation must happen only after the identity check succeeds, via the
+// verified handle), so a replaced leaf is never modified before it is rejected.
 func (p *RealFSProvider) openLeaf(flags int, mode os.FileMode) (*os.File, error) {
 	parent, leaf, err := p.requireFileRoot()
 	if err != nil {
@@ -318,7 +320,12 @@ func (p *RealFSProvider) Stat(path string) (FileInfo, error) {
 	if err != nil {
 		return FileInfo{}, err
 	}
-	info, err := root.Stat(p.rootPath(path))
+	// Use Lstat so a symbolic link is reported as the link itself (S_IFLNK) for
+	// getattr/lookup rather than being followed to its target. This is required
+	// so the guest FUSE daemon surfaces links as links and a readlink can be
+	// issued instead of a data read. Traversal still follows the link only on
+	// Open (which is confined by os.Root).
+	info, err := root.Lstat(p.rootPath(path))
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -385,9 +392,16 @@ func (p *RealFSProvider) Create(path string, mode os.FileMode) (Handle, error) {
 		}
 		// Truncate the admitted file in place. Fail closed if it was removed or
 		// replaced: a recreated or swapped file no longer matches the pinned
-		// source and must not be silently served.
-		f, err := p.openLeaf(os.O_RDWR|os.O_TRUNC, mode)
+		// source and must not be silently served. Open WITHOUT O_TRUNC so a
+		// replaced or swapped leaf is never truncated before the identity check
+		// runs — the open/verify must complete first, and only then the admitted
+		// file is truncated in place via the verified handle.
+		f, err := p.openLeaf(os.O_RDWR, mode)
 		if err != nil {
+			return nil, err
+		}
+		if err := f.Truncate(0); err != nil {
+			_ = f.Close()
 			return nil, err
 		}
 		return p.newHandle(f), nil
@@ -536,6 +550,21 @@ func (p *RealFSProvider) Readlink(path string) (string, error) {
 		return "", err
 	}
 	return root.Readlink(p.rootPath(path))
+}
+
+// Link creates a hard link at newName referring to the existing oldName within
+// the confined root. os.Root.Link restricts both names beneath the root and
+// refuses links that traverse an escaping symlink. A single-file mount has no
+// directory children, so hard-linking within it is unsupported.
+func (p *RealFSProvider) Link(oldName, newName string) error {
+	if !p.isDir {
+		return syscall.ENOTDIR
+	}
+	root, err := p.requireRoot()
+	if err != nil {
+		return err
+	}
+	return root.Link(p.rootPath(oldName), p.rootPath(newName))
 }
 
 func (p *RealFSProvider) Fsync(path string) error {

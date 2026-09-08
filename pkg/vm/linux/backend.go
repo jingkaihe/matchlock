@@ -439,9 +439,13 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if workspace != "" {
 			workspaceArg = " matchlock.workspace=" + workspace
 		}
+		exactArg := ""
+		if len(m.config.ExactMounts) > 0 {
+			exactArg = " matchlock.exact.mounts=" + strings.Join(m.config.ExactMounts, ",")
+		}
 
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s matchlock.dns=%s",
-			hostname, workspaceArg, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s%s matchlock.dns=%s",
+			hostname, workspaceArg, exactArg, vm.KernelDNSParam(m.config.DNSServers))
 		if m.config.NoNetwork {
 			kernelArgs += " ip=off matchlock.no_network=1"
 		} else {

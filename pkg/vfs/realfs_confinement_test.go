@@ -24,11 +24,15 @@ func TestRealFS_SymlinkEscapeOutsideRoot(t *testing.T) {
 
 	p := NewRealFSProvider(root).WithOwner(1000, 2000)
 
-	// A read-only Stat through the escaping link must not leak the target.
-	_, err := p.Stat("esc.txt")
-	require.Error(t, err, "Stat through an escaping symlink must fail")
+	// getattr/lookup uses lstat semantics so the node is reported as the link
+	// itself (S_IFLNK) rather than followed to its (outside) target. This is
+	// required for the guest FUSE daemon to surface the link as a link and
+	// issue a readlink; it leaks nothing because the target is not read.
+	info, err := p.Stat("esc.txt")
+	require.NoError(t, err, "getattr of the link node must succeed")
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "link node must report ModeSymlink")
 
-	// Open/read through the link must fail.
+	// Open/read through the link must fail (the confinement boundary).
 	h, err := p.Open("esc.txt", os.O_RDONLY, 0)
 	require.Error(t, err, "Open through an escaping symlink must fail")
 	if h != nil {
@@ -37,10 +41,9 @@ func TestRealFS_SymlinkEscapeOutsideRoot(t *testing.T) {
 }
 
 // TestRealFS_GuestCreatedSymlinkEscapeOutsideRoot drives the same escape
-// through the provider exactly as it would apply to a hosted worktree that
-// already contains an escaping link (the VFS protocol does not dispatch
-// OpSymlink, so symlinks are created on the host side before or outside the
-// protocol; the provider must still confine a later traversal).
+// through the provider as a hosted worktree that creates an escaping link via
+// the protocol (OpSymlink). The target is preserved (Readlink), getattr reports
+// the link (lstat), but a later traversal (Open) is refused by os.Root.
 func TestRealFS_GuestCreatedSymlinkEscapeOutsideRoot(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -57,10 +60,12 @@ func TestRealFS_GuestCreatedSymlinkEscapeOutsideRoot(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, secret, target, "symlink target must be preserved")
 
-	// But a lookup / open through the link must be refused.
-	_, err = p.Stat("esc.txt")
-	require.Error(t, err, "lookup through escaping symlink must fail")
+	// getattr reports the link itself (lstat), leaking no outside content.
+	info, err := p.Stat("esc.txt")
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSymlink, "link node must report ModeSymlink")
 
+	// But a traversal (Open) through the link must be refused.
 	h, err := p.Open("esc.txt", os.O_RDONLY, 0)
 	require.Error(t, err, "open through escaping symlink must fail")
 	if h != nil {
@@ -329,6 +334,32 @@ func TestRealFS_SingleFileMissingRootFailsClosed(t *testing.T) {
 	_, err = p.Create("/", 0644)
 	require.Error(t, err, "Create must fail (must not recreate a new inode) when root is missing")
 	assert.NoFileExists(t, file, "Create must not silently recreate the missing root")
+}
+
+// TestRealFS_SingleFileCreateDoesNotTruncateReplacedNeighbor proves the create
+// path performs file-identity verification BEFORE any mutation. If the admitted
+// source is a different inode (e.g. a neighboring file renamed over it), Create
+// must reject it and must NOT have truncated the replacement file first.
+func TestRealFS_SingleFileCreateDoesNotTruncateReplacedNeighbor(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "repo.txt")
+	require.NoError(t, os.WriteFile(file, []byte("original"), 0644))
+	p := NewRealFSProvider(file)
+
+	// Swap the admitted source with a different inode at the same path.
+	neighbor := filepath.Join(dir, "neighbor.txt")
+	require.NoError(t, os.WriteFile(neighbor, []byte("NEIGHBOR CONTENT"), 0644))
+	require.NoError(t, os.Rename(neighbor, file))
+
+	h, err := p.Create("/", 0644)
+	require.Error(t, err, "Create must fail after source replaced with a different file")
+	if h != nil {
+		_ = h.Close()
+	}
+
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	assert.Equal(t, "NEIGHBOR CONTENT", string(data), "Create must not truncate the replaced file before rejecting it")
 }
 
 // TestRealFS_SingleFileRenamedParent proves a single-file mount refers to the

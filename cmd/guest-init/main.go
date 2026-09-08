@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
@@ -34,6 +35,11 @@ const (
 
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
+
+	// trustedGuestRuntimeRoot is the guest path where the sandbox injects the
+	// guest-init/guest-agent/guest-fused binaries. An exact-destination mount
+	// must never be created over this root or any of its subpaths.
+	trustedGuestRuntimeRoot = "/opt/matchlock"
 
 	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -68,15 +74,16 @@ type hostIPMapping struct {
 }
 
 type bootConfig struct {
-	DNSServers []string
-	Hostname   string
-	AddHosts   []hostIPMapping
-	Workspace  string
-	CPUs       float64
-	MTU        int
-	NoNetwork  bool
-	Disks      []diskMount
-	Overlay    overlayBootConfig
+	DNSServers  []string
+	Hostname    string
+	AddHosts    []hostIPMapping
+	Workspace   string
+	ExactMounts []string
+	CPUs        float64
+	MTU         int
+	NoNetwork   bool
+	Disks       []diskMount
+	Overlay     overlayBootConfig
 }
 
 type overlayBootConfig struct {
@@ -151,6 +158,26 @@ func runInit() {
 		}
 	}
 
+	// Exact-destination mounts: attach a FUSE tree at each requested absolute
+	// guest path (for example /opt/project or a linked worktree) so the same
+	// absolute path is physically reachable in the guest. The host router serves
+	// each exact destination; guest-init only creates missing empty parents and
+	// starts a per-destination FUSE daemon before the unprivileged harness runs.
+	for _, mountpoint := range cfg.ExactMounts {
+		if filepath.Clean(mountpoint) == filepath.Clean(cfg.Workspace) {
+			continue
+		}
+		if err := ensureExactMountDir(mountpoint); err != nil {
+			fatal(err)
+		}
+		if err := startGuestFused(guestFusedPath, mountpoint); err != nil {
+			fatal(err)
+		}
+		if err := waitForWorkspaceMount(procMountsPath, mountpoint, workspaceWaitMax); err != nil {
+			fatal(errx.With(ErrWorkspaceMountWait, " exact mount %s: %w", mountpoint, err))
+		}
+	}
+
 	if err := unix.Exec(guestAgentPath, []string{guestAgentPath}, os.Environ()); err != nil {
 		fatal(errx.With(ErrExecGuestAgent, ": %w", err))
 	}
@@ -196,6 +223,20 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			v := strings.TrimPrefix(field, "matchlock.workspace=")
 			if v != "" {
 				cfg.Workspace = v
+			}
+
+		case strings.HasPrefix(field, "matchlock.exact.mounts="):
+			v := strings.TrimPrefix(field, "matchlock.exact.mounts=")
+			if v != "" {
+				for _, p := range strings.Split(v, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						if !strings.HasPrefix(p, "/") || !validExactMountChar(p) {
+							return nil, errx.With(ErrInvalidExactMount, ": %q", p)
+						}
+						cfg.ExactMounts = append(cfg.ExactMounts, p)
+					}
+				}
 			}
 
 		case strings.HasPrefix(field, "matchlock.mtu="):
@@ -755,8 +796,11 @@ func chownDiskMountRoot(d diskMount) error {
 	return nil
 }
 
-func startGuestFused(path string) error {
+func startGuestFused(path string, mountpoint ...string) error {
 	cmd := exec.Command(path)
+	if len(mountpoint) > 0 && mountpoint[0] != "" {
+		cmd = exec.Command(path, mountpoint[0])
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -819,6 +863,98 @@ func workspaceIsFUSE(workspace string) (bool, error) {
 		return false, errx.Wrap(ErrWorkspaceMount, err)
 	}
 	return uint64(st.Type) == fuseSuperMagic, nil
+}
+
+// validExactMountChar reports whether p is a safe absolute guest path for an
+// exact-destination mount. It mirrors the host API guest-mount path validator
+// (only alphanumeric, '/', '_', '.', '-' and no '..', so a path cannot escape or
+// smuggle a shell/argv separator).
+func validExactMountChar(p string) bool {
+	if !strings.HasPrefix(p, "/") {
+		return false
+	}
+	if strings.Contains(p, "..") {
+		return false
+	}
+	for _, r := range p {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '/' || r == '_' || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// ensureExactMountDir validates and creates (only the missing, empty) guest
+// parent directories for an exact-destination FUSE mount. It refuses an exact
+// mount through a symlinked component, over a non-empty final directory (which
+// would silently shadow guest content), and over the trusted guest runtime root
+// /opt/matchlock or any of its subpaths (where guest-init/agent/fused are
+// injected). Only missing components are created as empty directories; existing
+// guest OS directories (for example /opt or /home) are left untouched.
+func ensureExactMountDir(path string) error {
+	path = filepath.Clean(path)
+	if !strings.HasPrefix(path, "/") {
+		return errx.With(ErrExactMountPrep, " %q is not absolute", path)
+	}
+	// The trusted guest runtime must never be shadowed by a host mount. Mounting
+	// over /opt/matchlock or a subpath would hide the injected guest-init/agent/
+	// fused binaries (or a future runtime file) and corrupt the sandbox.
+	if path == trustedGuestRuntimeRoot || strings.HasPrefix(path, trustedGuestRuntimeRoot+"/") {
+		return errx.With(ErrExactMountPrep, " %q shadows the trusted guest runtime %s", path, trustedGuestRuntimeRoot)
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	current := ""
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		current += "/" + part
+		fi, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.Mkdir(current, 0755); err != nil && !os.IsExist(err) {
+					return errx.With(ErrExactMountPrep, " mkdir %s: %w", current, err)
+				}
+				continue
+			}
+			return errx.With(ErrExactMountPrep, " lstat %s: %w", current, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return errx.With(ErrExactMountPrep, " %s is a symlink; refusing an exact mount through a link", current)
+		}
+		if !fi.IsDir() {
+			return errx.With(ErrExactMountPrep, " %s is not a directory", current)
+		}
+		// Only the final (leaf) directory matters for the "do not shadow guest
+		// content" rule: a non-empty leaf would be hidden by the FUSE mount.
+		if filepath.Clean(current) == path {
+			empty, err := isDirEmpty(current)
+			if err != nil {
+				return errx.With(ErrExactMountPrep, " %s: %w", current, err)
+			}
+			if !empty {
+				return errx.With(ErrExactMountPrep, " %s already exists and is not empty; refusing to shadow guest content", current)
+			}
+		}
+	}
+	return nil
+}
+
+func isDirEmpty(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil // at least one entry
 }
 
 func mountIgnore(source, target, fstype string, flags uintptr, data string) {

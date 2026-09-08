@@ -328,6 +328,48 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		}
 		return &VFSResponse{}
 
+	case OpSymlink:
+		// The link path is the target destination (req.Path); the stored target
+		// string is req.Data (the textual object of the symlink).
+		if err := provider.Symlink(string(req.Data), req.Path); err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		info, err := provider.Stat(req.Path)
+		if err != nil {
+			return &VFSResponse{}
+		}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
+
+	case OpReadlink:
+		target, err := provider.Readlink(req.Path)
+		if err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		return &VFSResponse{Data: []byte(target)}
+
+	case OpLink:
+		// Hard link is optional; fall back to ENOSYS when the provider does not
+		// implement it (e.g. memory providers, which have no inode model for it).
+		if linker, ok := provider.(interface {
+			Link(oldName, newName string) error
+		}); ok {
+			if err := linker.Link(req.Path, req.NewPath); err != nil {
+				return &VFSResponse{Err: errnoFromError(err)}
+			}
+			// Return the stat of the new link so the guest FUSE layer can fill
+			// the LINK entry with the real size/mode/times. Hard links share the
+			// target inode, so advertising size 0 (the zero EntryOut default)
+			// would corrupt the kernel's cached attributes of the shared inode
+			// and turn subsequent reads into EOF. A stat failure after a
+			// successful link is best-effort (mirrors OpSymlink).
+			info, err := provider.Stat(req.NewPath)
+			if err != nil {
+				return &VFSResponse{}
+			}
+			return &VFSResponse{Stat: statFromInfo(req.NewPath, info)}
+		}
+		return &VFSResponse{Err: -int32(syscall.ENOSYS)}
+
 	case OpRmdir:
 		if err := provider.Remove(req.Path); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}

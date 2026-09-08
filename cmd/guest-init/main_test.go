@@ -291,3 +291,105 @@ func TestConfigureCPULimitWritesInitCgroupFirst(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10000 100000", strings.TrimSpace(string(data)))
 }
+
+func TestParseBootConfigExactMounts(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.workspace=/workspace matchlock.exact.mounts=/opt/project,/home/u/wt,/root/.tamandua/worktrees/x"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"/opt/project", "/home/u/wt", "/root/.tamandua/worktrees/x"}, cfg.ExactMounts)
+}
+
+func TestParseBootConfigExactMountsRejectsUnsafePath(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.exact.mounts=/opt/../etc,/opt/project"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidExactMount)
+}
+
+func TestValidExactMountChar(t *testing.T) {
+	assert.True(t, validExactMountChar("/opt/project"))
+	assert.True(t, validExactMountChar("/home/u/.tamandua/worktrees/x"))
+	assert.True(t, validExactMountChar("/workspace/runs/1/progress.txt"))
+
+	assert.False(t, validExactMountChar("/opt/../etc"))
+	assert.False(t, validExactMountChar("/opt/project;rm -rf /"))
+	assert.False(t, validExactMountChar("/opt/project \"x\""))
+	assert.False(t, validExactMountChar("relative"))
+}
+
+func TestEnsureExactMountDirCreatesMissingParents(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+
+	fi, err := os.Stat(target)
+	require.NoError(t, err)
+	assert.True(t, fi.IsDir())
+}
+
+func TestEnsureExactMountDirRefusesSymlinkComponent(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret")
+	require.NoError(t, os.MkdirAll(outside, 0755))
+	// Create a symlinked component in an existing path.
+	dir := filepath.Join(base, "opt")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "link")))
+
+	err := ensureExactMountDir(filepath.Join(dir, "link", "project"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExactMountPrep)
+}
+
+func TestEnsureExactMountDirRefusesNonEmptyLeaf(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "existing.txt"), []byte("x"), 0644))
+
+	err := ensureExactMountDir(target)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExactMountPrep)
+}
+
+func TestEnsureExactMountDirAllowsEmptyLeaf(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+}
+
+func TestEnsureExactMountDirRefusesTrustedGuestRuntime(t *testing.T) {
+	// The trusted guest runtime (where guest-init/agent/fused are injected) must
+	// never be shadowed by an exact-destination host mount, including its
+	// subpaths. This is rejected purely on the path, before touching the fs, so
+	// it holds whether or not /opt/matchlock exists in the test environment.
+	for _, p := range []string{"/opt/matchlock", "/opt/matchlock/sub", "/opt/matchlock/guest-agent"} {
+		err := ensureExactMountDir(p)
+		require.Error(t, err, "expected %q to be rejected as the trusted guest runtime", p)
+		assert.ErrorIs(t, err, ErrExactMountPrep)
+	}
+}
+
+func TestEnsureExactMountDirAllowsTrustedRuntimeSiblings(t *testing.T) {
+	// /opt/matchlock is reserved but sibling /opt project dirs remain valid.
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+}

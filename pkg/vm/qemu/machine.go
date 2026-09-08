@@ -243,7 +243,11 @@ func (m *Machine) bootArgs() string {
 	if m.config.Workspace != "" {
 		workspaceArg = " matchlock.workspace=" + m.config.Workspace
 	}
-	sb.WriteString(fmt.Sprintf(" hostname=%s%s", hostname, workspaceArg))
+	exactArg := ""
+	if len(m.config.ExactMounts) > 0 {
+		exactArg = " matchlock.exact.mounts=" + strings.Join(m.config.ExactMounts, ",")
+	}
+	sb.WriteString(fmt.Sprintf(" hostname=%s%s%s", hostname, workspaceArg, exactArg))
 	sb.WriteString(" matchlock.dns=" + vm.KernelDNSParam(m.config.DNSServers))
 
 	if m.config.NoNetwork {

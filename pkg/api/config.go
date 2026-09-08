@@ -147,10 +147,17 @@ type Secret struct {
 }
 
 type VFSConfig struct {
-	Workspace    string                 `json:"workspace,omitempty"`
-	DirectMounts map[string]DirectMount `json:"direct_mounts,omitempty"`
-	Mounts       map[string]MountConfig `json:"mounts,omitempty"`
-	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
+	// Workspace is the conventional mount point for the VFS in the guest. In
+	// exact-destination mode it is optional and may name a runtime/config
+	// staging area; otherwise every mount must live beneath it.
+	Workspace string `json:"workspace,omitempty"`
+	// ExactDestinations admits host mounts at arbitrary absolute guest paths
+	// (for example /opt/project or /root/.../worktree) rather than confining all
+	// mounts beneath Workspace. Shadowing a prohibited guest OS root is rejected.
+	ExactDestinations bool                   `json:"exact_destinations,omitempty"`
+	DirectMounts      map[string]DirectMount `json:"direct_mounts,omitempty"`
+	Mounts            map[string]MountConfig `json:"mounts,omitempty"`
+	Interception      *VFSInterceptionConfig `json:"interception,omitempty"`
 }
 
 // GetWorkspace returns the configured workspace path, or empty when unset.
@@ -218,12 +225,16 @@ func (c *Config) HasVFSMounts() bool {
 
 // ValidateVFS checks VFS config invariants.
 //
-// Rules:
+// Rules (legacy single-workspace mode, the default):
 // - vfs.workspace requires at least one vfs.mounts entry
 // - vfs.mounts requires a non-empty vfs.workspace
-// - vfs.interception requires at least one vfs.mounts entry
 // - vfs.workspace must be a safe absolute guest path
 // - every vfs.mounts key must be under vfs.workspace
+//
+// Rules (exact-destination mode, vfs.exact_destinations=true):
+//   - workspace is optional and, if set, must be a safe non-shadowing guest path
+//   - every vfs.mounts key may be an arbitrary absolute guest destination but
+//     must not shadow a prohibited guest OS root
 func (c *Config) ValidateVFS() error {
 	if c == nil || c.VFS == nil {
 		return nil
@@ -233,20 +244,40 @@ func (c *Config) ValidateVFS() error {
 	hasWorkspace := strings.TrimSpace(workspace) != ""
 	hasMounts := len(c.VFS.Mounts) > 0
 	hasInterception := c.VFS.Interception != nil
+	exact := c.VFS.ExactDestinations
 
-	if hasWorkspace && !hasMounts {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
-	}
-	if hasMounts && !hasWorkspace {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
-	}
 	if hasInterception && !hasMounts {
 		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
 	}
 	if !hasMounts {
+		if hasWorkspace && !exact {
+			return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
+		}
 		return nil
 	}
 
+	if exact {
+		if hasWorkspace {
+			if err := ValidateGuestMount(workspace); err != nil {
+				return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+			}
+			if err := ValidateExactDestinationMount(workspace); err != nil {
+				return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+			}
+		}
+		if err := ValidateExactDestinationMounts(c.VFS.Mounts); err != nil {
+			return errx.With(ErrInvalidConfig, ": %v", err)
+		}
+		if err := ValidateVFSMountOwnership(c.VFS.Mounts); err != nil {
+			return errx.With(ErrInvalidConfig, ": %v", err)
+		}
+		return nil
+	}
+
+	// Legacy single-workspace confinement.
+	if !hasWorkspace {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
+	}
 	if err := ValidateGuestMount(workspace); err != nil {
 		return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
 	}

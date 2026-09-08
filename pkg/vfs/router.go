@@ -312,6 +312,31 @@ func (r *MountRouter) Readlink(path string) (string, error) {
 	return p.Readlink(rel)
 }
 
+// Link hard-links oldName to newName within the confined mounts. Both paths are
+// resolved via the router (so absolute guest paths map to their provider and a
+// path outside the mounted tree fails closed), and the link is rejected when the
+// two entries belong to different providers (EXDEV), just like a cross-device
+// hard link. Providers that do not implement Link (e.g. memory) report ENOSYS.
+func (r *MountRouter) Link(oldName, newName string) error {
+	oldP, oldRel, err := r.resolve(oldName)
+	if err != nil {
+		return err
+	}
+	newP, newRel, err := r.resolve(newName)
+	if err != nil {
+		return err
+	}
+	if oldP != newP {
+		return syscall.EXDEV
+	}
+	if linker, ok := oldP.(interface {
+		Link(oldName, newName string) error
+	}); ok {
+		return linker.Link(oldRel, newRel)
+	}
+	return syscall.ENOSYS
+}
+
 func (r *MountRouter) Fsync(path string) error {
 	p, rel, err := r.resolve(path)
 	if err != nil {
