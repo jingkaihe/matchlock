@@ -45,7 +45,8 @@ var (
 
 // RPC errors
 var (
-	ErrBuildRootfs = errors.New("failed to build rootfs")
+	ErrBuildRootfs           = errors.New("failed to build rootfs")
+	ErrImageIdentityMismatch = errors.New("image identity mismatch")
 )
 
 // Run errors

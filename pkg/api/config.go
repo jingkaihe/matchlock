@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"github.com/jingkaihe/matchlock/pkg/image"
 )
 
 // DefaultWorkspace is the conventional mount point for the VFS in the guest.
@@ -46,6 +47,11 @@ type Config struct {
 	Env              map[string]string `json:"env,omitempty"`
 	ExtraDisks       []DiskMount       `json:"extra_disks,omitempty"`
 	ImageCfg         *ImageConfig      `json:"image_config,omitempty"`
+	// ImageIdentity, when non-nil, pins the resolved image identity that RPC
+	// create must match against the actual built/resolved image BEFORE the VM is
+	// created or started. When nil, VM creation preserves legacy behavior (no
+	// identity check).
+	ImageIdentity *image.Identity `json:"image_identity,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -362,6 +368,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.ImageCfg != nil {
 		result.ImageCfg = other.ImageCfg
+	}
+	if other.ImageIdentity != nil {
+		result.ImageIdentity = other.ImageIdentity
 	}
 	return &result
 }

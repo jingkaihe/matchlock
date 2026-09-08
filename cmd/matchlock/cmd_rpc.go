@@ -39,6 +39,18 @@ func runRPC(cmd *cobra.Command, args []string) error {
 			return nil, errx.Wrap(ErrBuildRootfs, err)
 		}
 
+		// When an expected identity is pinned, verify it against the ACTUAL
+		// built/resolved image BEFORE the VM is created or started. A missing,
+		// changed or mismatched identity fails closed; a nil expectation preserves
+		// legacy behavior.
+		if config.ImageIdentity != nil {
+			actual := image.IdentityFromResult(result)
+			actual.Tag = config.Image
+			if err := config.ImageIdentity.Verify(actual); err != nil {
+				return nil, errx.Wrap(ErrImageIdentityMismatch, err)
+			}
+		}
+
 		config.ImageCfg = mergeImageConfigFromOCI(config.ImageCfg, result.OCI)
 
 		return sandbox.New(ctx, config, &sandbox.Options{
@@ -47,7 +59,11 @@ func runRPC(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	return rpc.RunRPC(ctx, factory)
+	imageResolver := func(ctx context.Context, tag string) (*image.Identity, error) {
+		return image.Resolve(tag)
+	}
+
+	return rpc.RunRPC(ctx, factory, rpc.WithImageResolver(imageResolver))
 }
 
 func mergeImageConfigFromOCI(override *api.ImageConfig, oci *image.OCIConfig) *api.ImageConfig {
