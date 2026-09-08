@@ -922,7 +922,7 @@ func Run() {
 			AllowOther:        true,
 			FsName:            "matchlock",
 			Name:              "fuse.matchlock",
-			Debug:             false,
+			Debug:             os.Getenv("MATCHLOCK_FUSE_DEBUG") != "",
 			DirectMountStrict: true,
 		},
 		AttrTimeout:  &[]time.Duration{time.Second}[0],

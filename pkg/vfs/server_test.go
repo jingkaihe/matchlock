@@ -2,6 +2,7 @@ package vfs
 
 import (
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -273,6 +274,25 @@ func TestDispatchWriteAppendAfterCreateUsesAppendFlag(t *testing.T) {
 	})
 	assert.Equal(t, "first second third", string(dataResp.Data))
 	s.dispatch(&VFSRequest{Op: OpRelease, Handle: readResp.Handle})
+}
+
+// TestDispatchCreateStripsFileTypeBits proves a FUSE create whose mode carries
+// Unix file-type bits (S_IFREG, e.g. 0o100644) is stripped to permissions before
+// reaching the provider. os.Root.OpenFile rejects a mode with any bit outside
+// 0o777 with "unsupported file mode", so a raw wire-mode create would fail with
+// EIO on a host_fs mount.
+func TestDispatchCreateStripsFileTypeBits(t *testing.T) {
+	dir := t.TempDir()
+	s := NewVFSServer(NewRealFSProvider(dir))
+
+	// 0o100644 in the FUSE wire encoding (S_IFREG | 0644).
+	resp := s.dispatch(&VFSRequest{Op: OpCreate, Path: "/f.txt", Mode: 0o100644, Flags: uint32(linuxOpenWriteOnly | linuxOpenCreate | linuxOpenTruncate)})
+	require.Equal(t, int32(0), resp.Err, "create with S_IFREG type bits must succeed")
+	s.dispatch(&VFSRequest{Op: OpRelease, Handle: resp.Handle})
+
+	fi, err := os.Stat(filepath.Join(dir, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), fi.Mode().Perm())
 }
 
 func TestDispatchWriteNonAppendStillUsesOffset(t *testing.T) {

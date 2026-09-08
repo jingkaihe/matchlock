@@ -654,6 +654,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("vfs_stop", nil)
 	}
+	if s.vfsRoot != nil {
+		if err := vfs.CloseProvider(s.vfsRoot); err != nil {
+			errs = append(errs, errx.Wrap(ErrVFSServer, err))
+			markCleanup("vfs_root_close", err)
+		} else {
+			markCleanup("vfs_root_close", nil)
+		}
+	} else {
+		markCleanup("vfs_root_close", nil)
+	}
 	if s.vfsHooks != nil {
 		s.vfsHooks.Close()
 		markCleanup("vfs_hooks", nil)

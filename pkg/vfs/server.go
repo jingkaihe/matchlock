@@ -194,6 +194,15 @@ func (s *VFSServer) HandleConnection(conn net.Conn) {
 	}
 }
 
+// wirePermMode translates a FUSE/Unix mode_t (which may carry file-type bits
+// such as S_IFREG or S_IFDIR in the upper bits) into the permission-only
+// os.FileMode that Provider methods and os.Root require. os.Root.OpenFile,
+// Mkdir and MkdirAll reject a mode with any bit outside 0o777, so the type bits
+// must be stripped before the request reaches the provider.
+func wirePermMode(mode uint32) os.FileMode {
+	return os.FileMode(mode) & os.ModePerm
+}
+
 func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 	provider := s.provider
 	if callerAware, ok := provider.(interface {
@@ -211,7 +220,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpSetattr:
-		if err := provider.Chmod(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Chmod(req.Path, wirePermMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		info, err := provider.Stat(req.Path)
@@ -221,7 +230,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpOpen:
-		h, err := provider.Open(req.Path, linuxOpenFlagsToHost(req.Flags), os.FileMode(req.Mode))
+		h, err := provider.Open(req.Path, linuxOpenFlagsToHost(req.Flags), wirePermMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -233,7 +242,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Handle: fh}
 
 	case OpCreate:
-		h, err := provider.Open(req.Path, linuxOpenFlagsToHostCreate(req.Flags), os.FileMode(req.Mode))
+		h, err := provider.Open(req.Path, linuxOpenFlagsToHostCreate(req.Flags), wirePermMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -294,7 +303,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Entries: direntsFromEntries(req.Path, entries)}
 
 	case OpMkdir:
-		if err := provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Mkdir(req.Path, wirePermMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		info, err := provider.Stat(req.Path)
