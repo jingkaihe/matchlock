@@ -19,6 +19,14 @@ type HTTPInterceptor struct {
 	events   chan api.Event
 	caPool   *CAPool
 	connPool *upstreamConnPool
+	// gatewayIP is the guest-visible virtual gateway of the darwin userspace
+	// network stack. On darwin that address is assigned to the netstack NIC but
+	// is NOT bound on the host (there is no TAP), so a dial to it can never
+	// connect. When it is set, a policy-verified dial address equal to it is
+	// mapped to host loopback (see mapGatewayDialHost). It is left empty by
+	// NewHTTPInterceptor, so the Linux TransparentProxy path dials every
+	// destination literally: its TAP gateway IS a real host address.
+	gatewayIP string
 	// dial is used for upstream connections. It defaults to a 30s timeout dial
 	// and is a seam for tests that need to observe the dial target or avoid real
 	// network traffic.
@@ -146,7 +154,11 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		targetHost := net.JoinHostPort(dialIP.String(), fmt.Sprintf("%d", dstPort))
+		// The policy decision above is on the guest-visible host; only the dial
+		// target is mapped, and only on darwin (empty gatewayIP elsewhere), so an
+		// allowlisted gateway reaches a host listener while an unallowlisted one
+		// is still refused before this point.
+		targetHost := resolvePassthroughTarget(dialIP.String(), dstPort, i.gatewayIP)
 
 		// Try to reuse an existing upstream connection from the pool.
 		pc := i.connPool.get(targetHost)
@@ -256,7 +268,11 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		return
 	}
 
-	rawConn, err := i.dial("tcp", net.JoinHostPort(dialIP.String(), fmt.Sprintf("%d", dstPort)))
+	// Map the policy-verified dial address only: the TLS handshake below keeps
+	// the original serverName as SNI, and the blocked event above names the
+	// original SNI host. On darwin an allowlisted gateway maps to host loopback;
+	// elsewhere (empty gatewayIP) the literal verified address is dialed.
+	rawConn, err := i.dial("tcp", resolvePassthroughTarget(dialIP.String(), dstPort, i.gatewayIP))
 	if err != nil {
 		return
 	}
