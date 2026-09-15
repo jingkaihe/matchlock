@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +36,18 @@ const (
 	VsockPortVFS = 5001
 	// VsockPortReady is the port for ready signal
 	VsockPortReady = 5002
+
+	// vmmLogTailBytes bounds how much of the VMM log is attached to an
+	// early-exit error. The tail carries the real reason (e.g. Firecracker's
+	// "VM config error") without echoing an entire boot log.
+	vmmLogTailBytes = 2048
+
+	// vmmExitWaitTimeout bounds how long Close waits for the VMM process to be
+	// reaped before tearing down its TAP. Stop has already signaled (and, on a
+	// canceled context, killed) the process, so this is only a safety net
+	// against an unkillable VMM; it must be long enough that the kernel has
+	// released the TAP descriptor, or DeleteInterface would see EBUSY.
+	vmmExitWaitTimeout = 10 * time.Second
 )
 
 type LinuxBackend struct{}
@@ -126,6 +140,23 @@ type LinuxMachine struct {
 	cmd        *exec.Cmd
 	pid        int
 	started    bool
+
+	// done is closed exactly once when cmd.Wait returns; waitErr holds the raw
+	// wait error. Exactly one goroutine (started by Start) calls cmd.Wait, so
+	// Stop, Wait, and waitForReady can observe the VMM exit without racing a
+	// one-shot Wait. mutex guards these fields and the test seams below.
+	done    chan struct{}
+	waitErr error
+	mutex   sync.Mutex
+
+	// stopOnce ensures only the first Stop signals the process.
+	stopOnce sync.Once
+
+	// Test seams; nil in production (see backend_ready_test.go).
+	newCommandFn     func(ctx context.Context, name string, args ...string) *exec.Cmd
+	dialVsockFn      func(port uint32) (net.Conn, error)
+	readVMMLogTailFn func() string
+	stopFn           func(ctx context.Context) error
 }
 
 func (m *LinuxMachine) Start(ctx context.Context) error {
@@ -140,10 +171,18 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		return errx.Wrap(ErrWriteConfig, err)
 	}
 
-	m.cmd = exec.CommandContext(ctx, firecracker.ResolveFirecrackerPath(),
+	name := firecracker.ResolveFirecrackerPath()
+	args := []string{
 		"--api-sock", m.config.SocketPath,
 		"--config-file", configPath,
-	)
+	}
+	var cmd *exec.Cmd
+	if m.newCommandFn != nil {
+		cmd = m.newCommandFn(ctx, name, args...)
+	} else {
+		cmd = exec.CommandContext(ctx, name, args...)
+	}
+	m.cmd = cmd
 
 	if m.config.LogPath != "" {
 		logFile, err := os.OpenFile(m.config.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0644)
@@ -160,6 +199,19 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 
 	m.pid = m.cmd.Process.Pid
 	m.started = true
+
+	// Exactly one goroutine calls Wait; the raw error is memoized and done is
+	// closed once so waitForReady/Stop/Wait share the single wait result.
+	m.mutex.Lock()
+	m.done = make(chan struct{})
+	m.mutex.Unlock()
+	go func() {
+		err := m.cmd.Wait()
+		m.mutex.Lock()
+		m.waitErr = err
+		m.mutex.Unlock()
+		close(m.done)
+	}()
 
 	if m.tapName != "" {
 		// Give Firecracker a moment to open the TAP device, then configure it.
@@ -178,7 +230,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	if m.config.VsockCID > 0 {
 		if err := m.waitForReady(ctx, 30*time.Second); err != nil {
 			m.Stop(ctx)
-			return errx.Wrap(ErrVMNotReady, err)
+			return err
 		}
 	} else {
 		// Fallback: wait a bit for boot
@@ -200,8 +252,15 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return errx.Wrap(ErrVMNotReady, ctx.Err())
 		default:
+		}
+
+		// A VMM that has already exited will never signal ready. Surface the
+		// real reason from its log (e.g. a rejected --config-file) instead of
+		// waiting out the full timeout and reporting a generic timeout.
+		if m.vmmExited() {
+			return m.vmmExitedError()
 		}
 
 		// Try to connect to the ready port via UDS forwarded by Firecracker
@@ -228,7 +287,92 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return ErrVMReadyTimeout
+	return errx.Wrap(ErrVMNotReady, ErrVMReadyTimeout)
+}
+
+// vmmExited reports whether the VMM process has exited. It only observes the
+// wait goroutine started by Start; it never calls Wait itself.
+func (m *LinuxMachine) vmmExited() bool {
+	m.mutex.Lock()
+	done := m.done
+	m.mutex.Unlock()
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForVMMExit blocks until the single wait goroutine observes the VMM exit
+// or timeout elapses, returning true when the process was reaped. It is
+// deliberately context-independent: teardown must reap the VMM before deleting
+// its persistent TAP even when the caller's context is already canceled.
+func (m *LinuxMachine) waitForVMMExit(timeout time.Duration) bool {
+	m.mutex.Lock()
+	done := m.done
+	m.mutex.Unlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// vmmExitedError builds the error returned when the VMM exits before the ready
+// signal. It includes the tail of the VMM log, which carries the real config
+// error (e.g. "VM config error") written by Firecracker for a rejected
+// --config-file.
+func (m *LinuxMachine) vmmExitedError() error {
+	if tail := m.vmmLogTail(); tail != "" {
+		return errx.With(ErrVMNotReady, ": VMM exited before ready signal: %s", tail)
+	}
+	return errx.With(ErrVMNotReady, ": VMM exited before ready signal")
+}
+
+// vmmLogTail returns the tail of the VMM log. Tests inject readVMMLogTailFn to
+// exercise the early-exit path without a real VMM writing to LogPath.
+func (m *LinuxMachine) vmmLogTail() string {
+	if m.readVMMLogTailFn != nil {
+		return m.readVMMLogTailFn()
+	}
+	return readLogTail(m.config.LogPath)
+}
+
+// readLogTail returns up to vmmLogTailBytes of the end of path, best effort.
+func readLogTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	start := int64(0)
+	if info.Size() > vmmLogTailBytes {
+		start = info.Size() - vmmLogTailBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(f, vmmLogTailBytes))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // dialVsock connects to the guest via the Firecracker vsock UDS
@@ -237,6 +381,9 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 // 2. Send "CONNECT <port>\n"
 // 3. Read "OK <assigned_port>\n" acknowledgement
 func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
+	if m.dialVsockFn != nil {
+		return m.dialVsockFn(port)
+	}
 	if m.config.VsockPath == "" {
 		return nil, ErrVsockNotConfigured
 	}
@@ -479,44 +626,61 @@ func effectiveVCPUs(cpus float64) int {
 }
 
 func (m *LinuxMachine) Stop(ctx context.Context) error {
-	if m.cmd == nil || m.cmd.Process == nil {
+	if m.stopFn != nil {
+		return m.stopFn(ctx)
+	}
+
+	m.mutex.Lock()
+	cmd := m.cmd
+	done := m.done
+	m.mutex.Unlock()
+
+	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
 
-	// Check if process already exited
-	if m.cmd.ProcessState != nil && m.cmd.ProcessState.Exited() {
+	// Fast path: the wait goroutine already observed the exit.
+	select {
+	case <-done:
 		return nil
+	default:
 	}
 
-	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		// Process already finished is not an error
-		if err.Error() == "os: process already finished" {
-			return nil
+	// Idempotent: only the first Stop signals the process.
+	m.stopOnce.Do(func() {
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			_ = cmd.Process.Kill()
 		}
-		return m.cmd.Process.Kill()
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.cmd.Process.Wait()
-		done <- err
-	}()
+	})
 
 	select {
 	case <-done:
 		return nil
 	case <-time.After(5 * time.Second):
-		return m.cmd.Process.Kill()
+		return cmd.Process.Kill()
 	case <-ctx.Done():
-		return m.cmd.Process.Kill()
+		return cmd.Process.Kill()
 	}
 }
 
 func (m *LinuxMachine) Wait(ctx context.Context) error {
-	if m.cmd == nil {
+	m.mutex.Lock()
+	done := m.done
+	cmd := m.cmd
+	m.mutex.Unlock()
+	if cmd == nil || done == nil {
 		return nil
 	}
-	return m.cmd.Wait()
+
+	select {
+	case <-done:
+		m.mutex.Lock()
+		err := m.waitErr
+		m.mutex.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
@@ -837,8 +1001,16 @@ func (m *LinuxMachine) Close(ctx context.Context) error {
 		if err := m.Stop(ctx); err != nil {
 			errs = append(errs, errx.Wrap(ErrStop, err))
 		}
-		// Wait for process to fully exit
-		m.cmd.Wait()
+		// Always wait for the single Wait goroutine to observe the VMM exit
+		// before tearing down the TAP. Wait(ctx) is context-sensitive and Close
+		// is routinely called with an already-canceled context (e.g. a zero
+		// --graceful-shutdown window), so waiting on ctx would return while the
+		// VMM is still dying. DeleteInterface then races the still-attached
+		// persistent TAP and fails with EBUSY, leaking the interface. Do not
+		// call cmd.Wait again: the Start goroutine owns that one-shot wait.
+		if !m.waitForVMMExit(vmmExitWaitTimeout) {
+			errs = append(errs, errx.With(ErrStop, ": timeout waiting for VMM to exit before TAP teardown"))
+		}
 	}
 
 	if m.tapFD > 0 {
