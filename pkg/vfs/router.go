@@ -30,6 +30,29 @@ func NewMountRouter(mounts map[string]Provider) *MountRouter {
 	return r
 }
 
+// withCaller returns a clone whose mount providers carry the requesting caller
+// identity where they support it. The VFS server invokes this per request so a
+// host_fs stat through the router reports the FUSE caller's ownership instead
+// of the provider's 0/0 default (an explicit WithOwner override still wins).
+// Only the lightweight provider wrappers are copied; the underlying roots are
+// shared.
+func (r *MountRouter) withCaller(uid, gid int) Provider {
+	if r == nil {
+		return nil
+	}
+	clone := &MountRouter{mounts: make([]mount, len(r.mounts))}
+	for i, m := range r.mounts {
+		p := m.provider
+		if aware, ok := p.(interface {
+			withCaller(uid, gid int) Provider
+		}); ok {
+			p = aware.withCaller(uid, gid)
+		}
+		clone.mounts[i] = mount{path: m.path, provider: p}
+	}
+	return clone
+}
+
 func (r *MountRouter) Readonly() bool { return false }
 
 func (r *MountRouter) resolve(path string) (Provider, string, error) {

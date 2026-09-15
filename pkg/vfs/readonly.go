@@ -13,6 +13,22 @@ func NewReadonlyProvider(inner Provider) *ReadonlyProvider {
 	return &ReadonlyProvider{inner: inner}
 }
 
+// withCaller forwards the requesting identity to the wrapped provider when it
+// supports it, so a read-only host_fs mount still reports the FUSE caller's
+// ownership instead of the 0/0 default.
+func (p *ReadonlyProvider) withCaller(uid, gid int) Provider {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	if inner, ok := p.inner.(interface {
+		withCaller(uid, gid int) Provider
+	}); ok {
+		clone.inner = inner.withCaller(uid, gid)
+	}
+	return &clone
+}
+
 func (p *ReadonlyProvider) Readonly() bool                          { return true }
 func (p *ReadonlyProvider) Stat(path string) (FileInfo, error)      { return p.inner.Stat(path) }
 func (p *ReadonlyProvider) ReadDir(path string) ([]DirEntry, error) { return p.inner.ReadDir(path) }

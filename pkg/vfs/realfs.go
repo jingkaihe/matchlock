@@ -37,6 +37,13 @@ type RealFSProvider struct {
 	ownerUID *uint32
 	ownerGID *uint32
 
+	// callerUID/callerGID are the requesting caller's identity, supplied per
+	// request via withCaller. They are reported in preference to the 0/0
+	// default (but below an explicit WithOwner override) so a non-root host
+	// caller sees its own ownership through the FUSE mount.
+	callerUID *uint32
+	callerGID *uint32
+
 	// Single-file mode state.
 	parentRoot *os.Root
 	leaf       string
@@ -132,6 +139,35 @@ func (p *RealFSProvider) WithOwner(uid, gid uint32) *RealFSProvider {
 	return p
 }
 
+// withCaller returns a shallow clone that reports the given caller uid/gid for
+// host files without an explicit WithOwner override. The clone shares the
+// underlying os.Root handles (descriptor-based, safe for concurrent use), so no
+// host file is reopened. This is how the VFS server carries the FUSE caller's
+// identity (VFSRequest.UID/GID) into the stat it returns, so a non-root caller
+// sees its own ownership through the mount instead of a root-owned view.
+func (p *RealFSProvider) withCaller(uid, gid int) Provider {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	u := uint32(uid)
+	g := uint32(gid)
+	clone.callerUID = &u
+	clone.callerGID = &g
+	return &clone
+}
+
+// effectiveOwner resolves the uid/gid this provider reports for a stat. An
+// explicit WithOwner override always wins; otherwise the caller identity from
+// withCaller is used; when neither is configured the nil pointers preserve the
+// upstream host_fs default of 0/0.
+func (p *RealFSProvider) effectiveOwner() (uid, gid *uint32) {
+	if p.ownerUID != nil || p.ownerGID != nil {
+		return p.ownerUID, p.ownerGID
+	}
+	return p.callerUID, p.callerGID
+}
+
 // Close releases the root handle (directory or single-file parent) obtained at
 // construction. It is safe to call multiple times; later calls are a no-op.
 func (p *RealFSProvider) Close() error {
@@ -168,7 +204,17 @@ func applyOwnerPtrs(fi FileInfo, uid, gid *uint32) FileInfo {
 }
 
 func (p *RealFSProvider) applyOwner(fi FileInfo) FileInfo {
-	return applyOwnerPtrs(fi, p.ownerUID, p.ownerGID)
+	uid, gid := p.effectiveOwner()
+	return applyOwnerPtrs(fi, uid, gid)
+}
+
+// newHandle wraps an opened file, carrying the ownership the provider should
+// report for handle-based stats (OpCreate/OpGetattr-by-handle). An explicit
+// WithOwner override wins; otherwise the caller identity is used; with neither,
+// the handle reports the provider default 0/0.
+func (p *RealFSProvider) newHandle(f *os.File) *realHandle {
+	uid, gid := p.effectiveOwner()
+	return &realHandle{file: f, ownerUID: uid, ownerGID: gid}
 }
 
 func (p *RealFSProvider) Readonly() bool { return false }
@@ -319,7 +365,7 @@ func (p *RealFSProvider) Open(path string, flags int, mode os.FileMode) (Handle,
 		if err != nil {
 			return nil, err
 		}
-		return &realHandle{file: f, ownerUID: p.ownerUID, ownerGID: p.ownerGID}, nil
+		return p.newHandle(f), nil
 	}
 	root, err := p.requireRoot()
 	if err != nil {
@@ -329,7 +375,7 @@ func (p *RealFSProvider) Open(path string, flags int, mode os.FileMode) (Handle,
 	if err != nil {
 		return nil, err
 	}
-	return &realHandle{file: f, ownerUID: p.ownerUID, ownerGID: p.ownerGID}, nil
+	return p.newHandle(f), nil
 }
 
 func (p *RealFSProvider) Create(path string, mode os.FileMode) (Handle, error) {
@@ -344,7 +390,7 @@ func (p *RealFSProvider) Create(path string, mode os.FileMode) (Handle, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &realHandle{file: f, ownerUID: p.ownerUID, ownerGID: p.ownerGID}, nil
+		return p.newHandle(f), nil
 	}
 	root, err := p.requireRoot()
 	if err != nil {
@@ -354,7 +400,7 @@ func (p *RealFSProvider) Create(path string, mode os.FileMode) (Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &realHandle{file: f, ownerUID: p.ownerUID, ownerGID: p.ownerGID}, nil
+	return p.newHandle(f), nil
 }
 
 func (p *RealFSProvider) Mkdir(path string, mode os.FileMode) error {
