@@ -18,6 +18,16 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 )
 
+const (
+	// defaultMaxBuildMemoryMB caps the *default* BuildKit VM memory
+	// (--build-memory 0 = "all available"). Handing the guest the host's entire
+	// RAM makes the kernel's early memory initialization dominate boot: on a
+	// 1.35 TiB host the guest needed ~33 s just to signal ready, so the build
+	// failed with "timeout waiting for VM ready signal". An explicit
+	// --build-memory is still honored (validated against host RAM).
+	defaultMaxBuildMemoryMB = 32768 // MB (32 GiB)
+)
+
 var buildCmd = &cobra.Command{
 	Use:   "build [flags] <context>",
 	Short: "Build image from a Dockerfile using BuildKit-in-VM",
@@ -38,7 +48,7 @@ func init() {
 	buildCmd.Flags().StringP("tag", "t", "", "Tag the built image locally")
 	buildCmd.Flags().StringP("file", "f", "Dockerfile", "Path to Dockerfile")
 	buildCmd.Flags().Float64("build-cpus", 0, "Number of CPUs for BuildKit VM (supports fractional values, 0 = all available)")
-	buildCmd.Flags().Int("build-memory", 0, "Memory in MB for BuildKit VM (0 = all available)")
+	buildCmd.Flags().Int("build-memory", 0, fmt.Sprintf("Memory in MB for BuildKit VM (0 = all available, capped at %d MB)", defaultMaxBuildMemoryMB))
 	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
 	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
 	buildCmd.Flags().Int("build-cache-size", 10240, "BuildKit cache disk size in MB")
@@ -156,6 +166,51 @@ func lockBuildCache(cachePath string) (*os.File, error) {
 	return f, nil
 }
 
+// resolveBuildCPUs validates and resolves the --build-cpus flag for the build
+// VM. When the flag is left at its default (or explicitly 0), the value means
+// "all available": we use every host CPU but never more than the Firecracker
+// backend's maximum, so a default build on a many-core host does not hand the
+// VMM a vCPU count it rejects (which surfaces only as a ready timeout). An
+// explicit request above the backend maximum fails here, before any VM is
+// created, with a message naming the limit.
+func resolveBuildCPUs(changed bool, cpus float64, hostCPUs int) (float64, error) {
+	if !changed || cpus == 0 {
+		cpus = float64(min(hostCPUs, api.MaxFirecrackerVCPUs))
+	}
+	vcpuCount, ok := api.VCPUCount(cpus)
+	if !ok {
+		return 0, fmt.Errorf("--build-cpus must be a finite number > 0 (or 0 for all available)")
+	}
+	if vcpuCount > api.MaxFirecrackerVCPUs {
+		return 0, fmt.Errorf("--build-cpus %d exceeds the Firecracker maximum of %d vCPUs (backend limit)", vcpuCount, api.MaxFirecrackerVCPUs)
+	}
+	if vcpuCount > hostCPUs {
+		return 0, fmt.Errorf("--build-cpus must be <= host cpus (%d)", hostCPUs)
+	}
+	return cpus, nil
+}
+
+// resolveBuildMemory validates and resolves the --build-memory flag for the
+// build VM. The default (or an explicit 0) means "all available", capped at
+// defaultMaxBuildMemoryMB so a very large host does not hand the BuildKit guest
+// so much RAM that kernel memory initialization outlasts the ready timeout. An
+// explicit request larger than host RAM fails here, before any VM is created.
+func resolveBuildMemory(changed bool, memoryMB, hostMB int) (int, error) {
+	if memoryMB < 0 {
+		return 0, fmt.Errorf("--build-memory must be >= 0 (or 0 for all available)")
+	}
+	if changed && memoryMB > 0 {
+		if hostMB > 0 && memoryMB > hostMB {
+			return 0, fmt.Errorf("--build-memory %d exceeds host memory (%d MB)", memoryMB, hostMB)
+		}
+		return memoryMB, nil
+	}
+	if hostMB > 0 && hostMB < defaultMaxBuildMemoryMB {
+		return hostMB, nil
+	}
+	return defaultMaxBuildMemoryMB, nil
+}
+
 func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) error {
 	if tag == "" {
 		return fmt.Errorf("-t/--tag is required when building from a Dockerfile")
@@ -174,22 +229,17 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 	}
 
 	hostCPUs := runtime.NumCPU()
-	if cpus == 0 {
-		cpus = float64(hostCPUs)
+	cpus, err := resolveBuildCPUs(cmd.Flags().Changed("build-cpus"), cpus, hostCPUs)
+	if err != nil {
+		return err
 	}
-	vcpuCount, ok := api.VCPUCount(cpus)
-	if !ok {
-		return fmt.Errorf("--build-cpus must be a finite number > 0 (or 0 for all available)")
+	hostMB, err := totalMemoryMB()
+	if err != nil {
+		return errx.With(ErrAutoDetectMemory, ": %w (use --build-memory to set explicitly)", err)
 	}
-	if vcpuCount > hostCPUs {
-		return fmt.Errorf("--build-cpus must be <= host cpus (%d)", hostCPUs)
-	}
-	if memory == 0 {
-		mem, err := totalMemoryMB()
-		if err != nil {
-			return errx.With(ErrAutoDetectMemory, ": %w (use --build-memory to set explicitly)", err)
-		}
-		memory = mem
+	memory, err = resolveBuildMemory(cmd.Flags().Changed("build-memory"), memory, hostMB)
+	if err != nil {
+		return err
 	}
 
 	absContext, err := filepath.Abs(contextDir)

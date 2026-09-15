@@ -2,13 +2,16 @@ package state
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"modernc.org/sqlite"
 )
 
 // SubnetAllocator manages unique /24 subnet allocation for VMs
@@ -59,6 +62,15 @@ func (a *SubnetAllocator) ready() error {
 
 // Allocate assigns a unique subnet to a VM.
 func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
+	return a.allocate(vmID, nil)
+}
+
+// allocate is the internal seam used by Allocate. If hook is non-nil it is called
+// after the free-octet scan selects a candidate and before the candidate is
+// inserted. Tests use it to deterministically force a genuine UNIQUE collision so
+// the retry-on-UNIQUE-violation branch is provably exercised. In production hook
+// is always nil, so behavior is unchanged.
+func (a *SubnetAllocator) allocate(vmID string, hook func(octet int)) (*SubnetInfo, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -70,44 +82,66 @@ func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 		return existing, nil
 	}
 
-	used, err := a.usedOctets()
-	if err != nil {
-		return nil, err
-	}
+	// Retry to tolerate cross-process races: another matchlock process (e.g. a
+	// concurrent sandbox under SDK --parallel) may insert the same octet between
+	// our scan and INSERT. The process-local mutex does not serialize across
+	// processes sharing the state.db, so on a UNIQUE violation we re-scan and
+	// pick a different free octet. Bounded to avoid a livelock.
+	const maxAttempts = 8
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		used, err := a.usedOctets()
+		if err != nil {
+			return nil, err
+		}
 
-	var octet int
-	for o := a.minOctet; o <= a.maxOctet; o++ {
-		if !used[o] {
-			octet = o
-			break
+		var octet int
+		for o := a.minOctet; o <= a.maxOctet; o++ {
+			if !used[o] {
+				octet = o
+				break
+			}
+		}
+		if octet == 0 {
+			return nil, errx.With(ErrNoAvailableSubnets, " (all %d-%d in use)", a.minOctet, a.maxOctet)
+		}
+
+		// Test seam: let a test serialize two allocators onto the same candidate
+		// octet (genuine UNIQUE collision) before either inserts it.
+		if hook != nil {
+			hook(octet)
+		}
+
+		info := &SubnetInfo{
+			Octet:     octet,
+			GatewayIP: fmt.Sprintf("192.168.%d.1", octet),
+			GuestIP:   fmt.Sprintf("192.168.%d.2", octet),
+			Subnet:    fmt.Sprintf("192.168.%d.0/24", octet),
+			VMID:      vmID,
+		}
+
+		_, err = a.db.Exec(
+			`INSERT INTO subnet_allocations (vm_id, octet, gateway_ip, guest_ip, subnet, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			info.VMID,
+			info.Octet,
+			info.GatewayIP,
+			info.GuestIP,
+			info.Subnet,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		)
+		if err == nil {
+			return info, nil
+		}
+		// UNIQUE constraint failed on octet -> another process beat us; re-scan.
+		if !isUniqueViolation(err) {
+			return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
+		}
+		// Same vm_id re-inserted concurrently -> return the existing row.
+		if existing, gerr := a.Get(vmID); gerr == nil {
+			return existing, nil
 		}
 	}
-	if octet == 0 {
-		return nil, errx.With(ErrNoAvailableSubnets, " (all %d-%d in use)", a.minOctet, a.maxOctet)
-	}
-
-	info := &SubnetInfo{
-		Octet:     octet,
-		GatewayIP: fmt.Sprintf("192.168.%d.1", octet),
-		GuestIP:   fmt.Sprintf("192.168.%d.2", octet),
-		Subnet:    fmt.Sprintf("192.168.%d.0/24", octet),
-		VMID:      vmID,
-	}
-
-	_, err = a.db.Exec(
-		`INSERT INTO subnet_allocations (vm_id, octet, gateway_ip, guest_ip, subnet, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		info.VMID,
-		info.Octet,
-		info.GatewayIP,
-		info.GuestIP,
-		info.Subnet,
-		time.Now().UTC().Format(time.RFC3339Nano),
-	)
-	if err != nil {
-		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
-	}
-	return info, nil
+	return nil, errx.With(ErrNoAvailableSubnets, " (could not allocate a free octet after %d attempts)", maxAttempts)
 }
 
 func (a *SubnetAllocator) usedOctets() (map[int]bool, error) {
@@ -197,6 +231,18 @@ func (a *SubnetAllocator) Cleanup(mgr *Manager) error {
 		}
 	}
 	return nil
+}
+
+// isUniqueViolation reports whether err is a SQLite UNIQUE constraint
+// violation (SQLITE_CONSTRAINT_UNIQUE = 2067). modernc.org/sqlite surfaces it
+// as a *sqlite.Error whose Code() returns 2067; we also fall back to substring
+// matching for robustness across driver versions and wrapped errors.
+func isUniqueViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) && sqliteErr.Code() == 2067 {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 // AllocationPath is retained for lifecycle/debug compatibility.

@@ -51,6 +51,9 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
 	}
+	if vcpus > api.MaxFirecrackerVCPUs {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= %d (Firecracker maximum)", api.MaxFirecrackerVCPUs)
+	}
 	hostCPUs := runtime.NumCPU()
 	if vcpus > hostCPUs {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= host cpus (%d)", hostCPUs)
@@ -273,6 +276,11 @@ func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
 }
 
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
+	// One effective vCPU count drives both the VMM machine-config and the
+	// guest's matchlock.cpus= boot arg, so the guest never sees more CPUs than
+	// the VMM was given. Create rejects explicit overshoot, but cap here too so
+	// the two values stay consistent even if a caller bypasses Create.
+	vcpus := effectiveVCPUs(m.config.CPUs)
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
 		workspace := m.config.Workspace
@@ -305,7 +313,7 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
-		kernelArgs += fmt.Sprintf(" matchlock.cpus=%g", m.config.CPUs)
+		kernelArgs += fmt.Sprintf(" matchlock.cpus=%d", vcpus)
 		devLetter := 'b' // vda is rootfs
 		if m.config.OverlayEnabled {
 			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))
@@ -399,7 +407,7 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	cfg.BootSource.KernelImagePath = m.config.KernelPath
 	cfg.BootSource.BootArgs = kernelArgs
 	cfg.Drives = drives
-	cfg.MachineConfig.VCPUCount = int(math.Ceil(m.config.CPUs))
+	cfg.MachineConfig.VCPUCount = vcpus
 	cfg.MachineConfig.MemSizeMiB = m.config.MemoryMB
 	cfg.NetworkInterfaces = make([]struct {
 		IfaceID     string `json:"iface_id"`
@@ -454,6 +462,20 @@ func effectiveMTU(mtu int) int {
 		return mtu
 	}
 	return api.DefaultNetworkMTU
+}
+
+// effectiveVCPUs rounds cpus up to a whole vCPU count and caps it at the
+// Firecracker maximum. The result is the single source of truth for both the
+// VMM machine-config and the guest's matchlock.cpus= boot arg.
+func effectiveVCPUs(cpus float64) int {
+	v := int(math.Ceil(cpus))
+	if v < 1 {
+		return 1
+	}
+	if v > api.MaxFirecrackerVCPUs {
+		return api.MaxFirecrackerVCPUs
+	}
+	return v
 }
 
 func (m *LinuxMachine) Stop(ctx context.Context) error {
