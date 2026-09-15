@@ -240,6 +240,84 @@ func TestHandlePassthrough_DialsLiteralOriginalDst(t *testing.T) {
 		"the literal destination IP must never be treated as a hostname and resolved")
 }
 
+// TestHandlePassthrough_ClientHalfCloseDeliversResponse is the regression for
+// the alternate-port differential: a guest client that sends a request and then
+// half-closes (FIN) — exactly what `echo PAYLOAD | nc -w N HOST PORT` does — must
+// still receive the upstream's response.
+//
+// The relay used to set a deadline on BOTH connections the instant the first
+// io.Copy finished, so the guest->upstream copy returning on the client half-close
+// aborted the still-pending upstream->guest copy before the response could be
+// written. Observed on the wire as `RC=0` with no payload. It must instead
+// propagate the half-close (CloseWrite) and keep relaying the other direction.
+func TestHandlePassthrough_ClientHalfCloseDeliversResponse(t *testing.T) {
+	// Upstream reads one request, waits briefly (modeling a server that computes
+	// its response), then echoes it and closes. The delay makes the old
+	// deadline-on-first-EOF bug deterministic: the deadline fired before the
+	// response existed, so the response was dropped.
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer upstream.Close()
+	go func() {
+		c, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 4096)
+		n, err := c.Read(buf)
+		if err != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		_, _ = c.Write(buf[:n])
+	}()
+
+	// Front listener stands in for the guest-facing accept loop.
+	front, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer front.Close()
+
+	_, upstreamPort, _ := net.SplitHostPort(upstream.Addr().String())
+	var dialed atomic.Value // string
+	tp := &TransparentProxy{
+		policy: policy.NewEngine(&api.NetworkConfig{
+			AllowedHosts: []string{"127.0.0.1"},
+		}),
+		events: make(chan api.Event, 10),
+		dial: func(network, addr string) (net.Conn, error) {
+			dialed.Store(addr)
+			return net.Dial(network, addr)
+		},
+	}
+
+	go func() {
+		c, err := front.Accept()
+		if err != nil {
+			return
+		}
+		tp.handlePassthrough(c, "127.0.0.1", mustAtoi(upstreamPort))
+	}()
+
+	client, err := net.Dial("tcp", front.Addr().String())
+	require.NoError(t, err)
+	defer client.Close()
+
+	_, err = client.Write([]byte("matchlock-altport-payload"))
+	require.NoError(t, err)
+	require.NoError(t, client.(*net.TCPConn).CloseWrite(), "client half-close")
+
+	require.NoError(t, client.SetReadDeadline(time.Now().Add(5*time.Second)))
+	got, err := io.ReadAll(client)
+	require.NoError(t, err)
+	assert.Equal(t, "matchlock-altport-payload", string(got),
+		"response sent after the client half-closed must still be relayed")
+
+	gotDial, _ := dialed.Load().(string)
+	assert.Equal(t, net.JoinHostPort("127.0.0.1", upstreamPort), gotDial,
+		"passthrough must dial the literal original destination")
+}
+
 func startEchoServer(t *testing.T) net.Listener {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

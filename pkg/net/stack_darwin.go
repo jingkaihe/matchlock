@@ -3,7 +3,6 @@
 package net
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -377,38 +376,17 @@ func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstP
 	}
 	defer realConn.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		copyWithCancel(ctx, realConn, guestConn)
-		cancel()
-	}()
-	go func() {
-		copyWithCancel(ctx, guestConn, realConn)
-		cancel()
-	}()
-
-	<-ctx.Done()
-}
-
-func copyWithCancel(ctx context.Context, dst, src net.Conn) {
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		n, err := src.Read(buf)
-		if n > 0 {
-			dst.Write(buf[:n])
-		}
-		if err != nil {
-			return
-		}
-	}
+	// Relay both directions through the shared half-close relay: each direction
+	// is copied independently and its EOF is propagated as a write-side
+	// half-close instead of tearing the connection down the moment the first
+	// direction sees EOF. A guest client that sends a request and immediately
+	// half-closes (`echo PAYLOAD | nc HOST PORT` does exactly this) must still
+	// receive the upstream response; the previous context.WithCancel version
+	// cancelled the pending upstream->guest copy on the guest's first EOF, which
+	// surfaced on the wire as a clean `RC=0` with no payload. guestConn is a
+	// *gonet.TCPConn and realConn is a *net.TCPConn, both of which implement
+	// CloseWrite, so the half-close propagates end-to-end.
+	relayHalfClose(guestConn, realConn)
 }
 
 func (ns *NetworkStack) handleUDPPacket(r *udp.ForwarderRequest) bool {

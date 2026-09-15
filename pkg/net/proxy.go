@@ -5,12 +5,10 @@ package net
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -330,20 +328,14 @@ func (tp *TransparentProxy) handlePassthrough(conn net.Conn, dstIP string, dstPo
 	}
 	defer realConn.Close()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(realConn, conn)
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(conn, realConn)
-		done <- struct{}{}
-	}()
-
-	<-done
-	conn.SetDeadline(time.Now())
-	realConn.SetDeadline(time.Now())
-	<-done
+	// Relay both directions through the shared half-close relay: each direction
+	// is copied independently and its EOF is propagated as a write-side
+	// half-close instead of tearing the connection down the moment the first
+	// direction sees EOF. A guest client that sends a request and immediately
+	// half-closes (`echo PAYLOAD | nc HOST PORT` does exactly this) must still
+	// receive the upstream response; aborting the pending direction on the first
+	// EOF surfaced on the wire as a clean `RC=0` with no payload.
+	relayHalfClose(conn, realConn)
 }
 
 func (tp *TransparentProxy) emitBlockedEvent(host, reason string) {
