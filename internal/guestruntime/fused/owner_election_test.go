@@ -27,6 +27,7 @@ package guestfused
 
 import (
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -34,14 +35,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testOwnerNode builds an owner-candidate VFSNode whose embedded go-fuse inode
-// is the one lookupOrReuse hands back. In production the embed is initialized
-// by parent.NewInode (fs/bridge.go newInodeUnlocked) before the node is
-// published; identity/registry tests do not need a live bridge.
-func testOwnerNode(client *VFSClient, path string) *VFSNode {
-	n := &VFSNode{client: client, path: path, isDir: false}
-	return n
-}
+// testOwnerMode is the file type used by the election fixtures; the node type
+// is part of the cached-node validation lookupOrReuse performs.
+const testOwnerMode = syscall.S_IFREG
 
 // sameEmbedder is a helper create that returns node n and its own embed,
 // mirroring what parent.NewInode does in production (initInode is run on the
@@ -64,7 +60,8 @@ func sameEmbedder(n *VFSNode) func() (*VFSNode, *fs.Inode) {
 // goroutines would hand go-fuse two different embeds for one host inode.
 func TestLookupOrReuse_ConcurrentFirstLookups_ElectsOneInitializedOwner(t *testing.T) {
 	const ino = uint64(0xC0FFEE)
-	client := &VFSClient{}
+	client, cleanup := newPathProbeClient(t, ino)
+	defer cleanup()
 
 	var (
 		createMu      sync.Mutex
@@ -82,7 +79,7 @@ func TestLookupOrReuse_ConcurrentFirstLookups_ElectsOneInitializedOwner(t *testi
 		// neither created nor published.
 		createOnce.Do(func() { close(createEntered) })
 		<-releaseCreate
-		n := testOwnerNode(client, "/ws/d1/A")
+		n := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/d1/A")
 		return n, &n.Inode
 	}
 
@@ -96,7 +93,7 @@ func TestLookupOrReuse_ConcurrentFirstLookups_ElectsOneInitializedOwner(t *testi
 		go func(i int, p string) {
 			defer wg.Done()
 			started <- struct{}{}
-			results[i] = client.lookupOrReuse(ino, p, create)
+			results[i] = client.lookupOrReuse(ino, testOwnerMode, p, create)
 		}(i, p)
 	}
 
@@ -151,10 +148,11 @@ func TestLookupOrReuse_ConcurrentFirstLookups_ElectsOneInitializedOwner(t *testi
 // registered on the fresh node.
 func TestLookupOrReuse_ForgetBetweenLookups_Reelects(t *testing.T) {
 	const ino = uint64(0xBADF00D)
-	client := &VFSClient{}
+	client, cleanup := newPathProbeClient(t, ino)
+	defer cleanup()
 
-	first := testOwnerNode(client, "/ws/dir/A")
-	embed1 := client.lookupOrReuse(ino, "/ws/dir/A", sameEmbedder(first))
+	first := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/dir/A")
+	embed1 := client.lookupOrReuse(ino, testOwnerMode, "/ws/dir/A", sameEmbedder(first))
 	require.Same(t, &first.Inode, embed1)
 
 	// The kernel forgets the node: OnForget clears the slot (only when it still
@@ -162,8 +160,8 @@ func TestLookupOrReuse_ForgetBetweenLookups_Reelects(t *testing.T) {
 	client.clearHardLinkOwner(ino, first)
 
 	// A later Lookup of a second pre-existing alias must re-elect a fresh node.
-	second := testOwnerNode(client, "/ws/dir/B")
-	embed2 := client.lookupOrReuse(ino, "/ws/dir/B", sameEmbedder(second))
+	second := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/dir/B")
+	embed2 := client.lookupOrReuse(ino, testOwnerMode, "/ws/dir/B", sameEmbedder(second))
 	require.NotSame(t, embed1, embed2, "after a forget the next alias must get a fresh node")
 	require.Same(t, &second.Inode, embed2)
 
@@ -181,12 +179,12 @@ func TestLookupOrReuse_ForgetOfOlderOwnerDoesNotClearNewerOne(t *testing.T) {
 	const ino = uint64(0xFACE)
 	client := &VFSClient{}
 
-	old := testOwnerNode(client, "/ws/old")
-	client.lookupOrReuse(ino, "/ws/old", sameEmbedder(old))
+	old := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/old")
+	client.lookupOrReuse(ino, testOwnerMode, "/ws/old", sameEmbedder(old))
 	client.clearHardLinkOwner(ino, old) // first forget
 
-	cur := testOwnerNode(client, "/ws/cur")
-	client.lookupOrReuse(ino, "/ws/cur", sameEmbedder(cur))
+	cur := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/cur")
+	client.lookupOrReuse(ino, testOwnerMode, "/ws/cur", sameEmbedder(cur))
 
 	// A stale/late clear for the OLD node arrives after the re-election.
 	client.clearHardLinkOwner(ino, old)
@@ -204,10 +202,11 @@ func TestLookupOrReuse_ForgetOfOlderOwnerDoesNotClearNewerOne(t *testing.T) {
 // shakes out data races between registration (pathMu) and the shared registry.
 func TestLookupOrReuse_ConcurrentLosersAfterPublish_RegisterDistinctPaths(t *testing.T) {
 	const ino = uint64(0x1234)
-	client := &VFSClient{}
+	client, cleanup := newPathProbeClient(t, ino)
+	defer cleanup()
 
-	first := testOwnerNode(client, "/ws/root/A")
-	embed := client.lookupOrReuse(ino, "/ws/root/A", sameEmbedder(first))
+	first := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/root/A")
+	embed := client.lookupOrReuse(ino, testOwnerMode, "/ws/root/A", sameEmbedder(first))
 	require.Same(t, &first.Inode, embed)
 
 	const n = 32
@@ -221,7 +220,7 @@ func TestLookupOrReuse_ConcurrentLosersAfterPublish_RegisterDistinctPaths(t *tes
 		wg.Add(1)
 		go func(i int, p string) {
 			defer wg.Done()
-			got[i] = client.lookupOrReuse(ino, p, func() (*VFSNode, *fs.Inode) {
+			got[i] = client.lookupOrReuse(ino, testOwnerMode, p, func() (*VFSNode, *fs.Inode) {
 				t.Error("owner already exists; create must not run")
 				return nil, nil
 			})
@@ -269,7 +268,7 @@ func TestLookupOrReuse_ForgetDuringElection_CannotClearUnpublishedNode(t *testin
 	create := func() (*VFSNode, *fs.Inode) {
 		close(entered)
 		<-release
-		n := testOwnerNode(client, "/ws/X")
+		n := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/X")
 		return n, &n.Inode
 	}
 
@@ -278,7 +277,7 @@ func TestLookupOrReuse_ForgetDuringElection_CannotClearUnpublishedNode(t *testin
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		resCh <- result{client.lookupOrReuse(ino, "/ws/X", create)}
+		resCh <- result{client.lookupOrReuse(ino, testOwnerMode, "/ws/X", create)}
 	}()
 
 	// The winner is parked inside create holding the per-inode slot lock; no
@@ -286,12 +285,13 @@ func TestLookupOrReuse_ForgetDuringElection_CannotClearUnpublishedNode(t *testin
 	<-entered
 
 	clearDone := make(chan struct{})
+	stale := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/stale")
 	go func() {
 		// A clear for a node that was never published (or any stale node) must
 		// be a no-op and must not corrupt the in-flight election. It is
 		// serialized behind the election's slot lock, so it cannot complete
 		// until the election publishes and releases the lock.
-		client.clearHardLinkOwner(ino, testOwnerNode(client, "/ws/stale"))
+		client.clearHardLinkOwner(ino, stale)
 		close(clearDone)
 	}()
 
@@ -315,10 +315,11 @@ func TestLookupOrReuse_ForgetDuringElection_CannotClearUnpublishedNode(t *testin
 // the new path even through the shared lookupOrReuse path.
 func TestLookupOrReuse_DroppedPathPromotionSurvivesReuse(t *testing.T) {
 	const ino = uint64(0x777)
-	client := &VFSClient{}
+	client, cleanup := newPathProbeClient(t, ino)
+	defer cleanup()
 
-	first := testOwnerNode(client, "/ws/E")
-	client.lookupOrReuse(ino, "/ws/E", sameEmbedder(first))
+	first := newTestOwnerNode(t, client, ino, testOwnerMode, "/ws/E")
+	client.lookupOrReuse(ino, testOwnerMode, "/ws/E", sameEmbedder(first))
 
 	// The only known alias is unlinked on the host while the inode stays alive
 	// through an open handle; no alternate is known yet.
@@ -326,7 +327,7 @@ func TestLookupOrReuse_DroppedPathPromotionSurvivesReuse(t *testing.T) {
 	assert.True(t, first.dropped)
 
 	// First discovery of the surviving alias F promotes F to the cached path.
-	client.lookupOrReuse(ino, "/ws/F", func() (*VFSNode, *fs.Inode) {
+	client.lookupOrReuse(ino, testOwnerMode, "/ws/F", func() (*VFSNode, *fs.Inode) {
 		t.Fatal("dropped-but-alive canonical node must be reused, not re-created")
 		return nil, nil
 	})
@@ -341,7 +342,7 @@ func TestLookupOrReuse_ZeroInodeOrNilClient_FailsClosed(t *testing.T) {
 		t.Fatal("create must not run for a degenerate lookup")
 		return nil, nil
 	}
-	assert.Nil(t, client.lookupOrReuse(0, "/ws/A", create))
+	assert.Nil(t, client.lookupOrReuse(0, testOwnerMode, "/ws/A", create))
 	var nilClient *VFSClient
-	assert.Nil(t, nilClient.lookupOrReuse(5, "/ws/A", create))
+	assert.Nil(t, nilClient.lookupOrReuse(5, testOwnerMode, "/ws/A", create))
 }

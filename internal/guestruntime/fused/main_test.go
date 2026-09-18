@@ -676,7 +676,8 @@ func TestVFSNodeDroppedPathPromotesOnDiscovery(t *testing.T) {
 // parent directory, and that the surviving go-fuse inode is handed back so the
 // kernel coalesces onto it.
 func TestCoalescedOwnerReusesNodeAcrossParents(t *testing.T) {
-	client := &VFSClient{}
+	client, cleanup := newPathProbeClient(t, 1001)
+	defer cleanup()
 	root := &VFSRoot{client: client, basePath: "/ws"}
 	fs.NewNodeFS(root, &fs.Options{})
 
@@ -694,8 +695,10 @@ func TestCoalescedOwnerReusesNodeAcrossParents(t *testing.T) {
 	client.setHardLinkOwner(1001, aNode)
 
 	// Lookup of the cross-directory alias /ws/d2/B must reuse A's inode and
-	// register B as an alternate so unlinking A keeps B resolvable.
-	reused := client.lookupOrReuse(1001, "/ws/d2/B", func() (*VFSNode, *fs.Inode) {
+	// register B as an alternate so unlinking A keeps B resolvable. The alias
+	// probe (pathHasInode) answers 1001 for the cached /ws/d1/A path, so the
+	// node treats B as a genuine hard-link alias.
+	reused := client.lookupOrReuse(1001, syscall.S_IFREG, "/ws/d2/B", func() (*VFSNode, *fs.Inode) {
 		t.Fatal("existing canonical owner must be reused, not re-created")
 		return nil, nil
 	})
@@ -703,7 +706,7 @@ func TestCoalescedOwnerReusesNodeAcrossParents(t *testing.T) {
 	assert.Equal(t, []string{"/ws/d2/B"}, aNode.altPaths)
 
 	// A repeat lookup of the cached name itself neither duplicates nor repoints.
-	reused = client.lookupOrReuse(1001, "/ws/d1/A", func() (*VFSNode, *fs.Inode) {
+	reused = client.lookupOrReuse(1001, syscall.S_IFREG, "/ws/d1/A", func() (*VFSNode, *fs.Inode) {
 		t.Fatal("existing canonical owner must be reused, not re-created")
 		return nil, nil
 	})
@@ -790,4 +793,157 @@ func TestReconcileRenameOverwriteDropsDestinationAlias(t *testing.T) {
 	// The destination node drops B and promotes the surviving alias D.
 	assert.Equal(t, "/ws/dir/D", destNode.currentPath())
 	assert.NotContains(t, destNode.altPaths, "/ws/dir/B")
+}
+
+// --- host_fs coherence: cached-node validation (unit level) ---
+
+// newTestOwnerNode builds a VFSNode whose embedded go-fuse inode is fully
+// initialized with the supplied stable attr, mirroring what parent.NewInode
+// does in production. lookupOrReuse validates StableAttr().Mode, so a test
+// fixture that skips initialization (StableAttr zero) would look like a type
+// mismatch; initialization here keeps the fixtures faithful.
+func newTestOwnerNode(t *testing.T, client *VFSClient, ino uint64, mode uint32, path string) *VFSNode {
+	t.Helper()
+	root := &VFSRoot{}
+	fs.NewNodeFS(root, &fs.Options{})
+	n := &VFSNode{client: client, path: path, isDir: mode&syscall.S_IFMT == syscall.S_IFDIR}
+	root.NewInode(context.Background(), n, fs.StableAttr{Mode: mode, Ino: ino})
+	return n
+}
+
+// newPathProbeClient returns a VFSClient backed by a socketpair whose server
+// answers every OpLookup with lookupIno (and every other op with an empty
+// success), which is what lookupOrReuse's hard-link alias probe needs. The
+// server runs until the client is closed; cleanup closes the client and waits
+// for the server goroutine to exit. It keeps the deterministic registry tests
+// off a real vsock/file descriptor.
+func newPathProbeClient(t *testing.T, lookupIno uint64) (*VFSClient, func()) {
+	t.Helper()
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- serveLookupProbe(fds[1], lookupIno)
+	}()
+
+	client := &VFSClient{fd: fds[0]}
+	cleanup := func() {
+		_ = client.Close()
+		require.NoError(t, <-done)
+	}
+	return client, cleanup
+}
+
+// serveLookupProbe answers VFS requests on fd until the peer closes. OpLookup
+// replies report lookupIno so pathHasInode resolves a cached path as still
+// naming the inode; all other ops get a default success response.
+func serveLookupProbe(fd int, lookupIno uint64) error {
+	defer func() {
+		_ = syscall.Close(fd)
+	}()
+	for {
+		var lenBuf [4]byte
+		if _, err := readFull(fd, lenBuf[:]); err != nil {
+			// The client closed the socket; this is the normal shutdown path.
+			return nil
+		}
+		reqData := make([]byte, binary.BigEndian.Uint32(lenBuf[:]))
+		if _, err := readFull(fd, reqData); err != nil {
+			return err
+		}
+		var req VFSRequest
+		if err := cbor.Unmarshal(reqData, &req); err != nil {
+			return err
+		}
+
+		resp := &VFSResponse{}
+		if req.Op == OpLookup {
+			resp.Stat = &VFSStat{Ino: lookupIno}
+		}
+		respData, err := cbor.Marshal(resp)
+		if err != nil {
+			return err
+		}
+		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(respData)))
+		if _, err := writeFull(fd, lenBuf[:]); err != nil {
+			return err
+		}
+		if _, err := writeFull(fd, respData); err != nil {
+			return err
+		}
+	}
+}
+
+// TestLookupOrReuse_TypeChangeDropsStaleNode locks the file type half of the
+// host_fs coherence fix: when the host reused the cached inode number for an
+// object of a different type (ext4 frees and reuses inodes immediately),
+// lookupOrReuse must drop the stale node and build a fresh one instead of
+// stamping the old S_IFMT into LOOKUP replies (persistent EIO otherwise).
+func TestLookupOrReuse_TypeChangeDropsStaleNode(t *testing.T) {
+	const ino = uint64(0x5191)
+	client := &VFSClient{}
+
+	fileNode := newTestOwnerNode(t, client, ino, syscall.S_IFREG, "/ws/dir/c1")
+	first := client.lookupOrReuse(ino, syscall.S_IFREG, "/ws/dir/c1", sameEmbedder(fileNode))
+	require.Same(t, &fileNode.Inode, first)
+
+	// The host reused ino for a directory of the same name.
+	created := false
+	dirNode := newTestOwnerNode(t, client, ino, syscall.S_IFDIR, "/ws/dir/c1")
+	second := client.lookupOrReuse(ino, syscall.S_IFDIR, "/ws/dir/c1", func() (*VFSNode, *fs.Inode) {
+		created = true
+		return dirNode, &dirNode.Inode
+	})
+	require.True(t, created, "a type change must drop the stale node and run create")
+	require.NotSame(t, first, second, "a type change must return a fresh go-fuse inode")
+	require.Same(t, &dirNode.Inode, second)
+	require.Equal(t, uint32(syscall.S_IFDIR), second.StableAttr().Mode&syscall.S_IFMT)
+}
+
+// TestLookupOrReuse_DeadPathReplacesInsteadOfAliasing locks the path half of the
+// fix: when the cached path no longer resolves on the host to the looked-up
+// inode (a host rename or delete+recreate), lookupOrReuse must repoint the node
+// at the name that exists rather than registering it as a hard-link alternate
+// and leaving open/readdir to address the dead path.
+func TestLookupOrReuse_DeadPathReplacesInsteadOfAliasing(t *testing.T) {
+	const ino = uint64(0x2468)
+	// The probe answers a different inode, so the cached path is dead.
+	client, cleanup := newPathProbeClient(t, ino+1)
+	defer cleanup()
+
+	node := newTestOwnerNode(t, client, ino, syscall.S_IFREG, "/ws/dir/old-name")
+	client.lookupOrReuse(ino, syscall.S_IFREG, "/ws/dir/old-name", sameEmbedder(node))
+	require.Equal(t, "/ws/dir/old-name", node.currentPath())
+
+	// A later Lookup of the object's new name finds the same ino but the cached
+	// path no longer resolves to it.
+	reused := client.lookupOrReuse(ino, syscall.S_IFREG, "/ws/dir/new-name", func() (*VFSNode, *fs.Inode) {
+		t.Fatal("an existing (but stale) node must be repointed, not re-created")
+		return nil, nil
+	})
+	require.Same(t, &node.Inode, reused)
+	assert.Equal(t, "/ws/dir/new-name", node.currentPath(), "a dead cached path must be replaced")
+	assert.Empty(t, node.altPaths, "the dead path's alternates must be discarded")
+	assert.False(t, node.dropped)
+}
+
+// TestLookupOrReuse_LivePathStillRegistersAlias is the positive companion: a
+// cached path that still resolves to the inode is a genuine hard-link alias and
+// stays the cached path while the new name is registered as an alternate.
+func TestLookupOrReuse_LivePathStillRegistersAlias(t *testing.T) {
+	const ino = uint64(0x1357)
+	client, cleanup := newPathProbeClient(t, ino)
+	defer cleanup()
+
+	node := newTestOwnerNode(t, client, ino, syscall.S_IFREG, "/ws/dir/A")
+	client.lookupOrReuse(ino, syscall.S_IFREG, "/ws/dir/A", sameEmbedder(node))
+
+	reused := client.lookupOrReuse(ino, syscall.S_IFREG, "/ws/dir/B", func() (*VFSNode, *fs.Inode) {
+		t.Fatal("a live alias must reuse the canonical node")
+		return nil, nil
+	})
+	require.Same(t, &node.Inode, reused)
+	assert.Equal(t, "/ws/dir/A", node.currentPath())
+	assert.Equal(t, []string{"/ws/dir/B"}, node.altPaths)
 }

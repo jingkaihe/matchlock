@@ -131,20 +131,25 @@ type VFSClient struct {
 	// the bridge's later coalescing cannot pick a different node.
 	//
 	// Lock order (source reasoning against go-fuse v2.9.0):
-	//   ownerMu -> slot.mu -> (node) pathMu, and slot.mu -> bridge b.mu while a
-	//   winner runs NewInode under the slot lock.
-	// The reverse order b.mu -> slot.mu never happens: go-fuse calls into our
-	// Node* methods without holding b.mu (rawBridge.Lookup/Mkdir/Create/...
-	// release b.mu before invoking ops; addNewChild takes b.mu only after our
-	// method returned), and NodeOnForgetter.OnForget is invoked from
-	// Inode.removeRef AFTER removeRefInner released b.mu and n.mu (fs/inode.go
-	// removeRef: OnForget is called outside removeRefInner's locks). So holding
-	// slot.mu across NewInode (which takes b.mu) cannot deadlock against a
-	// FORGET that later takes slot.mu to clear the registry.
+	//   ownerMu -> slot.mu -> (node) pathMu, and slot.mu -> c.mu (the client
+	//   request mutex) while a winner runs NewInode under the slot lock or an
+	//   alias probe (VFSClient.pathHasInode) issues one vsock OpLookup.
+	// The reverse order never happens: c.Request holds only c.mu and never
+	// takes a slot lock, the node path accessors take only pathMu, and
+	// NodeOnForgetter.OnForget (which clears the registry) takes only slot.mu.
+	// go-fuse itself calls into our Node* methods without holding b.mu
+	// (rawBridge.Lookup/Mkdir/Create/... release b.mu before invoking ops;
+	// addNewChild takes b.mu only after our method returned), and OnForget is
+	// invoked from Inode.removeRef AFTER removeRefInner released b.mu and n.mu
+	// (fs/inode.go removeRef: OnForget is called outside removeRefInner's
+	// locks). So holding slot.mu across NewInode (which takes b.mu) cannot
+	// deadlock against a FORGET that later takes slot.mu to clear the registry.
 	//
-	// The slot mutex is per inode, never a global lock, and no slot lock is
-	// held while waiting on the vsock host (Lookup performs its network request
-	// before entering the registry).
+	// The slot mutex is per inode, never a global lock. A slot lock is held
+	// across one vsock request only for the alias probe in lookupOrReuse, and
+	// only when the freshly looked-up name differs from the node's cached path
+	// (the hard-link/rename case); an ordinary first or repeat Lookup of the
+	// cached name performs no host request under the slot lock.
 	ownerMu        sync.Mutex
 	hardLinkOwners map[uint64]*ownerSlot
 }
@@ -260,6 +265,24 @@ func (c *VFSClient) clearHardLinkOwner(ino uint64, n *VFSNode) {
 // later stableAttrs coalescing (addNewChild) deterministic: the bridge can only
 // ever keep the canonical node for the inode, never a discarded duplicate.
 //
+// mode is the file type the host just reported for the looked-up object. The
+// cached node is validated against it (and against the looked-up path) before
+// reuse, because host inode numbers are reused immediately and the guest
+// addresses the host through the node's cached path:
+//
+//   - Type: go-fuse keys its stableAttrs coalescing on (S_IFMT, Ino) and
+//     stamps the cached node's S_IFMT into LOOKUP replies. If the host reused
+//     the inode for an object of a different type, coalescing would make the
+//     kernel report a file as a directory (or vice versa) and return EIO on
+//     open/readdir until FORGET. A type mismatch drops the stale node so
+//     create builds a fresh node and registry entry under the new type.
+//
+//   - Path: a different name for the same inode is a hard-link alias only when
+//     the cached path still resolves on the host to that same inode; that one
+//     extra probe (pathHasInode) distinguishes an alias from a dead cached
+//     path left by a host-side rename or delete+recreate. A dead path is
+//     replaced so open/readdir address the name that actually exists.
+//
 // When no canonical node exists yet, exactly one concurrent caller is elected
 // (under the per-inode slot lock) to run create, which must construct the new
 // VFSNode and initialize its go-fuse inode via parent.NewInode. The winner
@@ -277,12 +300,37 @@ func (c *VFSClient) clearHardLinkOwner(ino uint64, n *VFSNode) {
 // 0, so a nil here is mapped to EIO rather than silently creating a node for a
 // nonexistent inode number (the pre-fix code created the node in that case;
 // see the EIO guards in both Lookup methods).
-func (c *VFSClient) lookupOrReuse(ino uint64, path string, create func() (*VFSNode, *fs.Inode)) *fs.Inode {
+func (c *VFSClient) lookupOrReuse(ino uint64, mode uint32, path string, create func() (*VFSNode, *fs.Inode)) *fs.Inode {
 	if c == nil || ino == 0 {
 		return nil
 	}
 	s := c.ownerSlotFor(ino)
 	s.mu.Lock()
+	if s.node != nil {
+		// Validate the cached node against the object the host just returned
+		// before reusing it. Both checks are required (see the function
+		// comment): the type check closes the persistent wrong-type EIO after
+		// an inode number is reused across file<->directory, and the path probe
+		// distinguishes a genuine hard-link alias from a cached path that a
+		// host-side rename/delete/replace has left dangling.
+		if s.node.EmbeddedInode().StableAttr().Mode != mode&syscall.S_IFMT {
+			// The host reused the inode number for a different file type.
+			// go-fuse's stableAttrs coalescing is keyed by (type, ino), so the
+			// fresh create below lands on a distinct entry; clearing the slot
+			// is what lets go-fuse stop answering this inode with the stale
+			// type. The old node (and its registry role) is abandoned until
+			// the kernel FORGETs it.
+			s.node = nil
+		} else if cp := s.node.currentPath(); cp != path && !c.pathHasInode(cp, ino) {
+			// The cached path no longer names this inode on the host (rename,
+			// delete+recreate, or atomic replace). The looked-up name is not a
+			// hard-link alias but the object's real current name, so make it
+			// the path every host request for this node addresses. Any
+			// previously registered alternates described the dead path's
+			// identity and are discarded by replacePath.
+			s.node.replacePath(path)
+		}
+	}
 	if s.node == nil {
 		// Elected: initialize and publish while holding the slot lock. The
 		// node is handed to go-fuse only via the returned embed after this
@@ -311,6 +359,43 @@ func (c *VFSClient) lookupOrReuse(ino uint64, path string, create func() (*VFSNo
 	embed := node.EmbeddedInode()
 	s.mu.Unlock()
 	return embed
+}
+
+// pathHasInode reports whether guest path p still resolves on the host to the
+// given namespaced host inode number. It is the single extra OpLookup that
+// lookupOrReuse uses to tell a hard-link alias (the cached path still names
+// this inode) from a dead cached path (the object was renamed or replaced).
+//
+// It runs while lookupOrReuse holds the per-inode slot lock, but takes only the
+// client request mutex (c.Request) and never a slot lock, so the documented
+// lock order ownerMu -> slot.mu -> c.mu holds. Some host filesystems report a
+// synthetic inode of 0 (no usable Sys() Stat_t); in that case fall back to the
+// same path hash the Lookup methods cache, so the comparison is against the
+// identity the guest actually holds.
+func (c *VFSClient) pathHasInode(p string, ino uint64) bool {
+	resp, err := c.Request(&VFSRequest{Op: OpLookup, Path: p})
+	if err != nil || resp.Err != 0 || resp.Stat == nil {
+		return false
+	}
+	got := resp.Stat.Ino
+	if got == 0 {
+		got = inodeForPath(p, resp.Stat.IsDir)
+	}
+	return got == ino
+}
+
+// replacePath repoints a node at a name whose cached path no longer resolves to
+// its host inode (a host-side rename, or a delete+recreate that reused the
+// inode). Every alternate name previously registered for the node described the
+// dead path's identity, so it is discarded; dropped is cleared because p is the
+// name that now exists. Called under the per-inode slot lock (pathMu is the
+// terminal lock in the documented order).
+func (n *VFSNode) replacePath(p string) {
+	n.pathMu.Lock()
+	defer n.pathMu.Unlock()
+	n.path = p
+	n.altPaths = nil
+	n.dropped = false
 }
 
 func NewVFSClient() (*VFSClient, error) {
@@ -664,7 +749,7 @@ func (r *VFSRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	// lookupOrReuse). Register the looked-up name there so the alias keeps
 	// resolving when the cached alias is later unlinked or overwritten, and
 	// hand back that node's (shared, fully initialized) go-fuse inode.
-	child := r.client.lookupOrReuse(out.Attr.Ino, path, func() (*VFSNode, *fs.Inode) {
+	child := r.client.lookupOrReuse(out.Attr.Ino, out.Attr.Mode, path, func() (*VFSNode, *fs.Inode) {
 		node := &VFSNode{client: r.client, path: path, isDir: resp.Stat.IsDir}
 		stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 		return node, r.NewInode(ctx, node, stable)
@@ -1131,7 +1216,7 @@ func (n *VFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	// concurrent first Lookup and with OnForget, see lookupOrReuse) so the
 	// alias keeps resolving when the cached alias is later unlinked or
 	// overwritten.
-	child := n.client.lookupOrReuse(out.Attr.Ino, path, func() (*VFSNode, *fs.Inode) {
+	child := n.client.lookupOrReuse(out.Attr.Ino, out.Attr.Mode, path, func() (*VFSNode, *fs.Inode) {
 		node := &VFSNode{client: n.client, path: path, isDir: resp.Stat.IsDir}
 		stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 		return node, n.NewInode(ctx, node, stable)
