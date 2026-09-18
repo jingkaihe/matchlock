@@ -205,18 +205,6 @@ func serveReady(listenFn func(uint32) (int, error), acceptFn func(int) (int, err
 	}
 }
 
-func serveExec() {
-	// serveExec is only used by the fused/legacy entrypoint; the primary path
-	// passes a pre-bound listener to serveExecWithListener so the exec bind
-	// happens before the ready signal.
-	fd, err := listenVsock(VsockPortExec)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to listen on exec port: %v\n", err)
-		os.Exit(1)
-	}
-	serveExecWithListener(fd, acceptVsock, nil)
-}
-
 // serveExecWithListener accepts and dispatches exec-service connections on the
 // already-bound listener fd. It runs for the guest's lifetime in production; in
 // tests a closed stop channel makes it return.
@@ -416,15 +404,7 @@ func handleExecBatch(fd int, data []byte) {
 		cmd.Dir = req.WorkingDir
 	}
 
-	if len(req.Env) > 0 {
-		env := os.Environ()
-		for k, v := range req.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-	}
-
-	applyUserEnv(cmd, req.User)
+	applyUserEnv(cmd, req.User, req.Env)
 	applySandboxSysProcAttrBatch(cmd)
 	wrapCommandForSandbox(cmd)
 	wipeMap(req.Env)
@@ -484,15 +464,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 		cmd.Dir = req.WorkingDir
 	}
 
-	if len(req.Env) > 0 {
-		env := os.Environ()
-		for k, v := range req.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-	}
-
-	applyUserEnv(cmd, req.User)
+	applyUserEnv(cmd, req.User, req.Env)
 
 	applySandboxSysProcAttrBatch(cmd)
 	wrapCommandForSandbox(cmd)
@@ -595,15 +567,7 @@ func handleExecPipe(fd int, data []byte) {
 		cmd.Dir = req.WorkingDir
 	}
 
-	if len(req.Env) > 0 {
-		env := os.Environ()
-		for k, v := range req.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-	}
-
-	applyUserEnv(cmd, req.User)
+	applyUserEnv(cmd, req.User, req.Env)
 	applySandboxSysProcAttrBatch(cmd)
 	wrapCommandForSandbox(cmd)
 	wipeMap(req.Env)
@@ -729,15 +693,7 @@ func handleExecTTY(fd int, data []byte) {
 		cmd.Dir = req.WorkingDir
 	}
 
-	if len(req.Env) > 0 {
-		env := os.Environ()
-		for k, v := range req.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		cmd.Env = env
-	}
-
-	applyUserEnv(cmd, req.User)
+	applyUserEnv(cmd, req.User, req.Env)
 
 	// Apply sandbox isolation: PID namespace + seccomp + cap drop via re-exec
 	applySandboxSysProcAttr(cmd)
@@ -826,14 +782,21 @@ func handleExecTTY(fd int, data []byte) {
 	syscall.Close(fd)
 }
 
-func applyUserEnv(cmd *exec.Cmd, user string) {
-	if user == "" {
-		return
-	}
+// applyUserEnv assembles the child environment for an exec/run. It starts from
+// cmd.Env (or the agent's inherited environment when unset), merges in the
+// HOME/USER/LOGNAME/SHELL defaults resolved from the effective user's
+// /etc/passwd entry (only for keys requestEnv does not define), lets requestEnv
+// win, and exports MATCHLOCK_USER so the sandbox launcher still drops
+// privileges for the requested user.
+func applyUserEnv(cmd *exec.Cmd, user string, requestEnv map[string]string) {
 	if cmd.Env == nil {
 		cmd.Env = os.Environ()
 	}
-	cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+user)
+	defaults := resolveUserEnvDefaultsFrom(user, "/etc/passwd")
+	cmd.Env = mergeExecEnv(cmd.Env, defaults, requestEnv)
+	if user != "" {
+		cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+user)
+	}
 }
 
 func sendMessage(fd int, msgType uint8, data []byte) {
