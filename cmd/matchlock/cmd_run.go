@@ -500,13 +500,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start exec relay server so `matchlock exec` can connect from another process
-	execRelay := sandbox.NewExecRelay(sb)
 	stateMgr := state.NewManager()
-	execSocketPath := stateMgr.ExecSocketPath(sb.ID())
-	if err := execRelay.Start(execSocketPath); err != nil {
+	execRelay, err := sb.StartExecRelay(stateMgr.ExecSocketPath(sb.ID()))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to start exec relay: %v\n", err)
+	} else {
+		defer execRelay.Stop()
 	}
-	defer execRelay.Stop()
 
 	if !rm {
 		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())

@@ -73,6 +73,14 @@ type portForwardVM interface {
 	StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error)
 }
 
+// execRelayVM is implemented by VM backends whose sandboxes can serve
+// `matchlock exec` over a Unix socket. Concrete sandboxes (*sandbox.Sandbox)
+// satisfy it; mocks and backends that do not simply skip the relay, preserving
+// their previous behaviour.
+type execRelayVM interface {
+	StartExecRelay(socketPath string) (*sandbox.ExecRelay, error)
+}
+
 type interactiveExecVM interface {
 	ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
 }
@@ -134,6 +142,9 @@ type Handler struct {
 	// entryCancel stops a launch-started image ENTRYPOINT/CMD exec when VM closes.
 	entryCancel  context.CancelFunc
 	logPathForVM func(string) string
+	// execRelay serves `matchlock exec` for the current VM. It is nil for VMs
+	// whose backend does not implement execRelayVM and is guarded by vmMu.
+	execRelay *sandbox.ExecRelay
 }
 
 // HandlerOption configures a Handler.
@@ -420,7 +431,26 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
+	// Expose the same exec socket a `run`-created VM gets so a separate
+	// `matchlock exec` process can inspect an RPC-created VM. Fail closed:
+	// without the socket the VM is unreachable from the CLI.
+	relay, err := h.startVMExecRelay(vm)
+	if err != nil {
+		if entryCancel != nil {
+			entryCancel()
+		}
+		vm.Close(ctx)
+		state.NewManager().Remove(vm.ID())
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
 	h.vmMu.Lock()
+	oldRelay := h.execRelay
+	h.execRelay = relay
 	if h.pfManager != nil {
 		_ = h.pfManager.Close()
 		h.pfManager = nil
@@ -433,6 +463,12 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	h.vm = vm
 	h.lastVMID = vm.ID()
 	h.vmMu.Unlock()
+
+	// Stop the replaced VM's relay outside the lock; its VM record is left to
+	// the caller (the pre-existing create-replacement behaviour).
+	if oldRelay != nil {
+		oldRelay.Stop()
+	}
 
 	go func() {
 		for event := range vm.Events() {
@@ -449,6 +485,24 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		Result:  result,
 		ID:      req.ID,
 	}
+}
+
+// startVMExecRelay starts the exec relay for a VM whose backend implements
+// execRelayVM, listening at the state manager's per-VM exec socket path. It
+// returns (nil, nil) for backends without relay support (for example mocks and
+// non-sandbox implementations), preserving their previous behaviour.
+func (h *Handler) startVMExecRelay(vm VM) (*sandbox.ExecRelay, error) {
+	relayVM, ok := vm.(execRelayVM)
+	if !ok {
+		return nil, nil
+	}
+
+	socketPath := state.NewManager().ExecSocketPath(vm.ID())
+	relay, err := relayVM.StartExecRelay(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("start exec relay at %s: %s", socketPath, err)
+	}
+	return relay, nil
 }
 
 func (h *Handler) handleResolveImage(ctx context.Context, req *Request) *Response {
@@ -1376,9 +1430,16 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.pfManager = nil
 	entryCancel := h.entryCancel
 	h.entryCancel = nil
+	relay := h.execRelay
+	h.execRelay = nil
 	h.vmMu.Unlock()
 	if entryCancel != nil {
 		entryCancel()
+	}
+	// Stop accepting exec connections before tearing the VM down so a
+	// concurrent `matchlock exec` fails fast instead of racing machine.Close.
+	if relay != nil {
+		relay.Stop()
 	}
 
 	if pfManager != nil {

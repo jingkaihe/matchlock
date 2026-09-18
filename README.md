@@ -117,6 +117,33 @@ matchlock image rm myapp:latest                              # Remove a local im
 docker save myapp:latest | matchlock image import myapp:latest  # Import from tarball
 ```
 
+## Exec sessions are isolated
+
+Every `matchlock exec` (and the initial command of `matchlock run`) runs in its
+own isolated session inside the sandbox: a fresh PID and mount namespace with
+`/proc` remounted, dropped capabilities, and a seccomp filter. This is
+defence-in-depth inside the micro-VM, which remains the primary security
+boundary.
+
+Two consequences matter when scripting against a long-lived sandbox:
+
+- **Background processes die with the session.** Anything you start in the
+  background belongs to that exec's PID namespace and is killed when the exec
+  ends, so `matchlock exec vm-abc12345 -- sh -c 'server &'` leaves nothing
+  running.
+- **PIDs are per session.** The session's shell is PID 1 in its own PID
+  namespace, and process IDs are not stable from one exec to the next.
+
+To keep a persistent session open - for example, to background a server and
+inspect it in later commands - use one long-lived interactive shell:
+
+```bash
+matchlock exec -i vm-abc12345 -- sh
+```
+
+Processes started inside that shell share its session, so background jobs
+survive for as long as the shell stays open.
+
 ## SDK
 
 Matchlock ships Go, Python, and TypeScript SDKs for embedding sandboxes directly in your application. You can launch VMs, execute commands, stream output, and manage files programmatically.
