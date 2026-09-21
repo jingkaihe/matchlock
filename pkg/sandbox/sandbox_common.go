@@ -163,6 +163,25 @@ func buildExtraDiskConfigs(disks []api.DiskMount) ([]vm.DiskConfig, error) {
 	return extraDisks, nil
 }
 
+// buildSwapDiskConfig returns the DiskConfig that attaches the ephemeral swap
+// image at hostPath. A swap device is attached read-write but never mounted, so
+// GuestMount stays empty; this is why it is appended after (and bypasses)
+// buildExtraDiskConfigs, whose mount validation rejects an empty GuestMount.
+func buildSwapDiskConfig(hostPath string) vm.DiskConfig {
+	return vm.DiskConfig{HostPath: hostPath, Swap: true}
+}
+
+// provisionSwapDisk formats a fresh swap image at swapPath and returns the
+// DiskConfig that attaches it to the guest. A partial image is removed by
+// createSwapImage on failure; the caller is responsible for the surrounding
+// state/root-disk cleanup.
+func provisionSwapDisk(swapPath string, sizeMB int) (vm.DiskConfig, error) {
+	if err := createSwapImage(swapPath, int64(sizeMB)); err != nil {
+		return vm.DiskConfig{}, errx.Wrap(ErrCreateVM, err)
+	}
+	return buildSwapDiskConfig(swapPath), nil
+}
+
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {
 	opts := &api.ExecOptions{
 		// Matchlock defaults execution to image WORKDIR, falling back to the

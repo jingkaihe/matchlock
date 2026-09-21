@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -60,6 +61,12 @@ var cpuMaxPaths = []string{
 	"/sys/fs/cgroup/cpu.max",
 }
 
+// swapDevicePattern accepts one or more lowercase ASCII letters after the "vd"
+// prefix. Current backends emit single-letter names (vda..vdz), but the pattern
+// also tolerates a future multi-letter scheme (vdaa) so the guest never rejects
+// a name a backend legitimately generates.
+var swapDevicePattern = regexp.MustCompile(`^vd[a-z]+$`)
+
 type diskMount struct {
 	Device   string
 	Path     string
@@ -84,6 +91,8 @@ type bootConfig struct {
 	NoNetwork   bool
 	Disks       []diskMount
 	Overlay     overlayBootConfig
+	SwapDevice  string
+	Privileged  bool
 	// IPv6 is the guest side of the per-VM IPv6 link announced by the host, or
 	// nil when the boot has no IPv6 link (see activeIPv6Link).
 	IPv6 *ipv6Link
@@ -131,6 +140,28 @@ func runInit() {
 		}
 	}
 	prepareBaseFilesystems()
+
+	// Swap must be enabled while guest-init still runs as PID 1 with full
+	// capabilities: the workload launcher later drops CAP_SYS_ADMIN from the
+	// bounding set (there is no CAP_SWAP), so an unprivileged workload can
+	// never swapon/swapoff. devtmpfs is mounted on /dev by
+	// prepareBaseFilesystems, so the swap block device node already exists.
+	if cfg.SwapDevice != "" {
+		if err := enableSwap(cfg.SwapDevice); err != nil {
+			fatal(err)
+		}
+		// enableSwap's root:root 0600 node blocks non-root workloads, and the
+		// cgroup v2 device policy below is what actually binds a uid-0
+		// workload (owner DAC bits and CAP_MKNOD would otherwise expose the
+		// VM-wide store). Attach it after swapon so PID 1 can open the device
+		// first; the kernel keeps the backing file open, so later denial does
+		// not disturb active swap.
+		if swapDevicePolicyRequired(cfg) {
+			if err := installSwapDevicePolicy(cfg.SwapDevice, cgroup2RootPath); err != nil {
+				fatal(err)
+			}
+		}
+	}
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
@@ -290,6 +321,17 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			v := strings.TrimPrefix(field, "matchlock.no_network=")
 			cfg.NoNetwork = v == "1" || strings.EqualFold(v, "true")
 
+		case strings.HasPrefix(field, "matchlock.privileged="):
+			v := strings.TrimPrefix(field, "matchlock.privileged=")
+			cfg.Privileged = v == "1" || strings.EqualFold(v, "true")
+
+		case strings.HasPrefix(field, "matchlock.swap="):
+			dev := strings.TrimSpace(strings.TrimPrefix(field, "matchlock.swap="))
+			if !swapDevicePattern.MatchString(dev) {
+				return nil, errx.With(ErrInvalidSwap, ": %q", dev)
+			}
+			cfg.SwapDevice = dev
+
 		case strings.HasPrefix(field, "matchlock.disk."):
 			spec := strings.TrimPrefix(field, "matchlock.disk.")
 			i := strings.IndexByte(spec, '=')
@@ -360,6 +402,90 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// swapDeviceMode is the mode applied to the swap block device node after
+// swapon. Access to a block device is governed by ordinary DAC (device-node
+// permissions), NOT by CAP_SYS_ADMIN, so dropping CAP_SYS_ADMIN from the
+// workload bounding set does not by itself stop a non-root workload from
+// reading the VM-wide swap backing store. Narrowing the node to root-only 0600
+// closes that path for every non-root workload (the common --user case).
+//
+// This is defense-in-depth, not the boundary. A uid-0 workload is the node
+// *owner*, so the 0600 owner bits (0400/0200) grant it access; CAP_DAC_OVERRIDE
+// is irrelevant for an owner and dropping it would not help. A uid-0 workload
+// also holds CAP_MKNOD and can recreate a node from the major:minor exposed by
+// /sys/block/<dev>/dev. The actual root-binding control is the cgroup v2
+// device-controller BPF policy in swap_bpf.go, attached to the cgroup2 root and
+// evaluated before and independently of file ownership for both open and
+// mknod. Do not remove the node: swapon(2) has already opened the backing
+// device (removal does not stop swap), and a present 0600 node yields a clear
+// EACCES for non-root instead of an ambiguous ENOENT.
+const swapDeviceMode os.FileMode = 0o600
+
+// enableSwap turns the guest swap device on. It runs from guest-init (PID 1)
+// while full capabilities are still held; the launcher drops CAP_SYS_ADMIN from
+// the workload's bounding set afterwards, so the workload cannot manage swap.
+// The block device is validated first so a wrong or mis-ordered device yields a
+// clear error instead of an opaque swapon errno. After swapon succeeds the node
+// is restricted to root:root 0600 so non-root workloads cannot read it.
+func enableSwap(dev string) error {
+	path := filepath.Join("/dev", dev)
+	if err := validateSwapDevice(path); err != nil {
+		return err
+	}
+	pathPtr, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return errx.With(ErrEnableSwap, " %s: %w", path, err)
+	}
+	if _, _, errno := unix.RawSyscall(unix.SYS_SWAPON, uintptr(unsafe.Pointer(pathPtr)), 0, 0); errno != 0 {
+		return errx.With(ErrEnableSwap, " %s: %w", path, errno)
+	}
+	// Restrict after a successful swapon: the kernel already holds the device
+	// open, so tightening the node cannot break the active swap area.
+	if err := restrictSwapDevice(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+// restrictSwapDevice applies the swap-device access policy (root:root, 0600) to
+// the given device node.
+func restrictSwapDevice(path string) error {
+	return restrictDeviceNode(path, 0, 0, swapDeviceMode)
+}
+
+// restrictDeviceNode chowns path to uid:gid and chmods it to mode. It is the
+// testable seam: production passes the root owner (0:0) and swapDeviceMode,
+// while a unit test can pass the current euid/egid so the chown is permitted
+// without privileges. Errors wrap ErrEnableSwap because the only caller is the
+// swap boot path.
+func restrictDeviceNode(path string, uid, gid int, mode os.FileMode) error {
+	if err := os.Chown(path, uid, gid); err != nil {
+		return errx.With(ErrEnableSwap, " chown %s to %d:%d: %w", path, uid, gid, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return errx.With(ErrEnableSwap, " chmod %s to %#o: %w", path, mode, err)
+	}
+	return nil
+}
+
+// validateSwapDevice requires path to exist and be a block device. os.ModeDevice
+// matches both block and character devices, so the character bit is excluded
+// explicitly; a regular file or missing node is rejected before swapon(2).
+func validateSwapDevice(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return errx.With(ErrInvalidSwap, " %s: %w", path, err)
+	}
+	if !isBlockDevice(info) {
+		return errx.With(ErrInvalidSwap, " %s: not a block device (%s)", path, info.Mode())
+	}
+	return nil
+}
+
+func isBlockDevice(info os.FileInfo) bool {
+	return info.Mode()&os.ModeDevice != 0 && info.Mode()&os.ModeCharDevice == 0
 }
 
 func prepareEarlyFilesystems() {

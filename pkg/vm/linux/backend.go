@@ -61,6 +61,13 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	// Custom kernel args would replace the generated matchlock.* cmdline and
+	// silently drop matchlock.swap=; reject that before creating any host
+	// resources (TAP) so the failure is clean.
+	if err := vm.ValidateSwapDisks(config); err != nil {
+		return nil, err
+	}
+
 	vcpus, ok := api.VCPUCount(config.CPUs)
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
@@ -181,6 +188,13 @@ type LinuxMachine struct {
 func (m *LinuxMachine) Start(ctx context.Context) error {
 	if m.started {
 		return nil
+	}
+
+	// generateFirecrackerConfig uses KernelArgs verbatim when set, which would
+	// drop matchlock.swap=. Create rejects that combination, but guard here too
+	// so a machine assembled without Create cannot silently boot without swap.
+	if err := vm.ValidateSwapDisks(m.config); err != nil {
+		return err
 	}
 
 	fcConfig := m.generateFirecrackerConfig()
@@ -589,6 +603,12 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		for _, disk := range m.config.ExtraDisks {
 			dev := fmt.Sprintf("vd%c", devLetter)
 			devLetter++
+			if disk.Swap {
+				// Swap is never mounted; tell guest-init which device to
+				// swapon instead of emitting a mount spec.
+				kernelArgs += fmt.Sprintf(" matchlock.swap=%s", dev)
+				continue
+			}
 			diskMount := diskKernelArg(disk)
 			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 		}

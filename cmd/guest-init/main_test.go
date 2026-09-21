@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -393,3 +394,154 @@ func TestEnsureExactMountDirAllowsTrustedRuntimeSiblings(t *testing.T) {
 	err := ensureExactMountDir(target)
 	require.NoError(t, err)
 }
+
+func TestParseBootConfigSwapDevice(t *testing.T) {
+	for _, dev := range []string{"vdc", "vdaa"} {
+		t.Run(dev, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.swap=" + dev
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, dev, cfg.SwapDevice)
+		})
+	}
+}
+
+func TestParseBootConfigSwapDeviceDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.SwapDevice)
+}
+
+func TestParseBootConfigRejectsInvalidSwapDevice(t *testing.T) {
+	// "vdC" (uppercase), "../etc" (path traversal), "vdc,foo" (no comma
+	// allowed), "" (empty) and a non-vd name must all be rejected before the
+	// device ever reaches swapon(2).
+	for _, tc := range []string{"vdC", "../etc", "vdc,foo", "", "sda", "vd/../etc"} {
+		t.Run("swap="+tc, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.swap=" + tc
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidSwap)
+		})
+	}
+}
+
+func TestIsBlockDevice(t *testing.T) {
+	assert.True(t, isBlockDevice(fakeFileInfo{mode: os.ModeDevice}))
+	// os.ModeDevice alone matches character devices too; the char bit must be
+	// excluded explicitly.
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: os.ModeDevice | os.ModeCharDevice}))
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: 0}))
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: os.ModeDir}))
+}
+
+func TestValidateSwapDeviceRejectsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist")
+	err := validateSwapDevice(path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestValidateSwapDeviceRejectsRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "regular")
+	require.NoError(t, os.WriteFile(path, []byte("not swap"), 0600))
+
+	err := validateSwapDevice(path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestValidateSwapDeviceRejectsCharacterDevice(t *testing.T) {
+	if _, err := os.Stat("/dev/null"); err != nil {
+		t.Skipf("/dev/null unavailable: %v", err)
+	}
+	err := validateSwapDevice("/dev/null")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestEnableSwapRejectsMissingDeviceBeforeSyscall(t *testing.T) {
+	if _, err := os.Stat("/dev/vdzz"); err == nil {
+		t.Skip("/dev/vdzz unexpectedly exists")
+	}
+	err := enableSwap("vdzz")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestSwapDeviceModeIsRootOnly(t *testing.T) {
+	// A block device is DAC-governed, so the swap node must be readable only by
+	// root; 0640/0660 would leave it reachable by the group (e.g. disk) and
+	// anything the workload can chgrp to.
+	assert.Equal(t, os.FileMode(0o600), swapDeviceMode)
+}
+
+func TestRestrictDeviceNodeAppliesOwnerAndMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swapnode")
+	require.NoError(t, os.WriteFile(path, []byte("swap"), 0o666))
+
+	uid := os.Geteuid()
+	gid := os.Getegid()
+	require.NoError(t, restrictDeviceNode(path, uid, gid, swapDeviceMode))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	st, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	assert.Equal(t, uint32(uid), st.Uid)
+	assert.Equal(t, uint32(gid), st.Gid)
+}
+
+func TestRestrictSwapDeviceRestrictsToRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("chown to root requires privilege; covered structurally by TestSwapDeviceModeIsRootOnly")
+	}
+	path := filepath.Join(t.TempDir(), "swapnode")
+	require.NoError(t, os.WriteFile(path, []byte("swap"), 0o666))
+	require.NoError(t, os.Chown(path, 1234, 1234))
+
+	require.NoError(t, restrictSwapDevice(path))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	st, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	assert.Equal(t, uint32(0), st.Uid)
+	assert.Equal(t, uint32(0), st.Gid)
+}
+
+func TestRestrictSwapDeviceWrapsError(t *testing.T) {
+	err := restrictSwapDevice(filepath.Join(t.TempDir(), "missing"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEnableSwap)
+}
+
+// fakeFileInfo lets the block-device predicate be exercised for modes that are
+// impractical to create in a test (a real block device node).
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }

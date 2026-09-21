@@ -79,6 +79,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 			"cpus":            opts.CPUs,
 			"memory_mb":       opts.MemoryMB,
 			"disk_size_mb":    opts.DiskSizeMB,
+			"swap_mb":         opts.SwapMB,
 			"timeout_seconds": opts.TimeoutSeconds,
 		},
 	}

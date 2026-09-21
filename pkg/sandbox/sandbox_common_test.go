@@ -250,3 +250,43 @@ func TestPrepareExecEnv_SecretPlaceholderOverridesConfigEnv(t *testing.T) {
 	require.NotEqual(t, "not-secret", opts.Env["API_KEY"])
 	require.Contains(t, opts.Env["API_KEY"], "SANDBOX_SECRET_")
 }
+
+func TestBuildSwapDiskConfigIsUnmountedSwapDevice(t *testing.T) {
+	disk := buildSwapDiskConfig("/var/lib/matchlock/vms/vm-1/swap.raw")
+
+	assert.Equal(t, "/var/lib/matchlock/vms/vm-1/swap.raw", disk.HostPath)
+	assert.True(t, disk.Swap)
+	assert.Empty(t, disk.GuestMount, "swap is attached but never mounted")
+	assert.False(t, disk.ReadOnly, "swap must be attached read-write")
+	assert.Nil(t, disk.OwnerUID)
+	assert.Nil(t, disk.OwnerGID)
+}
+
+func TestProvisionSwapDiskCreatesImageAndReturnsSwapDisk(t *testing.T) {
+	dir := t.TempDir()
+	swapPath := filepath.Join(dir, "swap.raw")
+
+	disk, err := provisionSwapDisk(swapPath, 2)
+	require.NoError(t, err)
+
+	assert.Equal(t, swapPath, disk.HostPath)
+	assert.True(t, disk.Swap)
+	assert.Empty(t, disk.GuestMount)
+
+	fi, err := os.Stat(swapPath)
+	require.NoError(t, err)
+	assert.EqualValues(t, 2*1024*1024, fi.Size())
+}
+
+func TestProvisionSwapDiskWrapsCreateFailureAsCreateVM(t *testing.T) {
+	// A path inside a non-existent directory cannot be created, so provisioning
+	// fails. The error must be classified as a VM-create failure so the caller
+	// can run its root-disk/state cleanup.
+	swapPath := filepath.Join(t.TempDir(), "missing", "swap.raw")
+
+	_, err := provisionSwapDisk(swapPath, 1)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCreateVM)
+	_, statErr := os.Stat(swapPath)
+	assert.True(t, os.IsNotExist(statErr), "no partial swap image may remain")
+}

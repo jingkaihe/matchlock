@@ -153,6 +153,7 @@ func init() {
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
 	runCmd.Flags().Int("disk-size", api.DefaultDiskSizeMB, "Disk size in MB")
+	runCmd.Flags().Int("swap", 0, "Swap device size in MB (0 = off)")
 	runCmd.Flags().BoolP("detach", "d", false, "Run sandbox in detached mode (implies --rm=false; incompatible with -t/-i)")
 	runCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
@@ -188,6 +189,7 @@ func init() {
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
 	viper.BindPFlag("run.disk-size", runCmd.Flags().Lookup("disk-size"))
+	viper.BindPFlag("run.swap", runCmd.Flags().Lookup("swap"))
 	viper.BindPFlag("run.detach", runCmd.Flags().Lookup("detach"))
 	viper.BindPFlag("run.tty", runCmd.Flags().Lookup("tty"))
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
@@ -195,6 +197,19 @@ func init() {
 	viper.BindPFlag("run.rm", runCmd.Flags().Lookup("rm"))
 
 	rootCmd.AddCommand(runCmd)
+}
+
+// buildRunResources assembles the resource request from resolved `run` flag
+// values. Keeping it separate makes the CLI -> api.Resources.SwapMB
+// pass-through directly testable without booting a sandbox.
+func buildRunResources(cpus float64, memoryMB, diskSizeMB, timeoutSeconds, swapMB int) *api.Resources {
+	return &api.Resources{
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		DiskSizeMB:     diskSizeMB,
+		SwapMB:         swapMB,
+		TimeoutSeconds: timeoutSeconds,
+	}
 }
 
 // buildRunNetworkConfig assembles the network config from resolved `run` flag
@@ -238,6 +253,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	cpus, _ := cmd.Flags().GetFloat64("cpus")
 	memory, _ := cmd.Flags().GetInt("memory")
 	diskSize, _ := cmd.Flags().GetInt("disk-size")
+	swapMB, _ := cmd.Flags().GetInt("swap")
 	timeout, _ := cmd.Flags().GetInt("timeout")
 
 	// Exec options
@@ -457,12 +473,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Image:      imageName,
 		Privileged: privileged,
 		Kernel:     &api.KernelConfig{Ref: kernelRef},
-		Resources: &api.Resources{
-			CPUs:           cpus,
-			MemoryMB:       memory,
-			DiskSizeMB:     diskSize,
-			TimeoutSeconds: timeout,
-		},
+		Resources:  buildRunResources(cpus, memory, diskSize, timeout, swapMB),
 		Network: buildRunNetworkConfig(
 			allowHosts,
 			addHosts,
@@ -479,10 +490,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		ExtraDisks: extraDisks,
 		ImageCfg:   imageCfg,
 	}
-	if err := config.Network.Validate(); err != nil {
-		return err
-	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return err
 	}
 

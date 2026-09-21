@@ -39,6 +39,14 @@ func (b *DarwinBackend) Name() string {
 }
 
 func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	// Custom kernel args are used verbatim and bypass every generated
+	// matchlock.* argument (including matchlock.swap=), so reject a swap disk
+	// combined with them before doing any work; otherwise the swap device would
+	// be attached but never enabled.
+	if err := vm.ValidateSwapDisks(config); err != nil {
+		return nil, err
+	}
+
 	vcpus, ok := api.VCPUCount(config.CPUs)
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
@@ -238,6 +246,13 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	for _, disk := range config.ExtraDisks {
 		dev := fmt.Sprintf("vd%c", devLetter)
 		devLetter++
+		if disk.Swap {
+			// A swap backing device is attached but never mounted. Announce the
+			// device so guest-init can enable it at boot, and keep consuming the
+			// device letter so later disks retain their correct names.
+			diskArgs += " matchlock.swap=" + dev
+			continue
+		}
 		diskMount := diskKernelArg(disk)
 		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 	}

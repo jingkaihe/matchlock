@@ -21,6 +21,10 @@ type CreateOptions struct {
 	MemoryMB int
 	// DiskSizeMB is the disk size in megabytes (default: 5120)
 	DiskSizeMB int
+	// SwapMB is the guest swap device size in megabytes (default 0 = off).
+	// The host provisions a raw swap block device and PID 1 enables it at boot,
+	// so the workload gets swap without needing Privileged.
+	SwapMB int
 	// TimeoutSeconds is the maximum execution time
 	TimeoutSeconds int
 	// AllowedHosts is a list of allowed network hosts (supports wildcards)

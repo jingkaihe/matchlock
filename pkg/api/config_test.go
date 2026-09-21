@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -361,6 +362,212 @@ func TestValidateVFS_AllowsInterceptionWithMounts(t *testing.T) {
 	}
 
 	require.NoError(t, cfg.ValidateVFS())
+}
+
+func TestMaxSwapMBConstant(t *testing.T) {
+	assert.Equal(t, 65536, maxSwapMB)
+}
+
+func TestResourcesValidateSwapMB(t *testing.T) {
+	tests := []struct {
+		name    string
+		swapMB  int
+		wantErr bool
+	}{
+		{name: "zero is off", swapMB: 0, wantErr: false},
+		{name: "positive below cap", swapMB: 512, wantErr: false},
+		{name: "exactly at cap", swapMB: maxSwapMB, wantErr: false},
+		{name: "negative rejected", swapMB: -1, wantErr: true},
+		{name: "above cap rejected", swapMB: maxSwapMB + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Resources{SwapMB: tt.swapMB}
+			err := r.Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrInvalidConfig)
+				assert.Contains(t, err.Error(), "swap_mb")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestResourcesValidateNilSafe(t *testing.T) {
+	var r *Resources
+	require.NoError(t, r.Validate())
+}
+
+func TestConfigValidateSwapMB(t *testing.T) {
+	require.NoError(t, (&Config{Resources: &Resources{SwapMB: 0}}).Validate())
+	require.NoError(t, (&Config{Resources: &Resources{SwapMB: maxSwapMB}}).Validate())
+
+	require.ErrorIs(t, (&Config{Resources: &Resources{SwapMB: -1}}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Config{Resources: &Resources{SwapMB: maxSwapMB + 1}}).Validate(), ErrInvalidConfig)
+}
+
+func TestConfigValidateNilSafe(t *testing.T) {
+	var c *Config
+	require.NoError(t, c.Validate())
+	// Empty config has nil Resources/Network/VFS; every section is nil-safe.
+	require.NoError(t, (&Config{}).Validate())
+}
+
+func TestConfigValidatePropagatesNetworkErrors(t *testing.T) {
+	cfg := &Config{
+		Resources: &Resources{SwapMB: 1024},
+		Network: &NetworkConfig{
+			NoNetwork:    true,
+			AllowedHosts: []string{"api.openai.com"},
+		},
+	}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "network.no_network")
+}
+
+func TestConfigMergeSwapMB(t *testing.T) {
+	t.Run("positive other overrides base", func(t *testing.T) {
+		base := &Config{Resources: &Resources{SwapMB: 1024}}
+		merged := base.Merge(&Config{Resources: &Resources{SwapMB: 512}})
+		require.NotNil(t, merged.Resources)
+		assert.Equal(t, 512, merged.Resources.SwapMB)
+	})
+
+	t.Run("explicit zero leaves base unchanged", func(t *testing.T) {
+		base := &Config{Resources: &Resources{SwapMB: 1024}}
+		merged := base.Merge(&Config{Resources: &Resources{SwapMB: 0}})
+		require.NotNil(t, merged.Resources)
+		assert.Equal(t, 1024, merged.Resources.SwapMB)
+	})
+
+	t.Run("nil base resources initialized from other", func(t *testing.T) {
+		base := &Config{}
+		merged := base.Merge(&Config{Resources: &Resources{SwapMB: 256}})
+		require.NotNil(t, merged.Resources)
+		assert.Equal(t, 256, merged.Resources.SwapMB)
+	})
+}
+
+func TestResourcesSwapMBJSONTag(t *testing.T) {
+	data, err := json.Marshal(&Resources{SwapMB: 512})
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"swap_mb":512`)
+
+	data, err = json.Marshal(&Resources{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "swap_mb")
+
+	var r Resources
+	require.NoError(t, json.Unmarshal([]byte(`{"swap_mb":1024}`), &r))
+	assert.Equal(t, 1024, r.SwapMB)
+}
+
+// TestConfigMergeThenValidateRejectsNegativeSwapMB reproduces the RPC-create
+// ordering exactly: api.DefaultConfig().Merge(&params) followed by Validate.
+// Before the fix, Merge's positive-only guard discarded the negative swap_mb so
+// the value was silently normalized to the default 0 (swap off) and Validate
+// passed. It must now be rejected with the documented resources.swap_mb error.
+func TestConfigMergeThenValidateRejectsNegativeSwapMB(t *testing.T) {
+	params := &Config{Resources: &Resources{SwapMB: -1}}
+	merged := DefaultConfig().Merge(params)
+
+	err := merged.Validate()
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.Contains(t, err.Error(), "swap_mb")
+}
+
+// TestConfigMergeThenValidateAcceptsValidSwapMB locks the "0 = off, positives
+// override" contract for the RPC-shaped merge-then-validate path.
+func TestConfigMergeThenValidateAcceptsValidSwapMB(t *testing.T) {
+	tests := []struct {
+		name   string
+		swapMB int
+	}{
+		{name: "zero is off", swapMB: 0},
+		{name: "positive below cap", swapMB: 512},
+		{name: "exactly at cap", swapMB: maxSwapMB},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := DefaultConfig().Merge(&Config{Resources: &Resources{SwapMB: tt.swapMB}})
+			require.NotNil(t, merged.Resources)
+			assert.Equal(t, tt.swapMB, merged.Resources.SwapMB)
+			require.NoError(t, merged.Validate())
+		})
+	}
+}
+
+// TestConfigMergePreservesNonZeroOverrides proves Merge no longer filters out
+// negative resource values: they must survive the merge so Validate can see
+// them. (0 still means "leave base unchanged".)
+func TestConfigMergePreservesNonZeroOverrides(t *testing.T) {
+	base := &Config{Resources: &Resources{
+		CPUs:           1,
+		MemoryMB:       DefaultMemoryMB,
+		DiskSizeMB:     DefaultDiskSizeMB,
+		SwapMB:         0,
+		TimeoutSeconds: DefaultTimeoutSeconds,
+	}}
+	merged := base.Merge(&Config{Resources: &Resources{
+		CPUs:           -1,
+		MemoryMB:       -2,
+		DiskSizeMB:     -3,
+		SwapMB:         -4,
+		TimeoutSeconds: -5,
+	}})
+
+	require.NotNil(t, merged.Resources)
+	assert.Equal(t, -1.0, merged.Resources.CPUs)
+	assert.Equal(t, -2, merged.Resources.MemoryMB)
+	assert.Equal(t, -3, merged.Resources.DiskSizeMB)
+	assert.Equal(t, -4, merged.Resources.SwapMB)
+	assert.Equal(t, -5, merged.Resources.TimeoutSeconds)
+}
+
+// TestConfigMergeThenValidateRejectsNegativeSiblingResources covers the same
+// positive-only merge class for the other resource fields: negative values must
+// reach Validate and be rejected instead of reverting to the defaults.
+func TestConfigMergeThenValidateRejectsNegativeSiblingResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		other   *Resources
+		wantMsg string
+	}{
+		{name: "negative memory", other: &Resources{MemoryMB: -1}, wantMsg: "memory_mb"},
+		{name: "negative disk", other: &Resources{DiskSizeMB: -1}, wantMsg: "disk_size_mb"},
+		{name: "negative timeout", other: &Resources{TimeoutSeconds: -1}, wantMsg: "timeout_seconds"},
+		{name: "negative cpus", other: &Resources{CPUs: -0.5}, wantMsg: "cpus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := DefaultConfig().Merge(&Config{Resources: tt.other})
+			err := merged.Validate()
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrInvalidConfig)
+			require.Contains(t, err.Error(), tt.wantMsg)
+		})
+	}
+}
+
+// TestResourcesValidateSiblingFields documents the direct (CLI) validate path:
+// zero is valid and means unset/use default, valid positives pass, and negative
+// values (including a non-finite CPU count) are rejected.
+func TestResourcesValidateSiblingFields(t *testing.T) {
+	require.NoError(t, (&Resources{CPUs: 0, MemoryMB: 0, DiskSizeMB: 0, TimeoutSeconds: 0}).Validate())
+	require.NoError(t, (&Resources{CPUs: 2.5, MemoryMB: 512, DiskSizeMB: 5120, TimeoutSeconds: 300}).Validate())
+
+	require.ErrorIs(t, (&Resources{CPUs: -1}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Resources{CPUs: math.NaN()}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Resources{CPUs: math.Inf(1)}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Resources{MemoryMB: -1}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Resources{DiskSizeMB: -1}).Validate(), ErrInvalidConfig)
+	require.ErrorIs(t, (&Resources{TimeoutSeconds: -1}).Validate(), ErrInvalidConfig)
 }
 
 func TestNetworkConfigAllowPrivateJSONUnmarshal(t *testing.T) {

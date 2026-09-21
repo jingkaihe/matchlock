@@ -384,17 +384,20 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
-	config := api.DefaultConfig().Merge(&params)
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			return &Response{
-				JSONRPC: "2.0",
-				Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
-				ID:      req.ID,
-			}
+	// Validate the raw, unmerged params at the boundary. Merge only overrides
+	// non-zero fields, so a malformed request (for example swap_mb: -1) must be
+	// rejected here rather than relying solely on post-merge validation, which
+	// would otherwise normalize the bad value against the defaults first.
+	if err := params.Validate(); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
 		}
 	}
-	if err := config.ValidateVFS(); err != nil {
+
+	config := api.DefaultConfig().Merge(&params)
+	if err := config.Validate(); err != nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},

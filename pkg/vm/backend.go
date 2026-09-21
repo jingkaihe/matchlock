@@ -2,12 +2,20 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 
+	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
+
+// ErrSwapCustomKernelArgs reports a configuration that combines a swap disk
+// with caller-supplied kernel arguments. Backends that honor KernelArgs return
+// it verbatim, bypassing every generated matchlock.* argument (including
+// matchlock.swap=), so the swap device would be attached but never enabled.
+var ErrSwapCustomKernelArgs = errors.New("custom kernel args cannot be combined with a swap disk")
 
 // DiskConfig describes an additional block device to attach to the VM.
 type DiskConfig struct {
@@ -16,6 +24,11 @@ type DiskConfig struct {
 	ReadOnly   bool
 	OwnerUID   *uint32
 	OwnerGID   *uint32
+	// Swap marks a raw swap backing device (pre-formatted with a version-1
+	// swap header). It is attached read-write but never mounted, so GuestMount
+	// stays empty and the backend emits matchlock.swap=<dev> instead of
+	// matchlock.disk.<dev>= for it.
+	Swap bool
 }
 
 type VMConfig struct {
@@ -52,6 +65,24 @@ type VMConfig struct {
 	NoNetwork           bool                // Disable guest network interface entirely
 	PrebuiltRootfs      string              // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks          []DiskConfig        // Additional block devices to attach
+}
+
+// ValidateSwapDisks rejects a VMConfig that requests a swap device while
+// supplying a custom KernelArgs string. A backend that uses KernelArgs
+// verbatim drops every generated matchlock.* argument, so the guest would
+// never be told to enable the attached swap device. Failing fast here keeps
+// that from becoming a silent no-op.
+func ValidateSwapDisks(cfg *VMConfig) error {
+	if cfg == nil || cfg.KernelArgs == "" {
+		return nil
+	}
+	for _, disk := range cfg.ExtraDisks {
+		if disk.Swap {
+			return errx.With(ErrSwapCustomKernelArgs,
+				": kernel args would drop the swap device at %q", disk.HostPath)
+		}
+	}
+	return nil
 }
 
 type Backend interface {

@@ -60,6 +60,11 @@ const (
 	capSysModule = 16 // kernel module loading
 	capSysRawio  = 17 // raw I/O port access
 	capSysBoot   = 22 // kexec_load, reboot
+	// CAP_BPF gates the bpf() syscall through bpf_capable() (CAP_SYS_ADMIN is
+	// already dropped). A workload that retained it could enumerate and detach
+	// the swap-device cgroup policy guest-init attaches at boot, so it must be
+	// dropped from the bounding set as well.
+	capBPF = 39
 )
 
 type sockFprog struct {
@@ -166,7 +171,7 @@ func runSandboxLauncher() {
 
 	if !privileged {
 		// Drop specific dangerous capabilities from the bounding set
-		for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot} {
+		for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot, capBPF} {
 			syscall.RawSyscall(syscall.SYS_PRCTL, prCapBSetDrop, cap, 0)
 		}
 

@@ -295,6 +295,11 @@ func (m *Machine) bootArgs() string {
 	for _, d := range m.config.ExtraDisks {
 		dev := "vd" + piece
 		piece = nextLetter(piece)
+		if d.Swap {
+			// Swap is never mounted; guest-init swapon's the device directly.
+			sb.WriteString(fmt.Sprintf(" matchlock.swap=%s", dev))
+			continue
+		}
 		sb.WriteString(fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskKernelArg(d)))
 	}
 	for i, mapping := range m.config.AddHosts {

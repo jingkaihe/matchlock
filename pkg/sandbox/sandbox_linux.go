@@ -53,6 +53,7 @@ type Sandbox struct {
 	workspace        string
 	rootfsPath       string // Writable overlay upper disk
 	bootstrapPath    string // Bootstrap root disk (vda)
+	swapPath         string // Ephemeral swap backing image ("" when swap is off)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -214,7 +215,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
@@ -262,9 +263,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 	bootstrapRootfsPath := stateMgr.Dir(id) + "/bootstrap.ext4"
 	upperRootfsPath := stateMgr.Dir(id) + "/upper.ext4"
+	var swapPath string
 	cleanupRootDisks := func() {
 		_ = os.Remove(bootstrapRootfsPath)
 		_ = os.Remove(upperRootfsPath)
+		if swapPath != "" {
+			_ = os.Remove(swapPath)
+		}
 	}
 	defer func() {
 		if retErr != nil {
@@ -297,12 +302,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			stateMgr.Unregister(id)
-			return nil, err
-		}
-	}
 	if config.Resources == nil {
 		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
 	}
@@ -384,10 +383,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		stateMgr.Unregister(id)
 		return nil, err
 	}
-	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
+	if config.Resources != nil && config.Resources.SwapMB > 0 {
+		swapPath = stateMgr.Dir(id) + "/swap.raw"
+	}
+	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks), swapPath != ""); err != nil {
 		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
+	}
+	if swapPath != "" {
+		swapDisk, err := provisionSwapDisk(swapPath, config.Resources.SwapMB)
+		if err != nil {
+			cleanupRootDisks()
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, err
+		}
+		extraDisks = append(extraDisks, swapDisk)
 	}
 
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -612,6 +624,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		workspace:        workspace,
 		rootfsPath:       upperRootfsPath,
 		bootstrapPath:    bootstrapRootfsPath,
+		swapPath:         swapPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -890,6 +903,17 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("bootstrap_remove", err)
 	} else {
 		markCleanup("bootstrap_remove", nil)
+	}
+	// Remove ephemeral swap image
+	if s.swapPath != "" {
+		if err := os.Remove(s.swapPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+			markCleanup("swap_remove", err)
+		} else {
+			markCleanup("swap_remove", nil)
+		}
+	} else {
+		markCleanup("swap_remove", nil)
 	}
 
 	if len(errs) > 0 {

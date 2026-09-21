@@ -747,6 +747,56 @@ func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }
 
+// TestHandlerCreateRejectsNegativeSwapMB is the RPC-level regression for the
+// merge-ordering validation bypass: create must reject swap_mb: -1 at the
+// boundary instead of merging it away to the default 0 (swap off).
+func TestHandlerCreateRejectsNegativeSwapMB(t *testing.T) {
+	factoryCalls := 0
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"resources": map[string]interface{}{
+			"swap_mb": -1,
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail for negative swap_mb")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "swap_mb")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+// TestHandlerCreatePassesSwapMBToFactory guards the valid path: a positive
+// swap_mb still merges through and reaches the VM factory unchanged.
+func TestHandlerCreatePassesSwapMBToFactory(t *testing.T) {
+	var got *api.Config
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		got = config
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"resources": map[string]interface{}{
+			"swap_mb": 512,
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Resources)
+	require.Equal(t, 512, got.Resources.SwapMB)
+	require.Equal(t, api.DefaultMemoryMB, got.Resources.MemoryMB, "unset fields must keep their defaults")
+}
+
 func TestHandlerCreateRejectsSecretPlaceholderOverlapWithGeneratedFormat(t *testing.T) {
 	factoryCalls := 0
 	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {

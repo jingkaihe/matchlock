@@ -29,6 +29,28 @@ func TestBuilderResources(t *testing.T) {
 	require.Equal(t, 600, opts.TimeoutSeconds)
 }
 
+func TestBuilderSwapMBDefaultsOff(t *testing.T) {
+	opts := New("alpine:latest").Options()
+	require.Equal(t, 0, opts.SwapMB)
+}
+
+func TestBuilderWithSwapMB(t *testing.T) {
+	b := New("alpine:latest")
+
+	// WithSwapMB returns the builder so calls can be chained.
+	chained := b.WithSwapMB(512)
+	require.Same(t, b, chained)
+	require.Equal(t, 512, b.Options().SwapMB)
+
+	opts := New("alpine:latest").
+		WithMemory(256).
+		WithSwapMB(1024).
+		Options()
+
+	require.Equal(t, 256, opts.MemoryMB)
+	require.Equal(t, 1024, opts.SwapMB)
+}
+
 func TestBuilderKernel(t *testing.T) {
 	opts := New("alpine:latest").
 		WithKernel("file:///tmp/vmlinux").

@@ -23,6 +23,10 @@ const (
 	DefaultTimeoutSeconds         = 300
 	DefaultNetworkMTU             = 1500
 	DefaultGracefulShutdownPeriod = 0
+	// maxSwapMB caps the requested guest swap device size in megabytes. It is
+	// well below the u32 last_page ceiling of the version-1 swap header (which
+	// supports ~16 TiB at 4 KiB pages), so the cap is also format-safe.
+	maxSwapMB = 65536
 )
 
 type ImageConfig struct {
@@ -78,8 +82,46 @@ type Resources struct {
 	CPUs           float64       `json:"cpus,omitempty"`
 	MemoryMB       int           `json:"memory_mb,omitempty"`
 	DiskSizeMB     int           `json:"disk_size_mb,omitempty"`
+	SwapMB         int           `json:"swap_mb,omitempty"`
 	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
 	Timeout        time.Duration `json:"-"`
+}
+
+// Validate checks resource config invariants.
+//
+// The swap size bound and the negative-value rejection live here (rather than
+// only in the CLI) so that every caller — CLI, JSON-RPC create, and the
+// SDK/sandbox path — is subject to the same checks and cannot bypass them by
+// constructing api.Config directly.
+//
+// Zero is always valid and means "unset"/"use default" (for SwapMB it means
+// swap off); every other field must be non-negative, and CPUs must be a
+// finite value greater than zero.
+func (r *Resources) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if r.CPUs != 0 && !IsValidCPUCount(r.CPUs) {
+		// 0 means "unset"/"use default" and is intentionally allowed; any
+		// non-zero value must be a finite, strictly positive vCPU count.
+		return errx.With(ErrInvalidConfig, ": resources.cpus must be > 0 (got %v)", r.CPUs)
+	}
+	if r.MemoryMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.memory_mb must be >= 0 (got %d)", r.MemoryMB)
+	}
+	if r.DiskSizeMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.disk_size_mb must be >= 0 (got %d)", r.DiskSizeMB)
+	}
+	if r.SwapMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.swap_mb must be >= 0 (got %d)", r.SwapMB)
+	}
+	if r.SwapMB > maxSwapMB {
+		return errx.With(ErrInvalidConfig, ": resources.swap_mb must be <= %d (got %d)", maxSwapMB, r.SwapMB)
+	}
+	if r.TimeoutSeconds < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.timeout_seconds must be >= 0 (got %d)", r.TimeoutSeconds)
+	}
+	return nil
 }
 
 // DefaultDNSServers are used when no custom DNS servers are configured.
@@ -237,6 +279,23 @@ func (c *Config) HasVFSMounts() bool {
 	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
 }
 
+// Validate checks all config sections. It is the shared entry point used by the
+// CLI, JSON-RPC create, and the sandbox/SDK paths so that no caller can bypass a
+// config invariant (notably the swap size cap enforced by Resources.Validate).
+// It is nil-safe at every level.
+func (c *Config) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if err := c.Resources.Validate(); err != nil {
+		return err
+	}
+	if err := c.Network.Validate(); err != nil {
+		return err
+	}
+	return c.ValidateVFS()
+}
+
 // ValidateVFS checks VFS config invariants.
 //
 // Rules (legacy single-workspace mode, the default):
@@ -332,16 +391,24 @@ func (c *Config) Merge(other *Config) *Config {
 		if result.Resources == nil {
 			result.Resources = &Resources{}
 		}
-		if other.Resources.CPUs > 0 {
+		// Merge overrides when non-zero; 0 means "leave base unchanged"
+		// (and for SwapMB, 0 means swap off). Using != 0 rather than > 0 is
+		// deliberate: negative values must survive the merge so that
+		// Config.Validate can reject them instead of silently normalizing
+		// them away to the base default.
+		if other.Resources.CPUs != 0 {
 			result.Resources.CPUs = other.Resources.CPUs
 		}
-		if other.Resources.MemoryMB > 0 {
+		if other.Resources.MemoryMB != 0 {
 			result.Resources.MemoryMB = other.Resources.MemoryMB
 		}
-		if other.Resources.DiskSizeMB > 0 {
+		if other.Resources.DiskSizeMB != 0 {
 			result.Resources.DiskSizeMB = other.Resources.DiskSizeMB
 		}
-		if other.Resources.TimeoutSeconds > 0 {
+		if other.Resources.SwapMB != 0 {
+			result.Resources.SwapMB = other.Resources.SwapMB
+		}
+		if other.Resources.TimeoutSeconds != 0 {
 			result.Resources.TimeoutSeconds = other.Resources.TimeoutSeconds
 		}
 	}

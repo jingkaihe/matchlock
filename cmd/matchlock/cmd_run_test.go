@@ -456,6 +456,30 @@ func TestLoadSecretsFileTrimsHosts(t *testing.T) {
 	assert.Equal(t, []string{"github.com", "api.github.com"}, secrets["GH_TOKEN"].Hosts)
 }
 
+func TestRunSwapFlagRegistered(t *testing.T) {
+	flag := runCmd.Flags().Lookup("swap")
+	require.NotNil(t, flag, "--swap must be registered on the run command")
+	assert.Equal(t, "0", flag.DefValue, "--swap must default to 0 (off)")
+	assert.Equal(t, "int", flag.Value.Type())
+}
+
+func TestBuildRunResourcesCarriesSwapMB(t *testing.T) {
+	res := buildRunResources(1.5, 512, 5120, 300, 256)
+	require.NotNil(t, res)
+	assert.Equal(t, 1.5, res.CPUs)
+	assert.Equal(t, 512, res.MemoryMB)
+	assert.Equal(t, 5120, res.DiskSizeMB)
+	assert.Equal(t, 300, res.TimeoutSeconds)
+	assert.Equal(t, 256, res.SwapMB)
+}
+
+func TestRunSwapValidatesThroughSharedConfigPath(t *testing.T) {
+	require.NoError(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 0)}).Validate())
+	require.NoError(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 65536)}).Validate())
+	require.ErrorIs(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, -1)}).Validate(), api.ErrInvalidConfig)
+	require.ErrorIs(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 65537)}).Validate(), api.ErrInvalidConfig)
+}
+
 func TestRunAllowPrivateFlagRegistered(t *testing.T) {
 	flag := runCmd.Flags().Lookup("allow-private")
 	require.NotNil(t, flag, "--allow-private must be registered on the run command")

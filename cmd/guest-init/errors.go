@@ -25,6 +25,9 @@ var (
 	ErrInvalidExactMount  = errors.New("invalid matchlock.exact.mounts")
 	ErrExactMountPrep     = errors.New("prepare exact destination mount")
 	ErrExecGuestAgent     = errors.New("exec guest-agent")
+	ErrInvalidSwap        = errors.New("invalid matchlock.swap")
+	ErrEnableSwap         = errors.New("enable swap")
+	ErrSwapDevicePolicy   = errors.New("swap device policy")
 
 	// ErrInvalidIPv6Link rejects a malformed matchlock.ipv6= kernel cmdline
 	// field: the host and guest must agree on the per-VM IPv6 link, so a value

@@ -56,6 +56,14 @@ func (b *SandboxBuilder) WithDiskSize(mb int) *SandboxBuilder {
 	return b
 }
 
+// WithSwapMB sets the guest swap device size in megabytes (default 0 = off).
+// Swap is enabled by guest-init at boot, so the workload does not need
+// WithPrivileged to use it.
+func (b *SandboxBuilder) WithSwapMB(mb int) *SandboxBuilder {
+	b.opts.SwapMB = mb
+	return b
+}
+
 // WithTimeout sets the maximum execution time in seconds.
 func (b *SandboxBuilder) WithTimeout(seconds int) *SandboxBuilder {
 	b.opts.TimeoutSeconds = seconds

@@ -613,6 +613,66 @@ func TestCreateSendsFractionalCPUs(t *testing.T) {
 	assert.Equal(t, 0.5, capturedCPUs)
 }
 
+func TestCreateSendsSwapMB(t *testing.T) {
+	var capturedSwapMB float64
+	var capturedResources map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if resources, ok := params["resources"].(map[string]interface{}); ok {
+						capturedResources = resources
+						if swapMB, ok := resources["swap_mb"].(float64); ok {
+							capturedSwapMB = swapMB
+						}
+					}
+				}
+			}
+			return response{JSONRPC: "2.0", Result: json.RawMessage(`{"id":"vm-swap"}`), ID: &req.ID}
+		default:
+			return response{JSONRPC: "2.0", Error: &rpcError{Code: ErrCodeMethodNotFound, Message: "Method not found"}, ID: &req.ID}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{Image: "alpine:latest", SwapMB: 512})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-swap", vmID)
+	require.NotNil(t, capturedResources)
+	assert.Equal(t, 512.0, capturedSwapMB)
+}
+
+func TestCreateSendsSwapMBOffByDefault(t *testing.T) {
+	var capturedResources map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if resources, ok := params["resources"].(map[string]interface{}); ok {
+						capturedResources = resources
+					}
+				}
+			}
+			return response{JSONRPC: "2.0", Result: json.RawMessage(`{"id":"vm-noswap"}`), ID: &req.ID}
+		default:
+			return response{JSONRPC: "2.0", Error: &rpcError{Code: ErrCodeMethodNotFound, Message: "Method not found"}, ID: &req.ID}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{Image: "alpine:latest"})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-noswap", vmID)
+	require.NotNil(t, capturedResources)
+	// The key is always present so the RPC side sees an explicit 0 (off).
+	require.Contains(t, capturedResources, "swap_mb")
+	assert.Equal(t, 0.0, capturedResources["swap_mb"])
+}
+
 func TestCreateSendsNoNetwork(t *testing.T) {
 	var capturedNetwork map[string]interface{}
 
