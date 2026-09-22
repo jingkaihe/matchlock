@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -220,7 +222,7 @@ func TestWaitDetachedVMIDFindsRunningState(t *testing.T) {
 		_ = mgr.Remove(vmID)
 	})
 
-	got, err := waitDetachedVMID(os.Getpid())
+	got, err := waitDetachedVMID(os.Getpid(), nil, time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, vmID, got)
 }
@@ -229,9 +231,96 @@ func TestWaitDetachedVMIDReturnsErrorWhenProcessIsNotRunning(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	_, err := waitDetachedVMID(0)
+	_, err := waitDetachedVMID(0, nil, time.Second)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrFindDetachedVM)
+}
+
+func TestWaitDetachedVMIDReturnsErrorWhenChildExitsEarly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	exitErr := exec.Command("/bin/sh", "-c", "exit 7").Run()
+	require.Error(t, exitErr)
+
+	childExited := make(chan detachedResult, 1)
+	childExited <- detachedResult{exitErr: exitErr, stderr: "boom: detached child failed"}
+
+	start := time.Now()
+	_, err := waitDetachedVMID(os.Getpid(), childExited, 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "boom: detached child failed")
+	assert.Contains(t, err.Error(), "exit status 7")
+	assert.Less(t, elapsed, 5*time.Second, "early child exit must fail fast, not hang")
+}
+
+func TestWaitDetachedVMIDReturnsErrorWhenChildExitsCleanWithoutRegistering(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	childExited := make(chan detachedResult, 1)
+	childExited <- detachedResult{stderr: "pull access denied for nope"}
+
+	start := time.Now()
+	_, err := waitDetachedVMID(os.Getpid(), childExited, 30*time.Second)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "pull access denied for nope")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+func TestWaitDetachedVMIDTimesOut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Use a real, separate process so the timeout path's best-effort kill does
+	// not terminate the test binary.
+	child := exec.Command("/bin/sh", "-c", "sleep 30")
+	require.NoError(t, child.Start())
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+
+	start := time.Now()
+	_, err := waitDetachedVMID(child.Process.Pid, nil, 200*time.Millisecond)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedStartupTimeout)
+	assert.Less(t, time.Since(start), 5*time.Second, "bounded wait must not hang")
+}
+
+func TestStartDetachedChildSurfacesEarlyExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	start := time.Now()
+	err := startDetachedChild("/bin/sh", []string{"-c", "echo 'stub boom' >&2; exit 7"}, 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "stub boom")
+	assert.Contains(t, err.Error(), "exit status 7")
+	assert.Less(t, elapsed, 5*time.Second, "detached startup must fail fast when the child dies early")
+}
+
+func TestReadFileTailKeepsLastBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tail-*")
+	require.NoError(t, err)
+	defer f.Close()
+
+	_, err = f.WriteString("abcdefghij")
+	require.NoError(t, err)
+
+	assert.Equal(t, "fghij", readFileTail(f, 5))
+	assert.Equal(t, "abcdefghij", readFileTail(f, 100))
+	assert.Equal(t, "", readFileTail(f, 0))
+	assert.Equal(t, "", readFileTail(nil, 5))
 }
 
 func TestParseRunSecretsWithPlaceholderOverride(t *testing.T) {

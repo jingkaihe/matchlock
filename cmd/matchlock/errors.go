@@ -74,6 +74,8 @@ var (
 	ErrPrepareDetachedIO      = errors.New("prepare detached stdio")
 	ErrStartDetachedRun       = errors.New("start detached run")
 	ErrFindDetachedVM         = errors.New("find detached VM")
+	ErrDetachedRunExited      = errors.New("detached run exited before registering a VM")
+	ErrDetachedStartupTimeout = errors.New("timed out waiting for detached run to register a VM")
 	ErrCreateSandbox          = errors.New("creating sandbox")
 	ErrStartSandbox           = errors.New("starting sandbox")
 	ErrCloseSandbox           = errors.New("closing sandbox")

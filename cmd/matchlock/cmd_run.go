@@ -29,6 +29,15 @@ import (
 
 const (
 	detachedVMPollInterval = 100 * time.Millisecond
+	// detachedStartupTimeout bounds how long a detached run waits for its child
+	// to register a running VM row, so a broken startup fails loudly instead of
+	// hanging forever.
+	detachedStartupTimeout = 5 * time.Minute
+	// detachedReapGrace is how long the wait lingers for the reaper's verdict
+	// once the child is observed gone.
+	detachedReapGrace = time.Second
+	// detachedStderrTailBytes caps the captured child stderr kept for an error.
+	detachedStderrTailBytes = 4096
 )
 
 var runCmd = &cobra.Command{
@@ -655,18 +664,38 @@ func startDetachedRun() error {
 	if err != nil {
 		return errx.Wrap(ErrResolveExecutable, err)
 	}
-	childArgs := detachedChildArgs(os.Args[1:])
+	return startDetachedChild(exePath, detachedChildArgs(os.Args[1:]), detachedStartupTimeout)
+}
 
+// startDetachedChild forks the detached child, reaps it exactly once, and waits
+// for it to register a running VM row. It never waits for the VM's whole
+// lifetime: as soon as the row appears the child's pid is returned to the
+// caller while the child keeps running (for --rm=false) under its own session.
+func startDetachedChild(exePath string, childArgs []string, startupTimeout time.Duration) error {
 	nullFile, err := os.OpenFile(os.DevNull, os.O_RDWR, 0600)
 	if err != nil {
 		return errx.Wrap(ErrPrepareDetachedIO, err)
 	}
 	defer nullFile.Close()
 
+	// Capture stderr so an early exit can surface the child's own diagnostic
+	// instead of discarding it to /dev/null. A regular file (not a pipe) is
+	// required because the detached child outlives this process: a pipe reader
+	// closing on parent exit would deliver SIGPIPE to the child as soon as it
+	// wrote again. The file is unlinked on return; the child keeps its fd.
+	stderrFile, err := os.CreateTemp("", "matchlock-detached-*.stderr")
+	if err != nil {
+		return errx.Wrap(ErrPrepareDetachedIO, err)
+	}
+	defer func() {
+		_ = stderrFile.Close()
+		_ = os.Remove(stderrFile.Name())
+	}()
+
 	child := exec.Command(exePath, childArgs...)
 	child.Stdin = nullFile
 	child.Stdout = nullFile
-	child.Stderr = nullFile
+	child.Stderr = stderrFile
 	child.Env = os.Environ()
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
@@ -674,9 +703,20 @@ func startDetachedRun() error {
 		return errx.Wrap(ErrStartDetachedRun, err)
 	}
 	pid := child.Process.Pid
-	_ = child.Process.Release()
 
-	vmID, err := waitDetachedVMID(pid)
+	// Reap the child exactly once. The detached child legitimately outlives
+	// startup, so this goroutine only prevents a zombie and captures an early
+	// exit; it is not awaited on the success path.
+	childExited := make(chan detachedResult, 1)
+	go func() {
+		waitErr := child.Wait()
+		childExited <- detachedResult{
+			exitErr: waitErr,
+			stderr:  readFileTail(stderrFile, detachedStderrTailBytes),
+		}
+	}()
+
+	vmID, err := waitDetachedVMID(pid, childExited, startupTimeout)
 	if err != nil {
 		return err
 	}
@@ -704,10 +744,45 @@ func detachedChildArgs(args []string) []string {
 	return out
 }
 
-func waitDetachedVMID(pid int) (string, error) {
+// detachedResult is the single report published by the detached child's reaper.
+type detachedResult struct {
+	exitErr error
+	stderr  string
+}
+
+// readFileTail returns at most the last max bytes of f. It must be called after
+// the writer has exited so the file size is stable.
+func readFileTail(f *os.File, max int) string {
+	if f == nil || max <= 0 {
+		return ""
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.Size() <= 0 {
+		return ""
+	}
+	size := fi.Size()
+	offset := int64(0)
+	if size > int64(max) {
+		offset = size - int64(max)
+	}
+	buf := make([]byte, size-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return string(buf)
+}
+
+func waitDetachedVMID(pid int, childExited <-chan detachedResult, timeout time.Duration) (string, error) {
 	mgr := state.NewManager()
 	ticker := time.NewTicker(detachedVMPollInterval)
 	defer ticker.Stop()
+
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
 
 	for {
 		states, err := mgr.List()
@@ -718,16 +793,82 @@ func waitDetachedVMID(pid int) (string, error) {
 				}
 			}
 		}
-		if !isProcessRunning(pid) {
-			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
+
+		// Prefer the child's own exit report: it carries the diagnostic that
+		// explains why no VM row ever appeared. Reaping is guaranteed to
+		// publish exactly one result, so this cannot be starved.
+		select {
+		case result := <-childExited:
+			return "", detachedExitError(pid, result)
+		case <-timeoutCh:
+			killDetachedChild(pid)
+			return "", errx.With(ErrDetachedStartupTimeout, " for detached process pid=%d after %s", pid, timeout)
+		case <-ticker.C:
 		}
 
-		<-ticker.C
+		if !isProcessRunning(pid) {
+			// The child is gone. Wait briefly for the reaper to publish its
+			// captured status so the real error is surfaced instead of a bare
+			// "process not found".
+			if result, ok := awaitDetachedResult(childExited, detachedReapGrace); ok {
+				return "", detachedExitError(pid, result)
+			}
+			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
+		}
 	}
+}
+
+// awaitDetachedResult returns the reaper's verdict, waiting up to grace for it.
+func awaitDetachedResult(childExited <-chan detachedResult, grace time.Duration) (detachedResult, bool) {
+	if childExited == nil {
+		return detachedResult{}, false
+	}
+	if grace <= 0 {
+		select {
+		case result := <-childExited:
+			return result, true
+		default:
+			return detachedResult{}, false
+		}
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case result := <-childExited:
+		return result, true
+	case <-timer.C:
+		return detachedResult{}, false
+	}
+}
+
+func detachedExitError(pid int, result detachedResult) error {
+	stderr := strings.TrimSpace(result.stderr)
+	switch {
+	case result.exitErr != nil && stderr != "":
+		return errx.With(ErrDetachedRunExited, " pid=%d: %v: %s", pid, result.exitErr, stderr)
+	case result.exitErr != nil:
+		return errx.With(ErrDetachedRunExited, " pid=%d: %v", pid, result.exitErr)
+	case stderr != "":
+		return errx.With(ErrDetachedRunExited, " pid=%d before registering a VM: %s", pid, stderr)
+	default:
+		return errx.With(ErrDetachedRunExited, " pid=%d before registering a VM", pid)
+	}
+}
+
+// killDetachedChild makes a best-effort attempt to stop a child that overran
+// the startup deadline so no orphan is left behind.
+func killDetachedChild(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 func isProcessRunning(pid int) bool {
 	if pid <= 0 {
+		return false
+	}
+	if processIsZombie(pid) {
 		return false
 	}
 	err := syscall.Kill(pid, 0)
