@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/jingkaihe/matchlock/internal/testutil"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/stretchr/testify/require"
 )
@@ -67,11 +67,7 @@ func startTestNetworkHookServer(t *testing.T, handle func(conn net.Conn) error) 
 	t.Helper()
 
 	// Keep the Unix socket path short; macOS rejects long socket paths.
-	tempDir, err := os.MkdirTemp("", "mlnh-*")
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = os.RemoveAll(tempDir)
-	})
+	tempDir := testutil.ShortTempDir(t)
 
 	socketPath := filepath.Join(tempDir, "s.sock")
 	listener, err := net.Listen("unix", socketPath)
