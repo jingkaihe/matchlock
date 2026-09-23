@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -20,6 +21,25 @@ type Engine struct {
 	networkRules []compiledNetworkRule
 	networkHook  networkHookInvoker
 	allowPrivate []allowPrivateEntry
+
+	// allowPrivateNames holds the distinct host names carried by allow_private
+	// NAME entries and addHosts snapshots the static network.add_hosts mapping.
+	// Both are immutable after construction, so the name resolver in
+	// allow_private_name.go reads them without e.mu.
+	allowPrivateNames []string
+	addHosts          map[string][]net.IP
+
+	// nameMu guards nameCache, the TTL-bounded host-side resolution of the
+	// allow_private NAME entries. The resolver deliberately owns this lock
+	// instead of e.mu: the private-block decision already runs with e.mu held
+	// for reading, and a recursive RLock deadlocks as soon as a writer waits
+	// for the read lock while a lookup is in flight.
+	nameMu      sync.Mutex
+	nameCache   map[string]*nameResolution
+	now         func() time.Time
+	nameTTL     time.Duration
+	nameTimeout time.Duration
+	nameWarn    func(name string)
 }
 
 // allowPrivateEntry is a single compiled allow_private exception. Exactly one of
@@ -37,12 +57,20 @@ func NewEngine(config *api.NetworkConfig) *Engine {
 		config = &api.NetworkConfig{}
 	}
 
+	allowPrivate := compileAllowPrivate(config.AllowPrivate)
+
 	e := &Engine{
-		config:       config,
-		placeholders: make(map[string]string),
-		networkRules: compileNetworkRules(config.Interception),
-		networkHook:  newNetworkHookInvoker(config),
-		allowPrivate: compileAllowPrivate(config.AllowPrivate),
+		config:            config,
+		placeholders:      make(map[string]string),
+		networkRules:      compileNetworkRules(config.Interception),
+		networkHook:       newNetworkHookInvoker(config),
+		allowPrivate:      allowPrivate,
+		allowPrivateNames: compileAllowPrivateNames(allowPrivate),
+		addHosts:          compileAddHosts(config.AddHosts),
+		nameCache:         make(map[string]*nameResolution),
+		now:               time.Now,
+		nameTTL:           allowPrivateNameTTL,
+		nameTimeout:       allowPrivateNameLookupTimeout,
 	}
 
 	for name, secret := range config.Secrets {
@@ -199,6 +227,10 @@ func (e *Engine) IsHostAllowed(host string) bool {
 // match port 0. A port embedded in host is ignored in favor of the explicit
 // argument (host is stripped with stripHostPort).
 func (e *Engine) IsHostAllowedPort(host string, port int) bool {
+	// Resolve (or refresh) the allow_private NAME entries before taking the
+	// read lock: a lookup is DNS I/O and must never run under e.mu.
+	e.refreshAllowPrivateNames()
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -563,6 +595,10 @@ func (e *Engine) AllowedHostIPs(host string) ([]net.IP, bool) {
 // policy check and the dial (rebinding / TOCTOU) cannot redirect the connection
 // to an address that was not verified.
 func (e *Engine) AllowedHostIPsPort(host string, port int) ([]net.IP, bool) {
+	// See IsHostAllowedPort: warm the allow_private NAME cache off-lock so the
+	// private-block check below never performs DNS while holding e.mu.
+	e.refreshAllowPrivateNames()
+
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -572,8 +608,8 @@ func (e *Engine) AllowedHostIPsPort(host string, port int) ([]net.IP, bool) {
 		return nil, false
 	}
 
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
+	ips, ok := e.destinationAddresses(host)
+	if !ok {
 		return nil, false
 	}
 
@@ -736,8 +772,8 @@ func (e *Engine) privateBlocked(host string, port int) bool {
 		return !e.allowPrivateAddress(ip, port)
 	}
 
-	ips, err := net.LookupIP(host)
-	if err != nil || len(ips) == 0 {
+	ips, ok := e.destinationAddresses(host)
+	if !ok {
 		return false
 	}
 	return e.privateBlockedResolved(host, ips, port)
@@ -748,7 +784,16 @@ func (e *Engine) privateBlocked(host string, port int) bool {
 // additionally be covered by a matching name entry (the DNS rebinding guard: an
 // address entry alone does not authorize an unlisted name, and a name entry
 // alone does not authorize an unlisted address). An IP-literal host needs only
-// the address entry.
+// a covering entry — see privateBlocked, which routes literals through
+// allowPrivateAddress.
+//
+// Coverage here is deliberately pinned to allowPrivateAddressEntry: a NAME
+// destination's private addresses must be covered by an address entry
+// (literal/CIDR) in the same list, exactly as docs/network-interception.md
+// documents ("a name that resolves to any unlisted private address is still
+// refused — even when another of its addresses is listed"). The resolved set of
+// a name entry covers a destination only on the literal-destination paths, where
+// the client itself chose the address.
 func (e *Engine) privateBlockedResolved(host string, ips []net.IP, port int) bool {
 	privateSeen := false
 	for _, ip := range ips {
@@ -756,7 +801,7 @@ func (e *Engine) privateBlockedResolved(host string, ips []net.IP, port int) boo
 			continue
 		}
 		privateSeen = true
-		if !e.allowPrivateAddress(ip, port) {
+		if !e.allowPrivateAddressEntry(ip, port) {
 			return true
 		}
 	}
@@ -770,9 +815,41 @@ func (e *Engine) privateBlockedResolved(host string, ips []net.IP, port int) boo
 	return !e.allowPrivateName(host, port)
 }
 
-// allowPrivateAddress reports whether ip is covered by an allow_private address
-// entry (IP literal or CIDR) whose port scope matches.
+// allowPrivateAddress reports whether ip is covered by an allow_private entry
+// whose port scope matches. Two entry forms cover an address: an address entry
+// (IP literal or CIDR) that contains it, and a NAME entry whose host-side
+// resolution contains it.
+//
+// The NAME arm is what makes "--allow-private name:port" work on the paths that
+// observe the literal destination rather than the name: pkg/net/proxy.go
+// handlePassthrough only ever sees the pre-DNAT destination IP:port, and an HTTP
+// request whose Host header is an IP literal is seen the same way. Such a
+// destination is not subject to DNS rebinding — the client picked that address —
+// so an entry that resolves to it may cover it.
+//
+// It is deliberately NOT the coverage predicate for a NAME destination: see
+// privateBlockedResolved and allowPrivateAddressEntry for that (documented)
+// guard. The resolved set is served from the cache that
+// refreshAllowPrivateNames warms before e.mu is taken — this function runs with
+// e.mu held for reading and must not perform DNS itself. A name that does not
+// resolve has an empty set, so it covers nothing.
 func (e *Engine) allowPrivateAddress(ip net.IP, port int) bool {
+	if e.allowPrivateAddressEntry(ip, port) {
+		return true
+	}
+	return e.allowPrivateNameAddress(ip, port)
+}
+
+// allowPrivateAddressEntry reports whether ip is covered by an allow_private
+// address entry (IP literal or CIDR) whose port scope matches. This is the
+// pinned-address coverage the DNS rebinding guard requires for a NAME
+// destination: an entry that names a host does not, on its own, authorize the
+// address that host currently resolves to (see docs/network-interception.md).
+func (e *Engine) allowPrivateAddressEntry(ip net.IP, port int) bool {
+	if ip == nil {
+		return false
+	}
+
 	for _, entry := range e.allowPrivate {
 		if entry.port != 0 && entry.port != port {
 			continue
@@ -782,6 +859,37 @@ func (e *Engine) allowPrivateAddress(ip net.IP, port int) bool {
 		}
 		if entry.network != nil && entry.network.Contains(ip) {
 			return true
+		}
+	}
+	return false
+}
+
+// allowPrivateNameAddress reports whether ip is one of the addresses a NAME
+// entry with a matching port scope currently resolves to. The match is against
+// the resolved address set, never against the host string, so it authorizes the
+// literal destination of the paths described in allowPrivateAddress without
+// weakening allowPrivateName (the destination-name matcher used by the rebinding
+// guard).
+//
+// Glob name entries (*.example.com) are matched by allowPrivateName only: a
+// pattern is not a host name, so compileAllowPrivateNames never resolves it and
+// it contributes no address here.
+func (e *Engine) allowPrivateNameAddress(ip net.IP, port int) bool {
+	for _, entry := range e.allowPrivate {
+		if entry.name == "" {
+			continue
+		}
+		if entry.port != 0 && entry.port != port {
+			continue
+		}
+		addresses, ok := e.nameEntryAddressesCached(entry.name)
+		if !ok {
+			continue
+		}
+		for _, resolved := range addresses {
+			if resolved.Equal(ip) {
+				return true
+			}
 		}
 	}
 	return false

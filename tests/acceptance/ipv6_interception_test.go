@@ -44,7 +44,7 @@ import (
 // launch helper's cleanup.
 func TestSDKIPv6InterceptionAllowedRefusedAndNoLeak(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("IPv6 interception is a Linux-backend feature")
+		t.Skip("IPv6 interception (and therefore the dual-stack proxy) is a Linux-backend feature")
 	}
 
 	const (
@@ -201,7 +201,7 @@ func TestSDKIPv6InterceptionAllowedRefusedAndNoLeak(t *testing.T) {
 // connectivity at all.
 func TestSDKIPv6PublicEgressThroughProxy(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("IPv6 interception is a Linux-backend feature")
+		t.Skip("IPv6 interception (and therefore the dual-stack proxy) is a Linux-backend feature")
 	}
 	if !hostHasIPv6Connectivity() {
 		t.Skip("host has no IPv6 connectivity")

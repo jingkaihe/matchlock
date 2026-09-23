@@ -30,8 +30,11 @@ import (
 // "IPv6 is fully dropped" state - the guest IPv6 line was already logged only -
 // so this diagnostic describes the new redirected-not-dropped contract.
 func TestSDKIPv6NetDiag(t *testing.T) {
-	if runtime.GOOS != "linux" || os.Getenv("MATCHLOCK_BACKEND") != "qemu" {
-		t.Skip("diag is linux/QEMU-specific")
+	if runtime.GOOS != "linux" {
+		t.Skip("IPv6 interception (and therefore the dual-stack proxy) is a Linux-backend feature")
+	}
+	if os.Getenv("MATCHLOCK_BACKEND") != "qemu" {
+		t.Skipf("diag is linux/QEMU-specific: requires MATCHLOCK_BACKEND=qemu (got %q)", os.Getenv("MATCHLOCK_BACKEND"))
 	}
 	probeBytes := buildIP6Probe(t)
 

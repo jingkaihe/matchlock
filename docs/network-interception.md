@@ -66,15 +66,39 @@ carries a port, the destination port must match:
 | IPv6 literal + port | `[200:1234::1]:443` | that address only on 443 |
 | CIDR, any port | `200::/7` | any address in the range, any port |
 | CIDR + port | `192.168.0.0/16:8080` | addresses in the range on 8080 |
-| host name, any port | `ai.internal` | that name, any port |
-| host name + port | `ai.internal:8888` | that name only on 8888 |
+| host name, any port | `ai.internal` | that name and the addresses it resolves to, any port |
+| host name + port | `ai.internal:8888` | that name and the addresses it resolves to, only on 8888 |
 
-A private destination is exempt only when its resolved address is inside a
-listed CIDR or equals a listed IP literal. A host name additionally needs a
-matching name entry, and a name that resolves to **any** unlisted private
-address is still refused — even when another of its addresses is listed. This is
+A name entry covers the address set the name resolves to, not just the literal
+string: the name is resolved host-side on the first policy decision that needs
+it (never per connection), and the result is refreshed with a 60 s TTL, so a DNS
+change is honoured within a minute. A destination that reaches one of those
+addresses is therefore exempt even when it arrives as an IP literal — that is
+what makes `--allow-private ai.internal:8888` work on the passthrough proxy,
+which only ever sees the pre-DNAT destination address of the connection rather
+than the name the guest looked up, and on an HTTP request whose `Host` header is
+an IP literal. A name entry that does not resolve covers nothing: it never
+matches, and the miss is logged once at debug level instead of once per
+connection. The port scope applies to every entry form, including the addresses
+a name entry resolves to (`ai.internal:8888` covers them on 8888 only; a bare
+entry covers them on any port).
+
+A static `network.add_hosts` mapping is used as the authoritative name-to-address
+mapping while evaluating a name entry — the same mapping the guest receives as an
+`/etc/hosts` entry — so a fixture or internal name can be exempted without
+operator DNS.
+
+A private destination is exempt only when its address is inside a listed CIDR,
+equals a listed IP literal, or is one of the addresses a name entry resolves to.
+A destination that arrives as a host name additionally needs a matching name
+entry, and a name that resolves to **any** unlisted private address is still
+refused — even when another of its addresses is listed. This is
 the DNS-rebinding guard: a listed name never authorizes an unlisted private
-address.
+address. The guard is unchanged by name-entry resolution and it is evaluated on
+the *destination* name: a destination that is a name still needs every private
+address it resolves to covered by an address entry (literal or CIDR), and the
+verified address is the one that gets dialed. A name entry only widens coverage
+for destinations that arrive as an IP literal.
 
 `allow_private` only lifts the private block. `allowed_hosts` keeps its meaning
 (a non-empty allow-list still applies to the public side), and `no_network`
@@ -149,7 +173,9 @@ Policy parity — an IPv6 destination is decided exactly like its IPv4 equivalen
   guard as IPv4.
 - `block_private_ips` covers `::1/128`, `fc00::/7`, `fe80::/10` and `200::/7`,
   and `allow_private` exempts them with the same entry syntax, including the
-  `[v6]:port` form.
+  `[v6]:port` form. A name entry covers the IPv6 addresses the name resolves to
+  on the same terms as its IPv4 addresses (60 s TTL, port scope, unresolvable
+  names never match).
 - A raw IPv6 connect that the table did not redirect never reaches the proxy and
   is dropped, so there is no IPv6 leak path around the policy.
 

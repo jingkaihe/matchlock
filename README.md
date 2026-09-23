@@ -201,10 +201,20 @@ Reach specific private endpoints without disabling the block (`--allow-private`)
   exactly those destinations. It never widens `--allow-host` and cannot be
   combined with `--no-network`.
 - Wire API (`create`): set `network.allow_private` on the create request.
-- A name entry is a rebinding-safe exception: it is honored only when every
-  address the name resolves to is either public or covered by an address entry
-  (literal/CIDR) in the same list. A name that resolves to any unlisted private
-  address is still refused.
+- A name entry covers the address set the name resolves to, so a destination that
+  arrives as an IP literal is exempt as well (the passthrough proxy only sees the
+  pre-DNAT destination address, never the name). The name is resolved host-side
+  once, and refreshed with a 60 s TTL; a name entry that does not resolve never
+  matches. The `:port` scope applies to every entry form, including a name
+  entry's resolved addresses.
+- `network.add_hosts` (SDK `.AddHost(name, ip)`) is an authoritative static
+  name-to-address mapping for that resolution, so a fixture or internal name can
+  be exempted without operator DNS.
+- A name *destination* is a rebinding-safe exception: it is honored only when
+  every address the name resolves to is either public or covered by an address
+  entry (literal/CIDR) in the same list, and the verified address is the one that
+  gets dialed. A name that resolves to any unlisted private address is still
+  refused.
 
 ```bash
 matchlock run --image alpine:latest \
@@ -432,7 +442,8 @@ Interception:
   policy.
 - IPv6 names resolve through the same DNS forwarder, which relays AAAA answers
   unchanged; a name that resolves only to an unlisted private IPv6 address is
-  still refused.
+  still refused. An `allow_private` name entry covers the AAAA addresses the name
+  resolves to exactly like its A records.
 
 Private IPv6 destinations are blocked by default just like IPv4 ones — exempt
 individual endpoints with `--allow-private` while the block stays on:

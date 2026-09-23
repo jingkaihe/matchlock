@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -28,7 +29,19 @@ import (
 // route. The raw inventory is still logged for evidence, and the refusal/drop
 // half of the contract is asserted by
 // TestSDKIPv6InterceptionAllowedRefusedAndNoLeak.
+//
+// Darwin: the darwin backend is IPv4-only by design - the dual-stack proxy and
+// the guest ULA below are Linux-backend features - so the test skips there with
+// the same guard and reason as its sibling
+// TestSDKIPv4InterceptionParityWithDualStackProxy instead of failing on an
+// assertion the platform cannot satisfy. The darwin surface still COMPILES the
+// test (see scripts/darwin-crosscompile-gate.sh and
+// tests/acceptance/darwin_ipv6_guard_test.go, which pins the guard).
 func TestSDKIPv6EgressState(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("IPv6 interception (and therefore the dual-stack proxy) is a Linux-backend feature")
+	}
+
 	client := launchAlpineWithNetwork(t, sdk.New("alpine:latest").
 		AllowHost("httpbin.org").
 		WithCPUs(0.5))

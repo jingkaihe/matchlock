@@ -37,10 +37,10 @@ import (
 // hit. We use bounded exec contexts and validate the host-side received nonce.
 func TestSDKIPv6LinkLocalBypass(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("IPv6 link-local TAP diagnostic is Linux/QEMU-specific")
+		t.Skip("IPv6 interception (and therefore the dual-stack proxy) is a Linux-backend feature")
 	}
 	if os.Getenv("MATCHLOCK_BACKEND") != "qemu" {
-		t.Skipf("requires MATCHLOCK_BACKEND=qemu (got %q)", os.Getenv("MATCHLOCK_BACKEND"))
+		t.Skipf("IPv6 link-local TAP diagnostic is Linux/QEMU-specific: requires MATCHLOCK_BACKEND=qemu (got %q)", os.Getenv("MATCHLOCK_BACKEND"))
 	}
 
 	probeBytes := buildIP6Probe(t)

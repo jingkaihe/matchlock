@@ -77,3 +77,48 @@ func TestNetPolicyDocsDocumentAllowPrivate(t *testing.T) {
 		assert.Contains(t, lowerDocs, phrase, "docs/network-interception.md must document %q", phrase)
 	}
 }
+
+// TestNetPolicyDocsDocumentAllowPrivateNameResolution locks the documented
+// semantics of an allow_private NAME entry: it covers the address set the name
+// resolves to (host-side resolution, 60 s TTL refresh), an unresolvable entry
+// never matches, the port scope applies to every entry form, add_hosts is the
+// authoritative static mapping, and the DNS-rebinding guard keeps applying to a
+// name *destination*. The implementation is
+// pkg/policy/allow_private_name.go + Engine.allowPrivateAddress; an operator
+// configures an exception from these two documents, so a change to the rule
+// must not ship without the matching sentence.
+func TestNetPolicyDocsDocumentAllowPrivateNameResolution(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	require.NoError(t, err, "read README.md relative to cmd/matchlock")
+	lowerReadme := strings.ToLower(string(readme))
+
+	readmePhrases := []string{
+		"resolves to",
+		"refreshed with a 60 s ttl",
+		"does not resolve",
+		"add_hosts",
+		".addhost(",
+		"rebinding",
+		"verified address is the one that",
+	}
+	for _, phrase := range readmePhrases {
+		assert.Contains(t, lowerReadme, phrase, "README.md must document %q", phrase)
+	}
+
+	docs, err := os.ReadFile("../../docs/network-interception.md")
+	require.NoError(t, err, "read docs/network-interception.md relative to cmd/matchlock")
+	lowerDocs := strings.ToLower(string(docs))
+
+	docsPhrases := []string{
+		"address set the name resolves to",
+		"refreshed with a 60 s ttl",
+		"does not resolve",
+		"add_hosts",
+		"port scope applies to every entry form",
+		"gets dialed",
+		"unresolvable",
+	}
+	for _, phrase := range docsPhrases {
+		assert.Contains(t, lowerDocs, phrase, "docs/network-interception.md must document %q", phrase)
+	}
+}
