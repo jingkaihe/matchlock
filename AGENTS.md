@@ -1,171 +1,42 @@
-# Matchlock Agent Guide
+# Working on Matchlock
 
-Concise contributor guide for working in this repo.
+Matchlock runs code in microVMs: Firecracker on Linux/KVM, Virtualization.framework on macOS/Apple Silicon. The host and guest runtime are Go; SDKs are Go, Python, and TypeScript.
 
-## What Matchlock Is
+## Where to look
 
-Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
-- cross-platform VM backends (Linux + macOS/Apple Silicon)
-- network interception/policy controls
-- secret protection
-- host-guest communication over vsock
-- JSON-RPC control surface
+- `cmd/matchlock/`: CLI; `pkg/sandbox/`: orchestration; `pkg/vm/{linux,darwin}/`: backends.
+- `cmd/guest-init/`, `internal/guestruntime/`: guest runtime; `pkg/vsock/`: host/guest transport.
+- `pkg/net/`, `pkg/policy/`, `internal/mitm/`: networking, policy, and secret injection.
+- `pkg/api/`, `pkg/rpc/`: shared configuration and JSON-RPC; `pkg/sdk/`, `sdk/{python,typescript}/`: SDKs.
+- `pkg/image/`, `pkg/kernel/`: images and kernels; `guest/kernel/`: kernel configs.
+- `docs/`, `adrs/`: behavior and design decisions; `tests/acceptance/`: real-VM tests.
 
-## Core Stack
+## Build and verify
 
-- Go 1.25
-- Linux VM backend: Firecracker (`pkg/vm/linux`)
-- macOS VM backend: Virtualization.framework (`pkg/vm/darwin`)
-- Network:
-  - Linux: nftables transparent proxy + HTTP/TLS MITM
-  - macOS: native NAT or gVisor userspace stack when interception is required
-- Storage: native guest filesystems and attached block volumes; no host-directory sharing
-- File transfers: guest-agent RPC and streaming exec over vsock
+`mise.toml` defines tooling and tasks; `.github/workflows/` defines CI coverage. Install tools with `mise install` when needed. Use `mise run build` for runnable binaries, not bare `go build`: it builds the guest runtime too and codesigns the host binary on macOS.
 
-## Repo Map (High Signal)
-
-- `cmd/matchlock`: CLI
-- `cmd/guest-init`: unified in-VM runtime entrypoint (init/agent dispatch)
-- `internal/guestruntime/agent`: in-VM exec agent runtime
-- `pkg/sandbox`: sandbox lifecycle + exec relay
-- `pkg/image`: image pull/import/build + rootfs prep
-- `pkg/net`: interception, MITM, policy plumbing
-- `pkg/rpc`: JSON-RPC server
-- `pkg/policy`: allowlist + secret replacement
-- `pkg/state`: VM/subnet state on host
-- `internal/errx`: sentinel error wrapping helpers
-
-## Build and Setup (Must Follow)
-
-Always build with `mise`, not raw `go build`.
+Choose checks for the changed surface; start with the affected package or test.
 
 ```bash
-# one-time local tooling install
-mise install
+mise exec -- go test ./path/to/package -run TestName # focused Go test; substitute package/test
+mise run test # Go suite
+mise run vet && mise run lint && mise run check:errx # Go static checks
+mise run check:python-sdk # Python SDK
+npm ci && npm run typecheck && npm test && npm run build # from sdk/typescript/
+mise run build && mise run test:acceptance # real-VM acceptance
 ```
 
-```bash
-# macOS (usable, codesigned binary for usage and acceptance tests)
-mise run build
+Acceptance tests require working virtualization and host setup; the acceptance task does **not** rebuild binaries. On Linux, use `sudo ./bin/matchlock setup linux` when host setup is needed; run normal sandbox commands and tests **without sudo**.
 
-# Linux (usable binary + one-time setup)
-mise run build && sudo ./bin/matchlock setup linux
-```
+Format touched Go files with `gofmt`. `mise run check` is broader: it formats the entire repository and checks Go/Python, but does **not** cover TypeScript or acceptance tests. Report checks actually run and any platform coverage gaps.
 
-Linux sudo rule:
-- Use `sudo` only for the one-time `setup linux` / `setup user` commands above.
-- Do not run `matchlock run` or `matchlock exec` with `sudo`.
-- NEVER EVER run `matchlock` with `sudo`.
+## Constraints worth preserving
 
-## Packaging Notes
+- Real secrets stay on the host; guests receive placeholders, with credentials injected into allowed outbound requests. Do not expose them in guest state or logs.
+- No host-directory sharing or filesystem interception. File transfer uses guest APIs/streams; persistence uses attached block volumes.
+- Keep Linux/macOS behavior aligned. Host cancellation must terminate guest work, not merely stop waiting for it.
+- When changing shared configuration or RPC contracts, check all three SDKs and their tests for corresponding changes.
+- Go errors use package sentinels (`errors.go`) and `internal/errx.Wrap` / `With`, preserving `errors.Is`. Follow nearby tests' `testify/require` and `assert` style.
+- Linux package hooks must not perform user-specific setup or group enrollment; leave that to explicit admin commands. See `docs/linux-packaging.md`.
 
-- Linux package artifacts are generated with GoReleaser/nfpm via `mise run package:linux`.
-- Use `mise run package:linux:snapshot` for local snapshot/test artifacts.
-- Starter package config lives in `.goreleaser.yaml` and `packaging/linux/`.
-- Package lifecycle scripts must stay machine-safe: capabilities/sysctl/module loading are okay; user-specific `usermod` logic is not.
-
-## Test and Check
-
-```bash
-mise run test
-mise run test:acceptance
-mise run test:coverage
-mise run check
-mise run check:errx
-mise run fmt
-mise run package:linux
-mise run package:linux:snapshot
-```
-
-Testing standard:
-- Use `testify/require` and `testify/assert`.
-- Use `require` for hard preconditions; `assert` for follow-on checks.
-
-## Coding Standards (Explicit)
-
-### Error handling
-
-Use sentinel errors per package (`errors.go`) and wrap with `internal/errx`.
-
-- Define sentinels with `errors.New`.
-- Wrap underlying errors with `errx.Wrap`.
-- Add context with `errx.With`.
-- Use `errors.Is` at call sites.
-- Avoid direct `%w` `fmt.Errorf` in packages (enforced by `mise run check:errx`).
-
-Example pattern:
-
-```go
-var ErrParseReference = errors.New("parse image reference")
-
-if err != nil {
-    return errx.Wrap(ErrParseReference, err)
-}
-```
-
-### CLI/runtime behavior
-
-- Keep host-side behavior cross-platform unless platform-specific behavior is required.
-- Preserve parity between Linux/macOS guest-agent exec semantics where feasible.
-- Keep cancellation semantics intact (host cancel -> guest process termination).
-
-## Runtime Facts Worth Remembering
-
-### Vsock ports
-
-- `5000`: exec and file-transfer service (host -> guest)
-- `5002`: ready signal (host -> guest)
-
-### Firecracker vsock connection model
-
-- Host-initiated calls use `CONNECT <port>` on base `vsock.sock`.
-- Guest-initiated calls use `{uds_path}_{port}` listener sockets.
-- Do not mix the two patterns.
-
-### macOS networking modes
-
-- Default: native NAT (no interception).
-- Interception mode activates when policy/secret features require it (for example `--allow-host`, `--secret`).
-
-## JSON-RPC Surface (Current)
-
-- `create`
-- `exec`
-- `exec_stream`
-- `write_file`
-- `read_file`
-- `list_files`
-- `allow_list_add`
-- `allow_list_delete`
-- `port_forward`
-- `cancel`
-- `close`
-
-`cancel` should reliably stop in-flight execution via context cancellation and connection teardown.
-
-## Kernel and Images (Minimal)
-
-- Kernel version is pinned in `pkg/kernel/kernel.go` and distributed via GHCR.
-- Guest kernel configs live under `guest/kernel/`.
-- Image cache/local store lives under `~/.cache/matchlock/images/`.
-- Dockerfile builds stream context archives into guest-local storage and image tarballs back over vsock.
-- BuildKit cache uses a persistent ext4 block volume, not a shared host directory.
-
-## Useful CLI Examples
-
-```bash
-matchlock run --image alpine:latest cat /etc/os-release
-matchlock run --image alpine:latest -it sh
-matchlock run --image alpine:latest --rm=false
-matchlock exec <vm-id> echo hello
-matchlock list
-matchlock kill <vm-id>
-matchlock prune
-matchlock rpc
-```
-
-## Known Constraints
-
-- macOS backend supports Apple Silicon only (not Intel).
-- gVisor userspace stack is used on macOS interception path; Linux uses nftables.
-- Some subsystems still need deeper tests (see package tests and acceptance coverage).
+Keep this file short: repository-specific constraints and non-obvious workflow details belong here; usage examples and detailed architecture belong in docs.
