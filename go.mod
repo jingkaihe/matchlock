@@ -5,12 +5,11 @@ go 1.25.5
 require (
 	github.com/Code-Hex/vz/v3 v3.7.1
 	github.com/creack/pty v1.1.24
-	github.com/fxamacker/cbor/v2 v2.7.0
 	github.com/google/go-containerregistry v0.20.7
 	github.com/google/nftables v0.3.0
 	github.com/google/uuid v1.6.0
-	github.com/hanwen/go-fuse/v2 v2.9.0
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/moby/patternmatcher v0.6.1
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
@@ -52,7 +51,6 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/vbatts/tar-split v0.12.2 // indirect
-	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/mod v0.30.0 // indirect

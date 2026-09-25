@@ -19,14 +19,14 @@ Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
 - Network:
   - Linux: nftables transparent proxy + HTTP/TLS MITM
   - macOS: native NAT or gVisor userspace stack when interception is required
-- VFS: pluggable providers in `pkg/vfs`
+- Storage: native guest filesystems and attached block volumes; no host-directory sharing
+- File transfers: guest-agent RPC and streaming exec over vsock
 
 ## Repo Map (High Signal)
 
 - `cmd/matchlock`: CLI
-- `cmd/guest-init`: unified in-VM runtime entrypoint (init/agent/fused dispatch)
+- `cmd/guest-init`: unified in-VM runtime entrypoint (init/agent dispatch)
 - `internal/guestruntime/agent`: in-VM exec agent runtime
-- `internal/guestruntime/fused`: in-VM FUSE daemon runtime
 - `pkg/sandbox`: sandbox lifecycle + exec relay
 - `pkg/image`: image pull/import/build + rootfs prep
 - `pkg/net`: interception, MITM, policy plumbing
@@ -113,8 +113,7 @@ if err != nil {
 
 ### Vsock ports
 
-- `5000`: exec service (host -> guest)
-- `5001`: VFS service (guest -> host)
+- `5000`: exec and file-transfer service (host -> guest)
 - `5002`: ready signal (host -> guest)
 
 ### Firecracker vsock connection model
@@ -149,6 +148,8 @@ if err != nil {
 - Kernel version is pinned in `pkg/kernel/kernel.go` and distributed via GHCR.
 - Guest kernel configs live under `guest/kernel/`.
 - Image cache/local store lives under `~/.cache/matchlock/images/`.
+- Dockerfile builds stream context archives into guest-local storage and image tarballs back over vsock.
+- BuildKit cache uses a persistent ext4 block volume, not a shared host directory.
 
 ## Useful CLI Examples
 

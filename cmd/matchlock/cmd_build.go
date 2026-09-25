@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -221,34 +222,6 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return errx.Wrap(ErrBuildBuildKitRootfs, err)
 	}
 
-	dockerfileName := filepath.Base(absDockerfile)
-	dockerfileInContext := filepath.Join(absContext, dockerfileName)
-	dockerfileDir := filepath.Dir(absDockerfile)
-
-	workspaceDir, err := os.MkdirTemp("", "matchlock-build-workspace-*")
-	if err != nil {
-		return errx.Wrap(ErrCreateWorkspaceDir, err)
-	}
-	defer os.RemoveAll(workspaceDir)
-
-	outputDir, err := os.MkdirTemp("", "matchlock-build-output-*")
-	if err != nil {
-		return errx.Wrap(ErrCreateOutputDir, err)
-	}
-	defer os.RemoveAll(outputDir)
-
-	mounts := map[string]api.MountConfig{
-		"/workspace":         {Type: api.MountTypeHostFS, HostPath: workspaceDir},
-		"/workspace/context": {Type: api.MountTypeHostFS, HostPath: absContext, Readonly: true},
-		"/workspace/output":  {Type: api.MountTypeHostFS, HostPath: outputDir},
-	}
-
-	guestDockerfileDir := "/workspace/context"
-	if _, err := os.Stat(dockerfileInContext); os.IsNotExist(err) {
-		mounts["/workspace/dockerfile"] = api.MountConfig{Type: api.MountTypeHostFS, HostPath: dockerfileDir, Readonly: true}
-		guestDockerfileDir = "/workspace/dockerfile"
-	}
-
 	var extraDisks []api.DiskMount
 	if !noCache {
 		cachePath, err := buildCachePath()
@@ -283,10 +256,6 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 			MTU: networkMTU,
 		},
 		ExtraDisks: extraDisks,
-		VFS: &api.VFSConfig{
-			Workspace: "/workspace",
-			Mounts:    mounts,
-		},
 	}
 
 	sandboxOpts := &sandbox.Options{
@@ -307,17 +276,17 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return errx.Wrap(ErrStartBuildSandbox, err)
 	}
 
+	fmt.Fprintln(os.Stderr, "Uploading build context...")
+	if err := uploadBuildContext(ctx, sb, absContext, absDockerfile); err != nil {
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "Starting BuildKit daemon and building image from %s...\n", dockerfile)
 
 	execOpts := &api.ExecOptions{
 		WorkingDir: "/",
 		Stdout:     os.Stderr,
 		Stderr:     os.Stderr,
-	}
-
-	filenameOpt := ""
-	if dockerfileName != "Dockerfile" {
-		filenameOpt = fmt.Sprintf("  --opt filename=%s \\\n", dockerfileName)
 	}
 
 	noCacheOpt := ""
@@ -336,6 +305,7 @@ buildkitd --root /var/lib/buildkit \
   --oci-worker-snapshotter native \
   >/tmp/buildkitd.log 2>&1 &
 BKPID=$!
+trap 'kill "$BKPID" 2>/dev/null || true' EXIT
 for i in $(seq 1 30); do [ -S $SOCK ] && break; sleep 1; done
 if [ ! -S $SOCK ]; then
   echo "BuildKit daemon failed to start" >&2
@@ -343,16 +313,16 @@ if [ ! -S $SOCK ]; then
   exit 1
 fi
 echo "BuildKit daemon ready" >&2
+set +e
 buildctl --addr unix://$SOCK build \
   --frontend dockerfile.v0 \
   --local context=/workspace/context \
-  --local dockerfile=%s \
-%s%s  --output type=docker,dest=/workspace/output/image.tar
+  --local dockerfile=/workspace/dockerfile \
+%s  --output type=docker,dest=/workspace/output/image.tar
 RC=$?
 [ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
-kill $BKPID 2>/dev/null
 exit $RC
-`, guestDockerfileDir, filenameOpt, noCacheOpt)
+`, noCacheOpt)
 
 	if err := sb.WriteFile(ctx, "/workspace/buildkit-run.sh", []byte(buildScript), 0755); err != nil {
 		return errx.Wrap(ErrWriteBuildScript, err)
@@ -368,14 +338,7 @@ exit $RC
 
 	fmt.Fprintf(os.Stderr, "Importing built image as %s...\n", tag)
 
-	tarballPath := filepath.Join(outputDir, "image.tar")
-	importFile, err := os.Open(tarballPath)
-	if err != nil {
-		return errx.Wrap(ErrOpenImageTarball, err)
-	}
-	defer importFile.Close()
-
-	importResult, err := builder.Import(ctx, importFile, tag)
+	importResult, err := importBuildImage(ctx, sb, builder, tag)
 	if err != nil {
 		return errx.Wrap(ErrImportImage, err)
 	}
@@ -384,4 +347,56 @@ exit $RC
 	fmt.Printf("Layers: %d\n", len(importResult.LowerPaths))
 	fmt.Printf("Size: %.1f MB\n", float64(importResult.Size)/(1024*1024))
 	return nil
+}
+
+// uploadBuildContext transfers a bounded-memory tar stream through the exec
+// service. All build files live on guest storage, never on a shared host mount.
+func uploadBuildContext(ctx context.Context, sb *sandbox.Sandbox, contextDir, dockerfile string) error {
+	r, w := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		err := writeBuildContext(ctx, w, contextDir, dockerfile)
+		w.CloseWithError(err)
+		done <- err
+	}()
+	result, execErr := sb.Exec(ctx, "mkdir -p /workspace/output && tar -xf - -C /workspace", &api.ExecOptions{
+		WorkingDir: "/",
+		Stdin:      r,
+		Stdout:     os.Stderr,
+		Stderr:     os.Stderr,
+	})
+	// Unblock the producer if the guest exits or is canceled before consuming stdin.
+	r.Close()
+	archiveErr := <-done
+	if execErr != nil {
+		return errx.Wrap(ErrUploadBuildContext, execErr)
+	}
+	if archiveErr != nil {
+		return errx.Wrap(ErrBuildContext, archiveErr)
+	}
+	if result.ExitCode != 0 {
+		return errx.With(ErrUploadBuildContext, ": exit code %d", result.ExitCode)
+	}
+	return nil
+}
+
+func importBuildImage(ctx context.Context, sb *sandbox.Sandbox, builder *image.Builder, tag string) (*image.BuildResult, error) {
+	r, w := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, err := sb.ReadFileTo(ctx, "/workspace/output/image.tar", w)
+		w.CloseWithError(err)
+		done <- err
+	}()
+	result, importErr := builder.Import(ctx, r, tag)
+	// Import may fail before draining the stream (for example, a full host disk).
+	r.Close()
+	readErr := <-done
+	if importErr != nil {
+		return nil, importErr
+	}
+	if readErr != nil {
+		return nil, errx.Wrap(ErrReadBuildImage, readErr)
+	}
+	return result, nil
 }

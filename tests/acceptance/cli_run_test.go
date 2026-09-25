@@ -50,103 +50,10 @@ func TestCLIRunMultiWordCommand(t *testing.T) {
 	assert.Contains(t, stdout, "foo bar")
 }
 
-func TestCLIRunVolumeMountNestedGuestPath(t *testing.T) {
-	hostDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "probe.txt"), []byte("mounted-nested-path"), 0644), "write probe file")
-
-	stdout, stderr, exitCode := runCLIWithTimeout(
-		t,
-		2*time.Minute,
-		"run",
-		"--image", "alpine:latest",
-		"--workspace", "/workspace",
-		"-v", hostDir+":/workspace/not_exist_folder",
-		"cat", "/workspace/not_exist_folder/probe.txt",
-	)
-	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-	assert.Equal(t, "mounted-nested-path", strings.TrimSpace(stdout))
-}
-
-func TestCLIRunVolumeMountNestedGuestPathMultiLevelRelative(t *testing.T) {
-	hostDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "TEST.md"), []byte("mounted-multi-level-path"), 0644), "write probe file")
-
-	stdout, stderr, exitCode := runCLIWithTimeout(
-		t,
-		2*time.Minute,
-		"run",
-		"--image", "alpine:latest",
-		"--workspace", "/workspace",
-		"-v", hostDir+":.host/example:ro",
-		"--", "sh", "-c", "cd /workspace/.host && cat example/TEST.md",
-	)
-	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-	assert.Equal(t, "mounted-multi-level-path", strings.TrimSpace(stdout))
-}
-
-func TestCLIRunVolumeMountSingleFile(t *testing.T) {
-	hostDir := t.TempDir()
-	hostFile := filepath.Join(hostDir, "1file.txt")
-	require.NoError(t, os.WriteFile(hostFile, []byte("single-file-mounted"), 0644), "write host file")
-
-	stdout, stderr, exitCode := runCLIWithTimeout(
-		t,
-		2*time.Minute,
-		"run",
-		"--image", "alpine:latest",
-		"--workspace", "/workspace",
-		"-v", hostFile+":/workspace/1file.txt",
-		"--", "sh", "-c", "ls /workspace && cat /workspace/1file.txt",
-	)
-	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-	assert.Contains(t, stdout, "1file.txt")
-	assert.Contains(t, stdout, "single-file-mounted")
-}
-
-func TestCLIRunVolumeMountOwnerOverrideAllowsNonRootAccess(t *testing.T) {
-	hostDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "seed.txt"), []byte("seed"), 0600), "write seed file")
-	require.NoError(t, os.Chmod(hostDir, 0700), "lock down host dir")
-
-	stdout, stderr, exitCode := runCLIWithTimeout(
-		t,
-		2*time.Minute,
-		"run",
-		"--image", "alpine:latest",
-		"--workspace", "/workspace",
-		"--user", "65534:65534",
-		"-v", hostDir+":/workspace/repo:host_fs,uid=65534,gid=65534",
-		"--",
-		"sh", "-c", strings.Join([]string{
-			"set -eu",
-			"cd /workspace/repo",
-			"stat -c '%u:%g:%a' .",
-			"stat -c '%u:%g:%a' seed.txt",
-			"test -w .",
-			"echo cli-non-root-write > created.txt",
-			"cat created.txt",
-		}, "; "),
-	)
-	require.Equal(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	require.Len(t, lines, 3, "stdout: %q", stdout)
-	assert.Equal(t, "65534:65534:700", lines[0])
-	assert.Equal(t, "65534:65534:600", lines[1])
-	assert.Equal(t, "cli-non-root-write", lines[2])
-
-	body, err := os.ReadFile(filepath.Join(hostDir, "created.txt"))
-	require.NoError(t, err)
-	assert.Equal(t, "cli-non-root-write", strings.TrimSpace(string(body)))
-}
-
 func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
-	hostWorkspace := t.TempDir()
 	args := withAcceptanceRunCPUs([]string{
 		"run",
 		"--image", "alpine:latest",
-		"--workspace", "/workspace",
-		"-v", hostWorkspace + ":/workspace",
 		"--rm",
 		"-it",
 		"sh",
@@ -165,7 +72,7 @@ func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 
 	commands := strings.Join([]string{
 		"apk add --no-cache git >/dev/null",
-		"cd workspace/",
+		"mkdir -p /workspace && cd /workspace",
 		"for i in 1 2 3 4 5 6 7 8; do",
 		"rm -rf repo",
 		"mkdir repo",
@@ -272,23 +179,6 @@ func TestCLIRunDetachPrintsVMIDAndReturnsWithCommand(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}
 	require.True(t, started, "timed out waiting for detached command marker")
-}
-
-func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
-	hostDir := t.TempDir()
-
-	_, stderr, exitCode := runCLIWithTimeout(
-		t,
-		2*time.Minute,
-		"run",
-		"--image", "alpine:latest",
-		"--workspace", "/workspace/project",
-		"-v", hostDir+":/workspace",
-		"--", "true",
-	)
-	require.NotEqual(t, 0, exitCode)
-	require.Contains(t, stderr, "invalid volume mount")
-	require.Contains(t, stderr, "must be within workspace")
 }
 
 func TestCLIRunEnvInline(t *testing.T) {

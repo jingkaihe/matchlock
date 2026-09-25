@@ -1,12 +1,4 @@
-import type {
-  BinaryLike,
-  NetworkHookFunc,
-  VFSActionRequest,
-  VFSHookAction,
-  VFSHookEvent,
-  VFSMutateRequest,
-} from "../types";
-import type { Client } from "../client";
+import type { NetworkHookFunc } from "../types";
 
 export type JSONValue = null | boolean | number | string | JSONObject | JSONArray;
 export type JSONObject = { [key: string]: JSONValue };
@@ -42,49 +34,12 @@ export interface PendingRequest {
   onNotification?: (method: string, params: JSONObject) => void;
 }
 
-export interface CompiledVFSHook {
-  name: string;
-  ops: Set<string>;
-  path: string;
-  timeoutMs: number;
-  dangerous: boolean;
-  callback: (client: Client, event: VFSHookEvent) => Promise<void>;
-}
-
-export interface CompiledVFSMutateHook {
-  name: string;
-  ops: Set<string>;
-  path: string;
-  callback: (request: VFSMutateRequest) => Promise<BinaryLike | null | undefined>;
-}
-
-export interface CompiledVFSActionHook {
-  name: string;
-  ops: Set<string>;
-  path: string;
-  callback: (request: VFSActionRequest) => Promise<VFSHookAction>;
-}
-
 export interface CompiledNetworkHook {
   id: string;
   name: string;
   phase: string;
   timeoutMs: number;
   callback: NetworkHookFunc;
-}
-
-export interface WireVFSHookRule {
-  name?: string;
-  phase?: string;
-  ops?: string[];
-  path?: string;
-  action?: string;
-  timeout_ms?: number;
-}
-
-export interface WireVFSInterceptionConfig {
-  emit_events?: boolean;
-  rules?: WireVFSHookRule[];
 }
 
 export interface WireNetworkBodyTransform {

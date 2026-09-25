@@ -1,54 +1,10 @@
-import type { Client } from "./client";
-
-export const VFS_HOOK_PHASE_BEFORE = "before";
-export const VFS_HOOK_PHASE_AFTER = "after";
 export const NETWORK_HOOK_PHASE_BEFORE = "before";
 export const NETWORK_HOOK_PHASE_AFTER = "after";
 
-export const VFS_HOOK_ACTION_ALLOW = "allow";
-export const VFS_HOOK_ACTION_BLOCK = "block";
 export const NETWORK_HOOK_ACTION_ALLOW = "allow";
 export const NETWORK_HOOK_ACTION_BLOCK = "block";
 export const NETWORK_HOOK_ACTION_MUTATE = "mutate";
 
-export const VFS_HOOK_OP_STAT = "stat";
-export const VFS_HOOK_OP_READDIR = "readdir";
-export const VFS_HOOK_OP_OPEN = "open";
-export const VFS_HOOK_OP_CREATE = "create";
-export const VFS_HOOK_OP_MKDIR = "mkdir";
-export const VFS_HOOK_OP_CHMOD = "chmod";
-export const VFS_HOOK_OP_REMOVE = "remove";
-export const VFS_HOOK_OP_REMOVE_ALL = "remove_all";
-export const VFS_HOOK_OP_RENAME = "rename";
-export const VFS_HOOK_OP_SYMLINK = "symlink";
-export const VFS_HOOK_OP_READLINK = "readlink";
-export const VFS_HOOK_OP_READ = "read";
-export const VFS_HOOK_OP_WRITE = "write";
-export const VFS_HOOK_OP_CLOSE = "close";
-export const VFS_HOOK_OP_SYNC = "sync";
-export const VFS_HOOK_OP_TRUNCATE = "truncate";
-
-export type VFSHookPhase = "" | "before" | "after";
-
-export type VFSHookOp =
-  | "stat"
-  | "readdir"
-  | "open"
-  | "create"
-  | "mkdir"
-  | "chmod"
-  | "remove"
-  | "remove_all"
-  | "rename"
-  | "symlink"
-  | "readlink"
-  | "read"
-  | "write"
-  | "close"
-  | "sync"
-  | "truncate";
-
-export type VFSHookAction = "allow" | "block" | (string & {});
 export type NetworkHookPhase = "" | "before" | "after";
 export type NetworkHookAction = "allow" | "block" | "mutate";
 
@@ -60,22 +16,6 @@ export interface Config {
 export interface HostIPMapping {
   host: string;
   ip: string;
-}
-
-export interface MountConfig {
-  type?: string;
-  hostPath?: string;
-  readonly?: boolean;
-  ownerUID?: number;
-  ownerGID?: number;
-}
-
-/** Options accepted by {@link Sandbox.mountHostDir} and {@link Sandbox.mountHostDirReadonly}. */
-export interface MountOwnerOptions {
-  /** UID reported for all files in this mount inside the VM. Must be in [0, 4294967295]. */
-  ownerUID?: number;
-  /** GID reported for all files in this mount inside the VM. Must be in [0, 4294967295]. */
-  ownerGID?: number;
 }
 
 export interface Secret {
@@ -104,63 +44,7 @@ export interface PortForwardBinding {
   remotePort: number;
 }
 
-export interface VFSHookEvent {
-  op: string;
-  path: string;
-  size: number;
-  mode: number;
-  uid: number;
-  gid: number;
-}
-
-export interface VFSMutateRequest {
-  path: string;
-  size: number;
-  mode: number;
-  uid: number;
-  gid: number;
-}
-
-export interface VFSActionRequest {
-  op: string;
-  path: string;
-  size: number;
-  mode: number;
-  uid: number;
-  gid: number;
-}
-
 export type BinaryLike = string | Buffer | Uint8Array | ArrayBuffer;
-
-export type VFSHookFunc = (event: VFSHookEvent) => void | Promise<void>;
-export type VFSDangerousHookFunc = (
-  client: Client,
-  event: VFSHookEvent,
-) => void | Promise<void>;
-export type VFSMutateHookFunc = (
-  request: VFSMutateRequest,
-) => BinaryLike | null | undefined | Promise<BinaryLike | null | undefined>;
-export type VFSActionHookFunc = (
-  request: VFSActionRequest,
-) => VFSHookAction | Promise<VFSHookAction>;
-
-export interface VFSHookRule {
-  name?: string;
-  phase?: VFSHookPhase;
-  ops?: VFSHookOp[];
-  path?: string;
-  action?: VFSHookAction;
-  timeoutMs?: number;
-  hook?: VFSHookFunc;
-  dangerousHook?: VFSDangerousHookFunc;
-  mutateHook?: VFSMutateHookFunc;
-  actionHook?: VFSActionHookFunc;
-}
-
-export interface VFSInterceptionConfig {
-  emitEvents?: boolean;
-  rules?: VFSHookRule[];
-}
 
 export interface NetworkBodyTransform {
   find: string;
@@ -243,11 +127,8 @@ export interface CreateOptions {
   noNetwork?: boolean;
   forceInterception?: boolean;
   networkInterception?: NetworkInterceptionConfig;
-  mounts?: Record<string, MountConfig>;
   env?: Record<string, string>;
   secrets?: Secret[];
-  workspace?: string;
-  vfsInterception?: VFSInterceptionConfig;
   dnsServers?: string[];
   hostname?: string;
   networkMtu?: number;

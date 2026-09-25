@@ -14,11 +14,9 @@ from .types import (
     CreateOptions,
     HostIPMapping,
     ImageConfig,
-    MountConfig,
     NetworkInterceptionConfig,
     PortForward,
     Secret,
-    VFSInterceptionConfig,
 )
 
 
@@ -50,14 +48,6 @@ class Sandbox:
 
     def with_timeout(self, seconds: int) -> Sandbox:
         self._opts.timeout_seconds = seconds
-        return self
-
-    def with_workspace(self, path: str) -> Sandbox:
-        self._opts.workspace = path
-        return self
-
-    def with_vfs_interception(self, config: VFSInterceptionConfig) -> Sandbox:
-        self._opts.vfs_interception = config
         return self
 
     def with_network_interception(
@@ -141,53 +131,6 @@ class Sandbox:
     def with_hostname(self, hostname: str) -> Sandbox:
         self._opts.hostname = hostname
         return self
-
-    def mount(self, guest_path: str, config: MountConfig) -> Sandbox:
-        self._opts.mounts[guest_path] = config
-        return self
-
-    def mount_host_dir(
-        self,
-        guest_path: str,
-        host_path: str,
-        *,
-        owner_uid: int | None = None,
-        owner_gid: int | None = None,
-    ) -> Sandbox:
-        return self.mount(
-            guest_path,
-            MountConfig(
-                type="host_fs",
-                host_path=host_path,
-                owner_uid=owner_uid,
-                owner_gid=owner_gid,
-            ),
-        )
-
-    def mount_host_dir_readonly(
-        self,
-        guest_path: str,
-        host_path: str,
-        *,
-        owner_uid: int | None = None,
-        owner_gid: int | None = None,
-    ) -> Sandbox:
-        return self.mount(
-            guest_path,
-            MountConfig(
-                type="host_fs",
-                host_path=host_path,
-                readonly=True,
-                owner_uid=owner_uid,
-                owner_gid=owner_gid,
-            ),
-        )
-
-    def mount_memory(self, guest_path: str) -> Sandbox:
-        return self.mount(guest_path, MountConfig(type="memory"))
-
-    def mount_overlay(self, guest_path: str, host_path: str) -> Sandbox:
-        return self.mount(guest_path, MountConfig(type="overlay", host_path=host_path))
 
     def with_user(self, user: str) -> Sandbox:
         """Set the user to run commands as (uid, uid:gid, or username)."""

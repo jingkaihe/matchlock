@@ -47,7 +47,6 @@ type CleanupResult struct {
 
 type Resources struct {
 	StateDir      string `json:"state_dir,omitempty"`
-	Workspace     string `json:"workspace,omitempty"`
 	KernelRef     string `json:"kernel_ref,omitempty"`
 	KernelPath    string `json:"kernel_path,omitempty"`
 	RootfsPath    string `json:"rootfs_path,omitempty"`

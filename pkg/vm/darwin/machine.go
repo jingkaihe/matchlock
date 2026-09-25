@@ -31,7 +31,6 @@ type DarwinMachine struct {
 	tempRootfs  string // Temp copy of rootfs, cleaned up on Stop
 	started     bool
 	mu          sync.Mutex
-	vfsListener *vz.VirtioSocketListener
 	consoleRead *os.File
 	consoleLog  *os.File
 }
@@ -498,12 +497,6 @@ func (m *DarwinMachine) Close(ctx context.Context) error {
 		}
 	}
 
-	if m.vfsListener != nil {
-		if err := m.vfsListener.Close(); err != nil {
-			errs = append(errs, errx.Wrap(ErrCloseVFSListener, err))
-		}
-	}
-
 	if m.socketPair != nil {
 		if err := m.socketPair.Close(); err != nil {
 			errs = append(errs, errx.Wrap(ErrCloseSocketPair, err))
@@ -517,20 +510,6 @@ func (m *DarwinMachine) Close(ctx context.Context) error {
 		return errs[0]
 	}
 	return nil
-}
-
-func (m *DarwinMachine) SetupVFSListener() (*vz.VirtioSocketListener, error) {
-	socketDevice := m.SocketDevice()
-	if socketDevice == nil {
-		return nil, ErrNoVsockDevice
-	}
-
-	listener, err := socketDevice.Listen(VsockPortVFS)
-	if err != nil {
-		return nil, err
-	}
-	m.vfsListener = listener
-	return listener, nil
 }
 
 func (m *DarwinMachine) Config() *vm.VMConfig {

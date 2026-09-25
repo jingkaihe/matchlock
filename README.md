@@ -8,7 +8,7 @@ Matchlock is a CLI tool for running AI agents in ephemeral microVMs - with netwo
 
 AI agents need to run code, but giving them unrestricted access to your machine is a risk. Matchlock lets you hand an agent a full Linux environment that boots in under a second - isolated and disposable.
 
-When you pass `--allow-host` or `--secret`, Matchlock seals the network - only traffic to explicitly allowed hosts gets through, and everything else is blocked. When your agent calls an API the real credentials are injected in-flight by the host. The sandbox only ever sees a placeholder. Even if the agent is tricked into running something malicious your keys don't leak and there's nowhere for data to go. Inside the agent gets a full Linux environment to do whatever it needs. It can install packages and write files and make a mess. Outside your machine doesn't feel a thing. Volume overlay mounts are isolated snapshots that vanish when you're done. Same CLI and same behaviour whether you're on a Linux server or a MacBook.
+When you pass `--allow-host` or `--secret`, Matchlock seals the network - only traffic to explicitly allowed hosts gets through, and everything else is blocked. When your agent calls an API the real credentials are injected in-flight by the host. The sandbox only ever sees a placeholder. Even if the agent is tricked into running something malicious your keys don't leak and there's nowhere for data to go. Inside the agent gets a full Linux environment to do whatever it needs. It can install packages and write files and make a mess. Host directories are never shared with the guest: supply inputs explicitly and retrieve outputs through the guest file APIs. Guest-local changes are disposable unless you attach a persistent block volume. Same CLI and same behaviour whether you're on a Linux server or a MacBook.
 
 ## Quick Start
 
@@ -106,14 +106,27 @@ matchlock list | kill | rm | prune
 # Build from Dockerfile (uses BuildKit-in-VM)
 matchlock build -f Dockerfile -t myapp:latest .
 
-# Pre-build rootfs from registry image (caches for faster startup)
-matchlock build alpine:latest
+# Pull a registry image (caches for faster startup)
+matchlock pull alpine:latest
 
 # Image management
 matchlock image ls                                           # List all images
 matchlock image rm myapp:latest                              # Remove a local image
 docker save myapp:latest | matchlock image import myapp:latest  # Import from tarball
 ```
+
+### Files and builds
+
+Matchlock does not support host-directory mounts or filesystem interception. Use
+the SDK file APIs to upload and retrieve files, or stream larger inputs and outputs
+through command stdin/stdout. Filesystem operations happen on native guest storage.
+Use `matchlock volume` with `run --disk @name:/guest/path` for persistent storage.
+
+`matchlock build` runs BuildKit inside a VM. It streams the build context and
+Dockerfile into guest-local storage over vsock, then streams the resulting image
+tarball back into the host image store. `.dockerignore` and Dockerfile-specific
+ignore files control which context files are uploaded. Build cache persists on an
+attached ext4 block volume; no host directory is shared during the build.
 
 ## SDK
 
@@ -305,8 +318,7 @@ try {
 
   await client.launch(sandbox);
   await client.exec(
-    "npm init -y >/dev/null 2>&1 && npm install --quiet --no-bin-links @anthropic-ai/sdk",
-    { workingDir: "/workspace" },
+    "mkdir -p /workspace && cd /workspace && npm init -y >/dev/null 2>&1 && npm install --quiet @anthropic-ai/sdk",
   );
   await client.writeFile("/workspace/ask.mjs", SCRIPT);
   await client.execStream("node ask.mjs", {
@@ -327,11 +339,9 @@ More examples in the [`examples/`](examples/) directory:
 | Streams Anthropic API response with secret injection (Go) | [`examples/go/basic/`](examples/go/basic/) |
 | Interactive terminal with PTY using ExecInteractive (Go) | [`examples/go/exec_modes/`](examples/go/exec_modes/) |
 | Injects API key via network interception hook (Go) | [`examples/go/network_interception/`](examples/go/network_interception/) |
-| VFS interception hooks for file operation mutations (Go) | [`examples/go/vfs_hooks/`](examples/go/vfs_hooks/) |
 | Streams Anthropic API response (Python) | [`examples/python/basic/`](examples/python/basic/) |
 | Stream, pipe, and interactive execution modes (Python) | [`examples/python/exec_modes/`](examples/python/exec_modes/) |
 | Injects API key via network interception hook (Python) | [`examples/python/network_interception/`](examples/python/network_interception/) |
-| VFS interception hooks for file operation mutations (Python) | [`examples/python/vfs_hooks/`](examples/python/vfs_hooks/) |
 | Streams Anthropic API response (TypeScript) | [`examples/typescript/basic/`](examples/typescript/basic/) |
 | Stream, pipe, and interactive execution modes (TypeScript) | [`examples/typescript/exec_modes/`](examples/typescript/exec_modes/) |
 | Injects API key via network interception hook (TypeScript) | [`examples/typescript/network_interception/`](examples/typescript/network_interception/) |
@@ -345,30 +355,15 @@ More examples in the [`examples/`](examples/) directory:
 
 ## Architecture
 
-```mermaid
-graph LR
-    subgraph Host
-        CLI["Matchlock CLI"]
-        Policy["Policy Engine"]
-        Proxy["Transparent Proxy + TLS MITM"]
-        VFS["VFS Server"]
-
-        CLI --> Policy
-        CLI --> Proxy
-        Policy --> Proxy
-    end
-
-    subgraph VM["Micro-VM (Firecracker / Virtualization.framework)"]
-        Agent["Guest Agent"]
-        FUSE["/workspace (FUSE)"]
-        Image["Any OCI Image (Alpine, Ubuntu, etc.)"]
-
-        Agent --- Image
-        FUSE --- Image
-    end
-
-    Proxy -- "vsock :5000" --> Agent
-    VFS -- "vsock :5001" --> FUSE
+```diagram
+╭──────────────────────────╮                 ╭───────────────────────────╮
+│ Host                     │                 │ Micro-VM                  │
+│                          │                 │                           │
+│ Matchlock CLI / SDK      │── vsock :5000 ─▶│ Guest agent               │
+│ Explicit file transfers  │◀────────────────│ Native guest filesystem   │
+│                          │                 │ OCI image + block volumes │
+│ Policy + HTTP/TLS proxy  │◀── networking ──│ Guest applications        │
+╰──────────────────────────╯                 ╰───────────────────────────╯
 ```
 
 ### Network Modes
@@ -383,7 +378,6 @@ graph LR
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
 - [Network Interception](docs/network-interception.md)
-- [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 
 ## License

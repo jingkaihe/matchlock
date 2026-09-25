@@ -1,7 +1,6 @@
 package sdk
 
 import (
-	"context"
 	"testing"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
@@ -96,11 +95,6 @@ func TestBuilderUnsetBlockPrivateIPs(t *testing.T) {
 		Options()
 	require.False(t, opts.BlockPrivateIPs)
 	require.False(t, opts.BlockPrivateIPsSet)
-}
-
-func TestBuilderWorkspace(t *testing.T) {
-	opts := New("alpine:latest").WithWorkspace("/home/user/code").Options()
-	require.Equal(t, "/home/user/code", opts.Workspace)
 }
 
 func TestBuilderEnv(t *testing.T) {
@@ -216,54 +210,6 @@ func TestBuilderPortForwards(t *testing.T) {
 	require.Equal(t, []string{"127.0.0.1", "0.0.0.0"}, opts.PortForwardAddresses)
 }
 
-func TestBuilderMounts(t *testing.T) {
-	opts := New("alpine:latest").
-		MountHostDir("/data", "/host/data").
-		MountHostDirReadonly("/config", "/host/config").
-		MountHostDirAs("/owned", "/host/owned", 1000, 2000).
-		MountHostDirReadonlyAs("/owned-ro", "/host/owned-ro", 1001, 2001).
-		MountMemory("/tmp/scratch").
-		MountOverlay("/workspace", "/host/workspace").
-		Options()
-
-	require.Len(t, opts.Mounts, 6)
-
-	m := opts.Mounts["/data"]
-	assert.Equal(t, api.MountTypeHostFS, m.Type)
-	assert.Equal(t, "/host/data", m.HostPath)
-	assert.False(t, m.Readonly)
-	assert.Nil(t, m.OwnerUID)
-	assert.Nil(t, m.OwnerGID)
-
-	m = opts.Mounts["/config"]
-	assert.Equal(t, api.MountTypeHostFS, m.Type)
-	assert.Equal(t, "/host/config", m.HostPath)
-	assert.True(t, m.Readonly)
-
-	m = opts.Mounts["/owned"]
-	assert.Equal(t, api.MountTypeHostFS, m.Type)
-	assert.Equal(t, "/host/owned", m.HostPath)
-	require.NotNil(t, m.OwnerUID)
-	require.NotNil(t, m.OwnerGID)
-	assert.Equal(t, uint32(1000), *m.OwnerUID)
-	assert.Equal(t, uint32(2000), *m.OwnerGID)
-
-	m = opts.Mounts["/owned-ro"]
-	assert.Equal(t, api.MountTypeHostFS, m.Type)
-	assert.True(t, m.Readonly)
-	require.NotNil(t, m.OwnerUID)
-	require.NotNil(t, m.OwnerGID)
-	assert.Equal(t, uint32(1001), *m.OwnerUID)
-	assert.Equal(t, uint32(2001), *m.OwnerGID)
-
-	m = opts.Mounts["/tmp/scratch"]
-	assert.Equal(t, api.MountTypeMemory, m.Type)
-
-	m = opts.Mounts["/workspace"]
-	assert.Equal(t, api.MountTypeOverlay, m.Type)
-	assert.Equal(t, "/host/workspace", m.HostPath)
-}
-
 func TestBuilderFullChain(t *testing.T) {
 	opts := New("python:3.12-alpine").
 		WithCPUs(2).
@@ -273,8 +219,6 @@ func TestBuilderFullChain(t *testing.T) {
 		AddHost("api.internal", "10.0.0.10").
 		AddSecret("ANTHROPIC_API_KEY", "sk-ant-xxx", "api.anthropic.com").
 		BlockPrivateIPs().
-		WithWorkspace("/code").
-		MountHostDirReadonly("/data", "/host/data").
 		WithTimeout(120).
 		Options()
 
@@ -287,50 +231,10 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Equal(t, "abc123", opts.Env["PLAIN_TOKEN"])
 	require.True(t, opts.BlockPrivateIPs)
 	require.True(t, opts.BlockPrivateIPsSet)
-	require.Equal(t, "/code", opts.Workspace)
-	require.Len(t, opts.Mounts, 1)
 	require.Equal(t, 120, opts.TimeoutSeconds)
 }
 
 func TestBuilderFractionalCPUs(t *testing.T) {
 	opts := New("alpine:latest").WithCPUs(0.5).Options()
 	require.Equal(t, 0.5, opts.CPUs)
-}
-
-func TestBuilderVFSInterception(t *testing.T) {
-	cfg := &VFSInterceptionConfig{
-		Rules: []VFSHookRule{
-			{
-				Phase:  VFSHookPhaseBefore,
-				Ops:    []VFSHookOp{VFSHookOpCreate},
-				Path:   "/workspace/blocked.txt",
-				Action: VFSHookActionBlock,
-			},
-		},
-	}
-
-	opts := New("alpine:latest").WithVFSInterception(cfg).Options()
-	require.NotNil(t, opts.VFSInterception)
-	require.Len(t, opts.VFSInterception.Rules, 1)
-	assert.Equal(t, "block", opts.VFSInterception.Rules[0].Action)
-}
-
-func TestBuilderVFSInterceptionCallback(t *testing.T) {
-	cfg := &VFSInterceptionConfig{
-		Rules: []VFSHookRule{
-			{
-				Phase: VFSHookPhaseAfter,
-				Ops:   []VFSHookOp{VFSHookOpWrite},
-				Path:  "/workspace/*",
-				Hook: func(ctx context.Context, event VFSHookEvent) error {
-					return nil
-				},
-			},
-		},
-	}
-
-	opts := New("alpine:latest").WithVFSInterception(cfg).Options()
-	require.NotNil(t, opts.VFSInterception)
-	require.Len(t, opts.VFSInterception.Rules, 1)
-	assert.NotNil(t, opts.VFSInterception.Rules[0].Hook)
 }

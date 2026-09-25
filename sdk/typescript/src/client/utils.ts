@@ -48,10 +48,6 @@ export function toBuffer(content: BinaryLike): Buffer {
   throw new MatchlockError("unsupported content type");
 }
 
-export function lowerSet(values: string[] | undefined): Set<string> {
-  return new Set((values ?? []).map((value) => value.toLowerCase()));
-}
-
 export function buildWireNetworkInterception(
   config: NetworkInterceptionConfig | undefined,
 ): WireNetworkInterceptionConfig | undefined {
@@ -136,14 +132,6 @@ export function asNumber(value: JSONValue | undefined, fallback = 0): number {
 
 export function asString(value: JSONValue | undefined, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
-}
-
-export function getUID(): number {
-  return typeof process.geteuid === "function" ? process.geteuid() : 0;
-}
-
-export function getGID(): number {
-  return typeof process.getegid === "function" ? process.getegid() : 0;
 }
 
 export function validateAddHost(mapping: HostIPMapping): void {

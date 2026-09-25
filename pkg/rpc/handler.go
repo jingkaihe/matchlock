@@ -361,14 +361,6 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 			}
 		}
 	}
-	if err := config.ValidateVFS(); err != nil {
-		return &Response{
-			JSONRPC: "2.0",
-			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
-			ID:      req.ID,
-		}
-	}
-
 	vm, err := h.factory(ctx, config)
 	if err != nil {
 		return &Response{

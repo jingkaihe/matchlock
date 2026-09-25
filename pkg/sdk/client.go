@@ -54,12 +54,6 @@ type Client struct {
 	pending    map[uint64]*pendingRequest // in-flight requests by ID
 	readerOnce sync.Once                  // ensures reader goroutine starts once
 
-	vfsHookMu      sync.RWMutex
-	vfsHooks       []compiledVFSHook
-	vfsMutateHooks []compiledVFSMutateHook
-	vfsActionHooks []compiledVFSActionHook
-	vfsHookActive  atomic.Bool
-
 	networkHookMu       sync.RWMutex
 	networkHooks        map[string]compiledNetworkHook
 	networkHookSocket   string
@@ -148,7 +142,6 @@ func (c *Client) Close(timeout time.Duration) error {
 	c.closed = true
 	c.mu.Unlock()
 
-	c.setVFSHooks(nil, nil, nil)
 	c.stopNetworkHookServer()
 
 	effectiveTimeout := timeout

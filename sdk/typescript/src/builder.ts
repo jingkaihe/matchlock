@@ -1,11 +1,8 @@
 import type {
   CreateOptions,
   ImageConfig,
-  MountConfig,
-  MountOwnerOptions,
   NetworkInterceptionConfig,
   Secret,
-  VFSInterceptionConfig,
 } from "./types";
 
 export function cloneCreateOptions(opts: CreateOptions): CreateOptions {
@@ -13,22 +10,9 @@ export function cloneCreateOptions(opts: CreateOptions): CreateOptions {
     ...opts,
     allowedHosts: opts.allowedHosts ? [...opts.allowedHosts] : undefined,
     addHosts: opts.addHosts ? opts.addHosts.map((x) => ({ ...x })) : undefined,
-    mounts: opts.mounts
-      ? Object.fromEntries(
-        Object.entries(opts.mounts).map(([k, v]) => [k, { ...v }]),
-      )
-      : undefined,
     env: opts.env ? { ...opts.env } : undefined,
     secrets: opts.secrets
       ? opts.secrets.map((s) => ({ ...s, hosts: s.hosts ? [...s.hosts] : undefined }))
-      : undefined,
-    vfsInterception: opts.vfsInterception
-      ? {
-        emitEvents: opts.vfsInterception.emitEvents,
-        rules: opts.vfsInterception.rules
-          ? opts.vfsInterception.rules.map((r) => ({ ...r, ops: r.ops ? [...r.ops] : undefined }))
-          : undefined,
-      }
       : undefined,
     networkInterception: opts.networkInterception
       ? {
@@ -108,16 +92,6 @@ export class Sandbox {
 
   withTimeout(seconds: number): Sandbox {
     this.opts.timeoutSeconds = seconds;
-    return this;
-  }
-
-  withWorkspace(path: string): Sandbox {
-    this.opts.workspace = path;
-    return this;
-  }
-
-  withVFSInterception(config: VFSInterceptionConfig): Sandbox {
-    this.opts.vfsInterception = config;
     return this;
   }
 
@@ -223,30 +197,6 @@ export class Sandbox {
     return this;
   }
 
-  mount(guestPath: string, config: MountConfig): Sandbox {
-    this.opts.mounts = this.opts.mounts ?? {};
-    this.opts.mounts[guestPath] = { ...config };
-    return this;
-  }
-
-  mountHostDir(guestPath: string, hostPath: string, opts?: MountOwnerOptions): Sandbox {
-    const { ownerUID, ownerGID } = validatedMountOwnerOptions(opts);
-    return this.mount(guestPath, { type: "host_fs", hostPath, ownerUID, ownerGID });
-  }
-
-  mountHostDirReadonly(guestPath: string, hostPath: string, opts?: MountOwnerOptions): Sandbox {
-    const { ownerUID, ownerGID } = validatedMountOwnerOptions(opts);
-    return this.mount(guestPath, { type: "host_fs", hostPath, readonly: true, ownerUID, ownerGID });
-  }
-
-  mountMemory(guestPath: string): Sandbox {
-    return this.mount(guestPath, { type: "memory" });
-  }
-
-  mountOverlay(guestPath: string, hostPath: string): Sandbox {
-    return this.mount(guestPath, { type: "overlay", hostPath });
-  }
-
   withUser(user: string): Sandbox {
     this.opts.imageConfig = this.opts.imageConfig ?? {};
     this.opts.imageConfig.user = user;
@@ -290,21 +240,4 @@ export class Sandbox {
 
 export function createSandbox(image: string): Sandbox {
   return new Sandbox(image);
-}
-
-function validatedMountOwnerOptions(opts?: MountOwnerOptions): MountOwnerOptions {
-  if (!opts) {
-    return {};
-  }
-
-  validateID("ownerUID", opts.ownerUID)
-  validateID("ownerGID", opts.ownerGID)
-
-  return opts;
-}
-
-function validateID(name: string, id?: number) {
-  if (id !== undefined && (!Number.isInteger(id) || id < 0 || id > 0xffffffff)) {
-    throw new RangeError(`${name} must be an integer in [0, 4294967295], got ${id}`);
-  }
 }

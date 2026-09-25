@@ -3,7 +3,7 @@
 // Guest agent runs inside the Firecracker VM and handles:
 // 1. Command execution requests from the host
 // 2. Ready signal to indicate VM is ready
-// 3. VFS client connection to host for FUSE
+// 3. Guest file read/write/list requests from the host
 package guestagent
 
 import (
@@ -31,11 +31,9 @@ const (
 	cancelGracePeriod = 5 * time.Second
 	maxReadFileBytes  = 16 * 1024 * 1024
 
-	AF_VSOCK        = 40
-	VMADDR_CID_HOST = 2
+	AF_VSOCK = 40
 
 	VsockPortExec  = 5000
-	VsockPortVFS   = 5001
 	VsockPortReady = 5002
 
 	MsgTypeExec        uint8 = 1
@@ -992,32 +990,6 @@ func acceptVsock(listenFd int) (int, error) {
 	return int(nfd), nil
 }
 
-func dialVsock(cid, port uint32) (int, error) {
-	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return -1, errx.Wrap(ErrSocket, err)
-	}
-
-	addr := sockaddrVM{
-		Family: AF_VSOCK,
-		CID:    cid,
-		Port:   port,
-	}
-
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_CONNECT,
-		uintptr(fd),
-		uintptr(unsafe.Pointer(&addr)),
-		unsafe.Sizeof(addr),
-	)
-	if errno != 0 {
-		syscall.Close(fd)
-		return -1, errx.Wrap(ErrConnect, errno)
-	}
-
-	return fd, nil
-}
-
 func readFull(fd int, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -1031,21 +1003,4 @@ func readFull(fd int, buf []byte) (int, error) {
 		total += n
 	}
 	return total, nil
-}
-
-// VFS client for FUSE daemon (placeholder - would need full FUSE implementation)
-type VFSClient struct {
-	fd int
-}
-
-func NewVFSClient() (*VFSClient, error) {
-	fd, err := dialVsock(VMADDR_CID_HOST, VsockPortVFS)
-	if err != nil {
-		return nil, err
-	}
-	return &VFSClient{fd: fd}, nil
-}
-
-func (c *VFSClient) Close() error {
-	return syscall.Close(c.fd)
 }

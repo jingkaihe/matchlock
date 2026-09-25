@@ -50,7 +50,7 @@ def run_exec_stream(client: Client) -> None:
         "echo stream:start; sleep 1; echo stream:end",
         stdout=sys.stdout,
         stderr=sys.stderr,
-        working_dir="/workspace",
+        working_dir="/tmp",
     )
     print(f"stream exit={result.exit_code} duration_ms={result.duration_ms}")
 
@@ -64,7 +64,7 @@ def run_exec_pipe(client: Client) -> None:
         stdin=io.BytesIO(b"hello from stdin\n"),
         stdout=stdout_buf,
         stderr=stderr_buf,
-        working_dir="/workspace",
+        working_dir="/tmp",
     )
     print(f"pipe exit={result.exit_code} duration_ms={result.duration_ms}")
     print("pipe stdout:")
@@ -99,7 +99,7 @@ def run_exec_interactive(client: Client) -> None:
             "sh",
             stdin=stdin_reader,
             stdout=sys.stdout,
-            working_dir="/workspace",
+            working_dir="/tmp",
             rows=rows,
             cols=cols,
         )
@@ -110,9 +110,7 @@ def run_exec_interactive(client: Client) -> None:
 
 
 def main() -> None:
-    sandbox = (
-        Sandbox("alpine:latest").with_workspace("/workspace").mount_memory("/workspace")
-    )
+    sandbox = Sandbox("alpine:latest")
 
     config = Config(binary_path=os.environ.get("MATCHLOCK_BIN", "matchlock"))
 

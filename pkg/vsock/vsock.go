@@ -34,8 +34,6 @@ const (
 const (
 	// ServicePortExec is the guest-agent exec and stream service port.
 	ServicePortExec = 5000
-	// ServicePortVFS is the guest VFS service port.
-	ServicePortVFS = 5001
 	// ServicePortReady is the guest ready-check service port.
 	ServicePortReady = 5002
 )

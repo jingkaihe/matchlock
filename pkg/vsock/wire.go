@@ -14,7 +14,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-
+	"errors"
+	"io"
 	"net"
 	"time"
 
@@ -206,7 +207,7 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 	}
 
 	done := make(chan *api.ExecResult, 1)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 
 	// connClosed is closed when the response reader finishes (exit received
 	// or read error). The stdin goroutine checks this to avoid writing to an
@@ -226,16 +227,22 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 					default:
 					}
 					if sendErr := SendMessage(conn, MsgTypeStdin, buf[:n]); sendErr != nil {
+						// The command may have exited without consuming all input.
+						// Let the response reader report its exit or connection error.
 						return
 					}
 				}
 				if readErr != nil {
+					if !errors.Is(readErr, io.EOF) {
+						errCh <- errx.Wrap(ErrReadStdin, readErr)
+						return
+					}
 					select {
 					case <-connClosed:
 						return
 					default:
 					}
-					SendMessage(conn, MsgTypeStdin, nil)
+					_ = SendMessage(conn, MsgTypeStdin, nil)
 					return
 				}
 			}
@@ -271,13 +278,23 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 			}
 
 			switch msgType {
-			case MsgTypeStdout:
-				if opts != nil && opts.Stdout != nil {
-					opts.Stdout.Write(data)
+			case MsgTypeStdout, MsgTypeStderr:
+				if opts == nil {
+					continue
 				}
-			case MsgTypeStderr:
-				if opts != nil && opts.Stderr != nil {
-					opts.Stderr.Write(data)
+				writer := opts.Stdout
+				if msgType == MsgTypeStderr {
+					writer = opts.Stderr
+				}
+				if writer != nil {
+					n, err := writer.Write(data)
+					if err == nil && n != len(data) {
+						err = io.ErrShortWrite
+					}
+					if err != nil {
+						errCh <- errx.Wrap(ErrWriteExecOutput, err)
+						return
+					}
 				}
 			case MsgTypeExit:
 				exitCode := 0
@@ -298,6 +315,9 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 	case result := <-done:
 		return result, nil
 	case err := <-errCh:
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	case <-ctx.Done():
 		return nil, ctx.Err()

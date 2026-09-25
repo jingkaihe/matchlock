@@ -142,15 +142,11 @@ func TestParseDiskMountSpecNamedVolumeMissing(t *testing.T) {
 	assert.Contains(t, err.Error(), "named volume not found")
 }
 
-func TestDiskMountShadowedByWorkspace(t *testing.T) {
-	assert.True(t, diskMountShadowedByWorkspace("/workspace/cache", "/workspace"))
-	assert.True(t, diskMountShadowedByWorkspace("/workspace", "/workspace"))
-}
-
-func TestDiskMountShadowedByWorkspaceOutsideWorkspace(t *testing.T) {
-	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", "/workspace"))
-	assert.False(t, diskMountShadowedByWorkspace("/workspace-cache", "/workspace"))
-	assert.False(t, diskMountShadowedByWorkspace("/var/lib/buildkit", ""))
+func TestRunHasNoHostMountFlags(t *testing.T) {
+	assert.Nil(t, runCmd.Flags().Lookup("workspace"))
+	assert.Nil(t, runCmd.Flags().Lookup("volume"))
+	assert.Nil(t, runCmd.Flags().ShorthandLookup("v"))
+	assert.NotNil(t, runCmd.Flags().Lookup("disk"))
 }
 
 func TestValidateDetachFlags(t *testing.T) {

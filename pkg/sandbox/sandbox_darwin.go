@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,31 +17,24 @@ import (
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/state"
-	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vm/darwin"
 )
 
 type Sandbox struct {
-	id               string
-	config           *api.Config
-	machine          vm.Machine
-	netStack         *sandboxnet.NetworkStack
-	policy           *policy.Engine
-	vfsRoot          vfs.Provider
-	vfsHooks         *vfs.HookEngine
-	vfsServer        *vfs.VFSServer
-	vfsStopFunc      func()
-	events           chan api.Event
-	stateMgr         *state.Manager
-	caPool           *sandboxnet.CAPool
-	subnetInfo       *state.SubnetInfo
-	subnetAlloc      *state.SubnetAllocator
-	workspace        string
-	rootfsPath       string // Writable overlay upper disk
-	bootstrapPath    string // Bootstrap root disk (vda)
-	overlaySnapshots []string
-	lifecycle        *lifecycle.Store
+	id            string
+	config        *api.Config
+	machine       vm.Machine
+	netStack      *sandboxnet.NetworkStack
+	policy        *policy.Engine
+	events        chan api.Event
+	stateMgr      *state.Manager
+	caPool        *sandboxnet.CAPool
+	subnetInfo    *state.SubnetInfo
+	subnetAlloc   *state.SubnetAllocator
+	rootfsPath    string // Writable overlay upper disk
+	bootstrapPath string // Bootstrap root disk (vda)
+	lifecycle     *lifecycle.Store
 }
 
 type Options struct {
@@ -58,14 +50,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
-	if err := config.ValidateVFS(); err != nil {
-		return nil, err
-	}
-	vfsEnabled := config.HasVFSMounts()
-
 	id := config.GetID()
 	hostname := config.GetHostname()
-	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
 
 	if config.Network != nil {
@@ -96,7 +82,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.StateDir = stateMgr.Dir(id)
-		r.Workspace = workspace
 	})
 	defer func() {
 		if retErr != nil {
@@ -234,7 +219,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		GatewayIP:           gatewayIP,
 		GuestIP:             guestIP,
 		SubnetCIDR:          subnetCIDR,
-		Workspace:           workspace,
 		UseInterception:     needsInterception,
 		Privileged:          config.Privileged,
 		PrebuiltRootfs:      bootstrapRootfsPath,
@@ -248,16 +232,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
-
-	// Prepare overlay snapshots before creating the VZ VM process.
-	// On macOS, large snapshot work between Create() and Start() can cause
-	// startup instability in Virtualization.framework.
-	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
-	if err != nil {
-		releaseSubnet()
-		stateMgr.Unregister(id)
-		return nil, err
-	}
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
@@ -315,86 +289,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	cleanupVM := func() {
-		if netStack != nil {
-			netStack.Close()
-		}
-		machine.Close(ctx)
-		releaseSubnet()
-		stateMgr.Unregister(id)
-	}
-
-	var vfsRoot vfs.Provider
-	var vfsHooks *vfs.HookEngine
-	var vfsServer *vfs.VFSServer
-	var vfsStopFunc func()
-	if vfsEnabled {
-		vfsProviders, err := buildVFSProviders(config)
-		if err != nil {
-			cleanupVM()
-			return nil, err
-		}
-		vfsRouter := vfs.NewMountRouter(vfsProviders)
-		vfsRoot = vfsRouter
-		vfsHooks = buildVFSHookEngine(config)
-		if vfsHooks != nil {
-			attachVFSFileEvents(vfsHooks, events)
-			vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
-		}
-
-		vfsServer = vfs.NewVFSServer(vfsRoot)
-
-		vfsListener, err := darwinMachine.SetupVFSListener()
-		if err != nil {
-			cleanupVM()
-			return nil, errx.Wrap(ErrVFSListener, err)
-		}
-
-		vfsStopCh := make(chan struct{})
-		vfsStopFunc = func() {
-			close(vfsStopCh)
-			vfsListener.Close()
-		}
-
-		go func() {
-			for {
-				select {
-				case <-vfsStopCh:
-					return
-				default:
-					conn, err := vfsListener.Accept()
-					if err != nil {
-						if err == net.ErrClosed {
-							return
-						}
-						continue
-					}
-					go vfsServer.HandleConnection(conn)
-				}
-			}
-		}()
-	}
-
 	sb = &Sandbox{
-		id:               id,
-		config:           config,
-		machine:          machine,
-		netStack:         netStack,
-		policy:           policyEngine,
-		vfsRoot:          vfsRoot,
-		vfsHooks:         vfsHooks,
-		vfsServer:        vfsServer,
-		vfsStopFunc:      vfsStopFunc,
-		events:           events,
-		stateMgr:         stateMgr,
-		caPool:           caPool,
-		subnetInfo:       subnetInfo,
-		subnetAlloc:      subnetAlloc,
-		workspace:        workspace,
-		rootfsPath:       upperRootfsPath,
-		bootstrapPath:    bootstrapRootfsPath,
-		overlaySnapshots: overlaySnapshots,
-		lifecycle:        lifecycleStore,
+		id:            id,
+		config:        config,
+		machine:       machine,
+		netStack:      netStack,
+		policy:        policyEngine,
+		events:        events,
+		stateMgr:      stateMgr,
+		caPool:        caPool,
+		subnetInfo:    subnetInfo,
+		subnetAlloc:   subnetAlloc,
+		rootfsPath:    upperRootfsPath,
+		bootstrapPath: bootstrapRootfsPath,
+		lifecycle:     lifecycleStore,
 	}
 	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
 		_ = sb.Close(ctx)
@@ -409,7 +317,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 func (s *Sandbox) ID() string                 { return s.id }
 func (s *Sandbox) Config() *api.Config        { return s.config }
-func (s *Sandbox) Workspace() string          { return s.workspace }
 func (s *Sandbox) Machine() vm.Machine        { return s.machine }
 func (s *Sandbox) Policy() *policy.Engine     { return s.policy }
 func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
@@ -546,18 +453,6 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		}
 	}
 
-	if s.vfsStopFunc != nil {
-		s.vfsStopFunc()
-		markCleanup("vfs_stop", nil)
-	} else {
-		markCleanup("vfs_stop", nil)
-	}
-	if s.vfsHooks != nil {
-		s.vfsHooks.Close()
-		markCleanup("vfs_hooks", nil)
-	} else {
-		markCleanup("vfs_hooks", nil)
-	}
 	if s.netStack != nil {
 		if err := s.netStack.Close(); err != nil {
 			errs = append(errs, errx.Wrap(ErrNetworkStack, err))
@@ -598,15 +493,6 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("machine_close", nil)
 	}
-
-	var overlayCleanupErr error
-	for _, snapshotPath := range s.overlaySnapshots {
-		if err := os.RemoveAll(snapshotPath); err != nil {
-			errs = append(errs, errx.With(ErrRemoveOverlaySnapshot, " %s: %v", snapshotPath, err))
-			overlayCleanupErr = err
-		}
-	}
-	markCleanup("overlay_snapshot_remove", overlayCleanupErr)
 
 	if err := os.Remove(s.rootfsPath); err != nil && !os.IsNotExist(err) {
 		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))

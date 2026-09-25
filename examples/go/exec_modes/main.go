@@ -43,7 +43,7 @@ func run() error {
 	defer client.Remove()
 	defer client.Close(0)
 
-	sandbox := sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace")
+	sandbox := sdk.New("alpine:latest")
 
 	vmID, err := client.Launch(sandbox)
 	if err != nil {
@@ -102,7 +102,7 @@ func run() error {
 	}()
 
 	ttyResult, err := client.ExecInteractive(ctx, "sh", &sdk.ExecInteractiveOptions{
-		WorkingDir: "/workspace",
+		WorkingDir: "/tmp",
 		Rows:       uint16(rows),
 		Cols:       uint16(cols),
 		Stdin:      os.Stdin,

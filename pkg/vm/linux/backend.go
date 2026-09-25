@@ -30,8 +30,6 @@ import (
 const (
 	// VsockPortExec is the port for command execution
 	VsockPortExec = 5000
-	// VsockPortVFS is the port for VFS protocol
-	VsockPortVFS = 5001
 	// VsockPortReady is the port for ready signal
 	VsockPortReady = 5002
 )
@@ -275,18 +273,13 @@ func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
-		workspace := m.config.Workspace
 		hostname := m.config.Hostname
 		if hostname == "" {
 			hostname = m.config.ID
 		}
-		workspaceArg := ""
-		if workspace != "" {
-			workspaceArg = " matchlock.workspace=" + workspace
-		}
 
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s matchlock.dns=%s",
-			hostname, workspaceArg, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s matchlock.dns=%s",
+			hostname, vm.KernelDNSParam(m.config.DNSServers))
 		if m.config.NoNetwork {
 			kernelArgs += " ip=off matchlock.no_network=1"
 		} else {
