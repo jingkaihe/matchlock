@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.2.17
+
+* Added per-command user selection for pipe-mode execution across the Go, Python, and TypeScript SDKs, contributed by [@lf-](https://github.com/lf-) in [#113](https://github.com/jingkaihe/matchlock/pull/113).
+* Added per-command user selection for interactive PTY execution in the Python and TypeScript SDKs, matching the existing Go SDK support.
+
 ## 0.2.16
 
 * Fixed Linux arm64 sandbox startup by selecting arm64 guest kernels, pulling arm64 image rootfs layers, and enabling Firecracker's arm64 serial console support, contributed by [@rubiojr](https://github.com/rubiojr) in [#111](https://github.com/jingkaihe/matchlock/pull/111).

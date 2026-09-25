@@ -583,6 +583,8 @@ describe("Client", () => {
     let out = "";
     let err = "";
     const pipePromise = client.execPipe("cat", {
+      workingDir: "/workspace",
+      user: "1000:1000",
       stdin: [Buffer.from("hello stdin\n")],
       stdout: (chunk) => {
         out += chunk.toString("utf8");
@@ -593,6 +595,11 @@ describe("Client", () => {
     });
 
     const req = await fake.waitForRequest("exec_pipe");
+    expect(req.params).toEqual({
+      command: "cat",
+      working_dir: "/workspace",
+      user: "1000:1000",
+    });
     fake.pushNotification("exec_pipe.ready", { id: req.id });
 
     const stdinReq = await fake.waitForRequest("exec_pipe.stdin");
@@ -629,12 +636,42 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("keeps execPipeWithDir compatibility", async () => {
+    const fake = installFakeProcess();
+    const client = new Client();
+
+    const pipePromise = client.execPipeWithDir("pwd", "/workspace");
+
+    const req = await fake.waitForRequest("exec_pipe");
+    expect(req.params).toEqual({
+      command: "pwd",
+      working_dir: "/workspace",
+    });
+    fake.pushNotification("exec_pipe.ready", { id: req.id });
+
+    const eofReq = await fake.waitForRequest("exec_pipe.stdin_eof");
+    expect((eofReq.params as Record<string, unknown>).id).toBe(req.id);
+
+    fake.pushResponse({
+      jsonrpc: "2.0",
+      id: req.id,
+      result: { exit_code: 0, duration_ms: 4 },
+    });
+
+    await expect(pipePromise).resolves.toEqual({ exitCode: 0, durationMs: 4 });
+
+    fake.close();
+    await client.close();
+  });
+
   it("supports execInteractive with stdin, stdout, and resize", async () => {
     const fake = installFakeProcess();
     const client = new Client();
 
     let out = "";
     const interactivePromise = client.execInteractive("sh", {
+      workingDir: "/workspace",
+      user: "1000:1000",
       stdin: [Buffer.from("exit\n")],
       stdout: (chunk) => {
         out += chunk.toString("utf8");
@@ -645,7 +682,13 @@ describe("Client", () => {
     });
 
     const req = await fake.waitForRequest("exec_tty");
-    expect(req.params).toEqual({ command: "sh", rows: 30, cols: 100 });
+    expect(req.params).toEqual({
+      command: "sh",
+      working_dir: "/workspace",
+      user: "1000:1000",
+      rows: 30,
+      cols: 100,
+    });
     fake.pushNotification("exec_tty.ready", { id: req.id });
 
     const stdinReq = await fake.waitForRequest("exec_tty.stdin");

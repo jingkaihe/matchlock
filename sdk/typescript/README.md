@@ -78,7 +78,7 @@ const sandbox = new Sandbox("alpine:latest").withNetworkInterception({
 - Typed network interception rules and local callback hooks via `withNetworkInterception(...)`
 - Supports fully offline mode via `.withNoNetwork()` (no guest NIC / no egress)
 - JSON-RPC `create`, `exec`, `exec_stream`, `exec_pipe`, `exec_tty`, `log`, `log_stream`, `write_file`, `read_file`, `list_files`, `port_forward`, `cancel`, `close`
-- Streaming stdout/stderr via `execStream` and bidirectional stdin/stdout/stderr via `execPipe`
+- Streaming stdout/stderr via `execStream`, bidirectional stdin/stdout/stderr via `execPipe`, and per-command working directory and user selection for pipe and interactive PTY execution
 - Guest-native filesystems with explicit file read/write/list and stream transfers
 - Managed ext4 block volume creation, listing, and removal
 - VM log access via `log()` and `logStream()`

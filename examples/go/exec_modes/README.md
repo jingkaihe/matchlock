@@ -1,10 +1,12 @@
-# Go SDK Interactive Terminal Example
+# Go SDK Execution Modes Example
 
-This example starts a real interactive shell inside the sandbox using
+This example demonstrates pipe-mode execution as a per-command non-root user
+with `ExecPipeWithOptions`, then starts a real interactive shell using
 `ExecInteractive`, attached directly to your local terminal.
 
 It configures:
 
+- pipe-mode stdin/stdout/stderr, working directory, and user options
 - raw terminal mode (so keystrokes are passed through correctly)
 - initial terminal rows/cols
 - `SIGWINCH` forwarding so resize events reach the guest PTY
@@ -32,6 +34,7 @@ export MATCHLOCK_BIN=/path/to/matchlock
 
 ## Note
 
-`ExecPipe` is still available for bidirectional stdin/stdout/stderr without PTY.
-Use `ExecInteractive` when you need terminal semantics (prompt handling, readline,
+`ExecPipe` remains available as the concise default API. Use
+`ExecPipeWithOptions` to select a working directory or user, and use
+`ExecInteractive` when you need terminal semantics (prompt handling, readline,
 and resize behavior).
