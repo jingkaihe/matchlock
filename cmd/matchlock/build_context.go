@@ -82,6 +82,11 @@ func writeBuildContext(ctx context.Context, w io.Writer, contextDir, dockerfile 
 		if err != nil {
 			return err
 		}
+		// Unix sockets are host runtime endpoints, not transferable build inputs.
+		// Skip them by file type, without opening or connecting to them.
+		if info.Mode()&os.ModeSocket != 0 {
+			return nil
+		}
 		var link string
 		if info.Mode()&os.ModeSymlink != 0 {
 			link, err = root.Readlink(filepath.FromSlash(name))

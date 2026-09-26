@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -38,6 +39,36 @@ func TestWriteBuildContext(t *testing.T) {
 	assert.Equal(t, outside, headers["context/outside"].Linkname)
 	assert.Equal(t, "bin/tool", headers["context/tool"].Linkname)
 	assert.NotContains(t, headers, "context/outside/secret")
+	assert.Equal(t, "FROM scratch\nCOPY . /\n", string(files["dockerfile/Dockerfile"]))
+}
+
+func TestWriteBuildContextSkipsSockets(t *testing.T) {
+	// Keep the absolute socket path below the Unix socket limit on macOS too.
+	dir, err := os.MkdirTemp("", "build-context-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM scratch\nCOPY . /\n"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".runtime", "sockets"), 0755))
+	for _, name := range []string{"active", "stale.sock"} {
+		listener, err := net.ListenUnix("unix", &net.UnixAddr{
+			Net: "unix", Name: filepath.Join(dir, ".runtime", "sockets", name),
+		})
+		require.NoError(t, err)
+		listener.SetUnlinkOnClose(false)
+		t.Cleanup(func() { _ = listener.Close() })
+		if name == "stale.sock" {
+			require.NoError(t, listener.Close())
+		}
+	}
+	// A .sock filename does not imply a socket: regular files must still upload.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".runtime", "sockets", "data.sock"), []byte("keep"), 0644))
+	var archive bytes.Buffer
+	require.NoError(t, writeBuildContext(context.Background(), &archive, dir, dockerfile))
+	headers, files := readContextArchive(t, &archive)
+	assert.NotContains(t, headers, "context/.runtime/sockets/active")
+	assert.NotContains(t, headers, "context/.runtime/sockets/stale.sock")
+	assert.Equal(t, "keep", string(files["context/.runtime/sockets/data.sock"]))
 	assert.Equal(t, "FROM scratch\nCOPY . /\n", string(files["dockerfile/Dockerfile"]))
 }
 

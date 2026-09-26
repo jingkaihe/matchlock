@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"database/sql"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +37,13 @@ func TestCLIBuildMissingContext(t *testing.T) {
 func TestCLIDockerfileBuild(t *testing.T) {
 	for _, name := range []string{"context-dockerfile", "external-dockerfile"} {
 		t.Run(name, func(t *testing.T) {
-			contextDir := t.TempDir()
+			// Unix socket paths have a small limit, especially on macOS.
+			contextDir, err := os.MkdirTemp("", "matchlock-build-")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.RemoveAll(contextDir) })
+			listener, err := net.Listen("unix", filepath.Join(contextDir, "runtime.sock"))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = listener.Close() })
 			dockerfile := filepath.Join(contextDir, "Dockerfile")
 			content := strings.Repeat("hello from streamed context\n", 10000)
 			require.NoError(t, os.WriteFile(filepath.Join(contextDir, "hello.txt"), []byte(content), 0644))
@@ -57,7 +64,7 @@ func TestCLIDockerfileBuild(t *testing.T) {
 			}
 			require.NoError(t, os.WriteFile(dockerfile, []byte(`FROM busybox:latest
 COPY . /context
-RUN test -f /context/hello.txt && test -L /context/link.txt && test ! -e /context/ignored.txt && test ! -e /context/host-only.txt && test ! -e /context/Dockerfile.custom
+RUN test -f /context/hello.txt && test -L /context/link.txt && test ! -e /context/ignored.txt && test ! -e /context/host-only.txt && test ! -e /context/Dockerfile.custom && test ! -e /context/runtime.sock
 `), 0644))
 
 			tag := "matchlock-test-build-" + name + ":latest"
