@@ -43,6 +43,11 @@ var (
 	ErrSaveTag = errors.New("saving tag")
 )
 
+// Kernel errors
+var (
+	ErrPullKernel = errors.New("pull kernel")
+)
+
 // RPC errors
 var (
 	ErrBuildRootfs           = errors.New("failed to build rootfs")
