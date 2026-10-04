@@ -340,7 +340,7 @@ exit $RC
 
 // uploadBuildContext transfers a bounded-memory tar stream through the exec
 // service. All build files live on guest storage, never on a shared host mount.
-func uploadBuildContext(ctx context.Context, sb *sandbox.Sandbox, contextDir, dockerfile string) error {
+func uploadBuildContext(ctx context.Context, sb buildExecer, contextDir, dockerfile string) error {
 	r, w := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
@@ -357,14 +357,18 @@ func uploadBuildContext(ctx context.Context, sb *sandbox.Sandbox, contextDir, do
 	// Unblock the producer if the guest exits or is canceled before consuming stdin.
 	r.Close()
 	archiveErr := <-done
+	// A closed pipe only means the guest stopped reading; report why it did.
+	if archiveErr != nil && !errors.Is(archiveErr, io.ErrClosedPipe) {
+		return errx.Wrap(ErrBuildContext, archiveErr)
+	}
 	if execErr != nil {
 		return errx.Wrap(ErrUploadBuildContext, execErr)
 	}
-	if archiveErr != nil {
-		return errx.Wrap(ErrBuildContext, archiveErr)
-	}
 	if result.ExitCode != 0 {
 		return errx.With(ErrUploadBuildContext, ": exit code %d", result.ExitCode)
+	}
+	if archiveErr != nil {
+		return errx.Wrap(ErrBuildContext, archiveErr)
 	}
 	return nil
 }

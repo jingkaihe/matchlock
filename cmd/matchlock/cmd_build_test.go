@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -109,4 +112,54 @@ func TestBuildAndImportImageExecError(t *testing.T) {
 	_, err := buildAndImportImage(context.Background(), execer, importer, "build.sh", "app:latest")
 	assert.ErrorIs(t, err, ErrBuildKitBuild)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestUploadBuildContextExtractsArchiveInGuest(t *testing.T) {
+	dir := t.TempDir()
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0644))
+	execer := fakeBuildExecer(func(_ context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+		assert.Equal(t, "mkdir -p /workspace && tar -xf - -C /workspace", command)
+		headers, _ := readContextArchive(t, opts.Stdin)
+		assert.Contains(t, headers, "context/Dockerfile")
+		assert.Contains(t, headers, "dockerfile/Dockerfile")
+		return &api.ExecResult{}, nil
+	})
+	require.NoError(t, uploadBuildContext(context.Background(), execer, dir, dockerfile))
+}
+
+func TestUploadBuildContextReportsGuestTarFailure(t *testing.T) {
+	dir := t.TempDir()
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0644))
+	// Large enough that the archive is still being written when tar exits.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "big.bin"), make([]byte, 4<<20), 0644))
+	execer := fakeBuildExecer(func(_ context.Context, _ string, opts *api.ExecOptions) (*api.ExecResult, error) {
+		_, err := io.ReadFull(opts.Stdin, make([]byte, 512))
+		require.NoError(t, err)
+		return &api.ExecResult{ExitCode: 2}, nil
+	})
+
+	err := uploadBuildContext(context.Background(), execer, dir, dockerfile)
+	require.ErrorIs(t, err, ErrUploadBuildContext)
+	assert.Contains(t, err.Error(), "exit code 2")
+	assert.NotErrorIs(t, err, io.ErrClosedPipe, "the closed pipe is a consequence, not the cause")
+}
+
+func TestUploadBuildContextReportsArchiveFailure(t *testing.T) {
+	dir := t.TempDir()
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM scratch\n"), 0644))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(dir, "input.pipe"), 0600))
+	execer := fakeBuildExecer(func(_ context.Context, _ string, opts *api.ExecOptions) (*api.ExecResult, error) {
+		// Mirror vsock.ExecPipe: a stdin read error aborts the guest command.
+		if _, err := io.Copy(io.Discard, opts.Stdin); err != nil {
+			return nil, errx.Wrap(vsock.ErrReadStdin, err)
+		}
+		return &api.ExecResult{}, nil
+	})
+
+	err := uploadBuildContext(context.Background(), execer, dir, dockerfile)
+	require.ErrorIs(t, err, ErrBuildContext)
+	assert.Contains(t, err.Error(), "unsupported file")
 }
