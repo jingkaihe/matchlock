@@ -1,15 +1,18 @@
 # Release Notes
 
-## 0.2.17
+## 0.3.0
 
-* Added per-command user selection for pipe-mode execution across the Go, Python, and TypeScript SDKs, contributed by [@lf-](https://github.com/lf-) in [#113](https://github.com/jingkaihe/matchlock/pull/113).
-* Added per-command user selection for interactive PTY execution in the Python and TypeScript SDKs, matching the existing Go SDK support.
 * **Breaking change:** Removed VFS mounts and filesystem hooks, including `--workspace`, `--volume`/`-v`, and related SDK APIs. Use explicit file transfers or `--disk` block volumes instead.
 * Commands now default to the image's `WORKDIR`, otherwise `/`; create `/workspace` explicitly if needed.
 * Reworked builds to stream context into the guest and images back to the host, honouring ignore files. Fixed external/symlinked Dockerfiles, skipped Unix sockets, and improved transfer errors. Size `--build-disk` for the uploaded context.
 * Fixed execution-stream buffering, I/O error propagation, and concurrent stdout/stderr frame corruption on Linux and macOS. Output sent to writers is no longer retained in `ExecResult`.
 * Added Python SDK binary output support for streaming, pipe, and interactive execution.
 * Bumped Firecracker/jailer to `v1.17.0` to fix vsock corruption with guest kernels `6.17+`; Linux setup upgrades unsupported standalone versions or warns to upgrade the package.
+
+## 0.2.17
+
+* Added per-command user selection for pipe-mode execution across the Go, Python, and TypeScript SDKs, contributed by [@lf-](https://github.com/lf-) in [#113](https://github.com/jingkaihe/matchlock/pull/113).
+* Added per-command user selection for interactive PTY execution in the Python and TypeScript SDKs, matching the existing Go SDK support.
 
 ## 0.2.16
 
