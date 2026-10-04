@@ -141,6 +141,20 @@ func TestWriteBuildContextRejectsSpecialFiles(t *testing.T) {
 	}
 }
 
+func TestWriteBuildContextFollowsSelectedDockerfileSymlink(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(t.TempDir(), "Dockerfile.shared")
+	require.NoError(t, os.WriteFile(shared, []byte("FROM busybox\n"), 0644))
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.Symlink(shared, dockerfile))
+
+	var archive bytes.Buffer
+	require.NoError(t, writeBuildContext(context.Background(), &archive, dir, dockerfile))
+	headers, files := readContextArchive(t, &archive)
+	assert.Equal(t, "FROM busybox\n", string(files["dockerfile/Dockerfile"]))
+	assert.Equal(t, byte(tar.TypeSymlink), headers["context/Dockerfile"].Typeflag, "context symlinks stay links")
+}
+
 func TestWriteBuildContextRejectsEscapingIgnoreSymlink(t *testing.T) {
 	dir := t.TempDir()
 	dockerfile := filepath.Join(dir, "Dockerfile")

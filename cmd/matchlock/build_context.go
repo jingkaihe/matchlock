@@ -19,9 +19,11 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-// writeBuildContext packages only the selected inputs. Symlinks are archived as
-// links, never traversed, and rooted file access prevents a concurrent symlink
-// replacement from making us read outside the context directory.
+// writeBuildContext packages only the selected inputs. Symlinks in the context
+// are archived as links, never traversed, and rooted file access prevents a
+// concurrent symlink replacement from making us read outside the context
+// directory. Only the Dockerfile the user explicitly selected is followed if it
+// is a symlink, matching docker build.
 func writeBuildContext(ctx context.Context, w io.Writer, contextDir, dockerfile string) error {
 	root, err := os.OpenRoot(contextDir)
 	if err != nil {
@@ -136,7 +138,7 @@ func writeBuildContext(ctx context.Context, w io.Writer, contextDir, dockerfile 
 	// Always send the explicitly selected Dockerfile separately, even if it is
 	// outside the context or excluded by an ignore rule. Use a fixed guest name
 	// so host filenames never become shell syntax in the build command.
-	file, err := dockerRoot.OpenFile(filepath.Base(dockerfile), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	file, err := os.OpenFile(dockerfile, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
