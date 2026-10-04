@@ -783,14 +783,46 @@ func applyUserEnv(cmd *exec.Cmd, user string) {
 	cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+user)
 }
 
-func sendMessage(fd int, msgType uint8, data []byte) {
-	header := make([]byte, 5)
-	header[0] = msgType
-	binary.BigEndian.PutUint32(header[1:], uint32(len(data)))
-	syscall.Write(fd, header)
-	if len(data) > 0 {
-		syscall.Write(fd, data)
+// frameWriteLocks serializes framed writes per connection fd. Exec handlers
+// send stdout and stderr from separate goroutines, so each frame's header and
+// payload must reach the host without interleaving with another frame.
+var frameWriteLocks sync.Map // map[int]*sync.Mutex
+
+func frameWriteLock(fd int) *sync.Mutex {
+	if mu, ok := frameWriteLocks.Load(fd); ok {
+		return mu.(*sync.Mutex)
 	}
+	mu, _ := frameWriteLocks.LoadOrStore(fd, new(sync.Mutex))
+	return mu.(*sync.Mutex)
+}
+
+func sendMessage(fd int, msgType uint8, data []byte) {
+	frame := make([]byte, 5+len(data))
+	frame[0] = msgType
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(data)))
+	copy(frame[5:], data)
+
+	mu := frameWriteLock(fd)
+	mu.Lock()
+	defer mu.Unlock()
+	_ = writeFull(fd, frame)
+}
+
+func writeFull(fd int, buf []byte) error {
+	for len(buf) > 0 {
+		n, err := syscall.Write(fd, buf)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		buf = buf[n:]
+	}
+	return nil
 }
 
 func sendExitCode(fd int, code int) {
@@ -825,16 +857,7 @@ func sendExecResponse(fd int, resp *ExecResponse) {
 	if err != nil {
 		return
 	}
-
-	header := make([]byte, 5)
-	header[0] = MsgTypeExecResult
-	header[1] = byte(len(data) >> 24)
-	header[2] = byte(len(data) >> 16)
-	header[3] = byte(len(data) >> 8)
-	header[4] = byte(len(data))
-
-	syscall.Write(fd, header)
-	syscall.Write(fd, data)
+	sendMessage(fd, MsgTypeExecResult, data)
 }
 
 func sendFileResponse(fd int, resp *FileResponse) {

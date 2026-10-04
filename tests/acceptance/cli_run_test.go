@@ -50,6 +50,17 @@ func TestCLIRunMultiWordCommand(t *testing.T) {
 	assert.Contains(t, stdout, "foo bar")
 }
 
+func TestCLIRunConcurrentStdoutStderrStayIntact(t *testing.T) {
+	const size = 4 << 20
+	script := "yes stdout-line | head -c " + strconv.Itoa(size) + " & yes stderr-line | head -c " + strconv.Itoa(size) + " >&2; wait"
+	stdout, stderr, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "--no-network", "--", "sh", "-c", script)
+	require.Equalf(t, 0, exitCode, "stdout bytes: %d, stderr bytes: %d", len(stdout), len(stderr))
+	wantStdout := strings.Repeat("stdout-line\n", size/len("stdout-line\n")+1)[:size]
+	wantStderr := strings.Repeat("stderr-line\n", size/len("stderr-line\n")+1)[:size]
+	assert.Truef(t, stdout == wantStdout, "stdout corrupted: got %d bytes, want %d", len(stdout), size)
+	assert.Truef(t, strings.Contains(stderr, wantStderr), "stderr corrupted: got %d bytes, want %d", len(stderr), size)
+}
+
 func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 	args := withAcceptanceRunCPUs([]string{
 		"run",
