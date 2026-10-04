@@ -60,14 +60,9 @@ var (
 // Exec errors
 var (
 	ErrExecConnect     = errors.New("failed to connect to exec service")
-	ErrExecEncode      = errors.New("failed to encode exec request")
 	ErrExecEncodeReq   = errors.New("failed to encode request")
 	ErrExecWriteHeader = errors.New("failed to write header")
 	ErrExecWriteReq    = errors.New("failed to write request")
-	ErrExecReadHeader  = errors.New("failed to read response header")
-	ErrExecReadData    = errors.New("failed to read response data")
-	ErrExecDecode      = errors.New("failed to decode exec response")
-	ErrExecRemote      = errors.New("exec error")
 )
 
 // Close errors

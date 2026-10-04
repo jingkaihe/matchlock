@@ -45,14 +45,10 @@ var (
 
 // Exec errors
 var (
-	ErrExecConnect        = errors.New("connect to exec service")
-	ErrExecEncodeRequest  = errors.New("encode exec request")
-	ErrExecWriteHeader    = errors.New("write header")
-	ErrExecWriteRequest   = errors.New("write request")
-	ErrExecReadRespHeader = errors.New("read response header")
-	ErrExecReadRespData   = errors.New("read response data")
-	ErrExecDecodeResponse = errors.New("decode exec response")
-	ErrExecRemote         = errors.New("exec error")
+	ErrExecConnect       = errors.New("connect to exec service")
+	ErrExecEncodeRequest = errors.New("encode exec request")
+	ErrExecWriteHeader   = errors.New("write header")
+	ErrExecWriteRequest  = errors.New("write request")
 )
 
 // Close errors

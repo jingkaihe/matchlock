@@ -24,6 +24,8 @@ var (
 	ErrWriteRequest       = errors.New("write request")
 	ErrReadResponseHeader = errors.New("read response header")
 	ErrReadResponseData   = errors.New("read response data")
+	ErrDecodeExecResponse = errors.New("decode exec response")
+	ErrExecRemote         = errors.New("exec error")
 	ErrReadStdin          = errors.New("read exec stdin")
 	ErrWriteExecOutput    = errors.New("write exec output")
 

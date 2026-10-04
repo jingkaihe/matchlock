@@ -3,7 +3,6 @@
 package darwin
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -216,135 +215,18 @@ func (m *DarwinMachine) ListFiles(ctx context.Context, path string) ([]api.FileI
 	return vsock.ListFilesVsock(conn, path)
 }
 
+// Exec runs a command through the guest agent. When opts.Stdin is set it uses
+// pipe mode; otherwise streamed output is forwarded to opts.Stdout/Stderr
+// without being retained in host memory.
 func (m *DarwinMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
-	if opts != nil && opts.Stdin != nil {
-		conn, err := m.dialVsock(VsockPortExec)
-		if err != nil {
-			return nil, errx.Wrap(ErrExecConnect, err)
-		}
-		return vsock.ExecPipe(ctx, conn, command, opts)
-	}
-
-	start := time.Now()
-
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
 		return nil, errx.Wrap(ErrExecConnect, err)
 	}
-	defer conn.Close()
-
-	// Watch for context cancellation and close the connection to unblock reads.
-	// Closing the connection causes the guest agent to see EOF and kill the child.
-	stop := context.AfterFunc(ctx, func() {
-		conn.Close()
-	})
-	defer stop()
-
-	req := vsock.ExecRequest{
-		Command: command,
+	if opts != nil && opts.Stdin != nil {
+		return vsock.ExecPipe(ctx, conn, command, opts)
 	}
-	if opts != nil {
-		req.WorkingDir = opts.WorkingDir
-		req.Env = opts.Env
-		req.User = opts.User
-	}
-
-	reqData, err := json.Marshal(req)
-	if err != nil {
-		return nil, errx.Wrap(ErrExecEncode, err)
-	}
-
-	streaming := opts != nil && (opts.Stdout != nil || opts.Stderr != nil)
-
-	header := make([]byte, 5)
-	if streaming {
-		header[0] = vsock.MsgTypeExecStream
-	} else {
-		header[0] = vsock.MsgTypeExec
-	}
-	header[1] = byte(len(reqData) >> 24)
-	header[2] = byte(len(reqData) >> 16)
-	header[3] = byte(len(reqData) >> 8)
-	header[4] = byte(len(reqData))
-
-	if _, err := conn.Write(header); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errx.Wrap(ErrExecWriteHeader, err)
-	}
-	if _, err := conn.Write(reqData); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errx.Wrap(ErrExecWriteReq, err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	for {
-		if _, err := vsock.ReadFull(conn, header); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, errx.Wrap(ErrExecReadHeader, err)
-		}
-
-		msgType := header[0]
-		length := uint32(header[1])<<24 | uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
-
-		data := make([]byte, length)
-		if length > 0 {
-			if _, err := vsock.ReadFull(conn, data); err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				return nil, errx.Wrap(ErrExecReadData, err)
-			}
-		}
-
-		switch msgType {
-		case vsock.MsgTypeStdout:
-			if streaming && opts.Stdout != nil {
-				opts.Stdout.Write(data)
-			}
-			stdout.Write(data)
-		case vsock.MsgTypeStderr:
-			if streaming && opts.Stderr != nil {
-				opts.Stderr.Write(data)
-			}
-			stderr.Write(data)
-		case vsock.MsgTypeExecResult:
-			var resp vsock.ExecResponse
-			if err := json.Unmarshal(data, &resp); err != nil {
-				return nil, errx.Wrap(ErrExecDecode, err)
-			}
-
-			duration := time.Since(start)
-
-			stdoutData := stdout.Bytes()
-			stderrData := stderr.Bytes()
-			if len(stdoutData) == 0 && len(resp.Stdout) > 0 {
-				stdoutData = resp.Stdout
-			}
-			if len(stderrData) == 0 && len(resp.Stderr) > 0 {
-				stderrData = resp.Stderr
-			}
-
-			result := &api.ExecResult{
-				ExitCode:   resp.ExitCode,
-				Stdout:     stdoutData,
-				Stderr:     stderrData,
-				Duration:   duration,
-				DurationMS: duration.Milliseconds(),
-			}
-
-			if resp.Error != "" {
-				return result, errx.With(ErrExecRemote, ": %s", resp.Error)
-			}
-
-			return result, nil
-		}
-	}
+	return vsock.Exec(ctx, conn, command, opts)
 }
 
 func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error) {

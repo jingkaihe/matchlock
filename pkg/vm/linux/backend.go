@@ -3,7 +3,6 @@
 package linux
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -522,139 +521,19 @@ func (m *LinuxMachine) ListFiles(ctx context.Context, path string) ([]api.FileIn
 }
 
 // execVsock executes a command via vsock.
-// When opts.Stdout/Stderr are set, uses streaming mode (MsgTypeExecStream) and
-// forwards output chunks to the writers in real-time.
-// When opts.Stdin is set, uses pipe mode (MsgTypeExecPipe) which additionally
-// forwards stdin to the guest process without allocating a PTY.
+// When opts.Stdin is set, uses pipe mode (MsgTypeExecPipe), which forwards
+// stdin to the guest process without allocating a PTY. Otherwise it uses batch
+// mode, or streaming mode when opts.Stdout/Stderr are set; streamed output is
+// forwarded to the writers without being retained in host memory.
 func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
-	if opts != nil && opts.Stdin != nil {
-		conn, err := m.dialVsock(VsockPortExec)
-		if err != nil {
-			return nil, errx.Wrap(ErrExecConnect, err)
-		}
-		return vsock.ExecPipe(ctx, conn, command, opts)
-	}
-
-	start := time.Now()
-
 	conn, err := m.dialVsock(VsockPortExec)
 	if err != nil {
 		return nil, errx.Wrap(ErrExecConnect, err)
 	}
-	defer conn.Close()
-
-	// Watch for context cancellation and close the connection to unblock reads.
-	// Closing the connection causes the guest agent to see EOF and kill the child.
-	stop := context.AfterFunc(ctx, func() {
-		conn.Close()
-	})
-	defer stop()
-
-	req := vsock.ExecRequest{
-		Command: command,
+	if opts != nil && opts.Stdin != nil {
+		return vsock.ExecPipe(ctx, conn, command, opts)
 	}
-	if opts != nil {
-		req.WorkingDir = opts.WorkingDir
-		req.Env = opts.Env
-		req.User = opts.User
-	}
-
-	reqData, err := json.Marshal(req)
-	if err != nil {
-		return nil, errx.Wrap(ErrExecEncodeRequest, err)
-	}
-
-	streaming := opts != nil && (opts.Stdout != nil || opts.Stderr != nil)
-
-	header := make([]byte, 5)
-	if streaming {
-		header[0] = vsock.MsgTypeExecStream
-	} else {
-		header[0] = vsock.MsgTypeExec
-	}
-	header[1] = byte(len(reqData) >> 24)
-	header[2] = byte(len(reqData) >> 16)
-	header[3] = byte(len(reqData) >> 8)
-	header[4] = byte(len(reqData))
-
-	if _, err := conn.Write(header); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errx.Wrap(ErrExecWriteHeader, err)
-	}
-	if _, err := conn.Write(reqData); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errx.Wrap(ErrExecWriteRequest, err)
-	}
-
-	var stdout, stderr bytes.Buffer
-	for {
-		if _, err := vsock.ReadFull(conn, header); err != nil {
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			return nil, errx.Wrap(ErrExecReadRespHeader, err)
-		}
-
-		msgType := header[0]
-		length := uint32(header[1])<<24 | uint32(header[2])<<16 | uint32(header[3])<<8 | uint32(header[4])
-
-		data := make([]byte, length)
-		if length > 0 {
-			if _, err := vsock.ReadFull(conn, data); err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				return nil, errx.Wrap(ErrExecReadRespData, err)
-			}
-		}
-
-		switch msgType {
-		case vsock.MsgTypeStdout:
-			if streaming && opts.Stdout != nil {
-				opts.Stdout.Write(data)
-			}
-			stdout.Write(data)
-		case vsock.MsgTypeStderr:
-			if streaming && opts.Stderr != nil {
-				opts.Stderr.Write(data)
-			}
-			stderr.Write(data)
-		case vsock.MsgTypeExecResult:
-			var resp vsock.ExecResponse
-			if err := json.Unmarshal(data, &resp); err != nil {
-				return nil, errx.Wrap(ErrExecDecodeResponse, err)
-			}
-
-			duration := time.Since(start)
-
-			stdoutData := stdout.Bytes()
-			stderrData := stderr.Bytes()
-			if len(stdoutData) == 0 && len(resp.Stdout) > 0 {
-				stdoutData = resp.Stdout
-			}
-			if len(stderrData) == 0 && len(resp.Stderr) > 0 {
-				stderrData = resp.Stderr
-			}
-
-			result := &api.ExecResult{
-				ExitCode:   resp.ExitCode,
-				Stdout:     stdoutData,
-				Stderr:     stderrData,
-				Duration:   duration,
-				DurationMS: duration.Milliseconds(),
-			}
-
-			if resp.Error != "" {
-				return result, errx.With(ErrExecRemote, ": %s", resp.Error)
-			}
-
-			return result, nil
-		}
-	}
+	return vsock.Exec(ctx, conn, command, opts)
 }
 
 // ExecInteractive executes a command with PTY support for interactive sessions
