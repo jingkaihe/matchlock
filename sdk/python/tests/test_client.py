@@ -14,6 +14,7 @@ import pytest
 from matchlock.builder import Sandbox
 from matchlock.client import (
     Client,
+    _is_binary_writer,
     _PendingRequest,
 )
 from matchlock.types import (
@@ -1328,6 +1329,64 @@ class TestClientExecStream:
             fake.close_stdout()
 
 
+    def test_exec_stream_binary_writer_receives_raw_bytes(self):
+        client, fake = make_client_with_fake()
+        try:
+            payload = b"\x00\xff\x80binary\n"
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_stream.stdout",
+                        "params": {"id": 1, "data": base64.b64encode(payload).decode()},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 5},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            stdout_buf = io.BytesIO()
+            result = client.exec_stream("cat data.bin", stdout=stdout_buf)
+            assert result.exit_code == 0
+            assert stdout_buf.getvalue() == payload
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestIsBinaryWriter:
+    def test_text_writers(self, tmp_path):
+        assert not _is_binary_writer(io.StringIO())
+        with open(tmp_path / "out.txt", "w", encoding="utf-8") as text_file:
+            assert not _is_binary_writer(text_file)
+
+    def test_binary_writers(self, tmp_path):
+        assert _is_binary_writer(io.BytesIO())
+        with open(tmp_path / "out.bin", "wb") as binary_file:
+            assert _is_binary_writer(binary_file)
+        with open(tmp_path / "raw.bin", "wb", buffering=0) as raw_file:
+            assert _is_binary_writer(raw_file)
+
+    def test_tempfile_wrappers_use_mode(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile() as binary_file:
+            assert _is_binary_writer(binary_file)
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as text_file:
+            assert not _is_binary_writer(text_file)
+
+
 class TestClientLog:
     def test_log_returns_buffered_output(self):
         client, fake = make_client_with_fake()
@@ -1472,6 +1531,63 @@ class TestClientExecPipe:
             assert stdin_req["params"]["id"] == 1
             stdin_data = base64.b64decode(stdin_req["params"]["data"]).decode()
             assert stdin_data == "hello stdin\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+    def test_exec_pipe_binary_writer_receives_raw_bytes(self):
+        client, fake = make_client_with_fake()
+        try:
+            payload = bytes(range(256)) * 4
+            # Split a multi-byte UTF-8 sequence across chunks as well.
+            chunks = [payload[:300] + b"\xe2\x82", b"\xac" + payload[300:]]
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {"jsonrpc": "2.0", "method": "exec_pipe.ready", "params": {"id": 1}}
+                )
+                for chunk in chunks:
+                    fake.push_response(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "exec_pipe.stdout",
+                            "params": {
+                                "id": 1,
+                                "data": base64.b64encode(chunk).decode(),
+                            },
+                        }
+                    )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stderr",
+                        "params": {"id": 1, "data": base64.b64encode(b"done\n").decode()},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 5},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.BytesIO()
+            stderr_buf = io.StringIO()
+            result = client.exec_pipe(
+                "cat /workspace/image.tar", stdout=stdout_buf, stderr=stderr_buf
+            )
+
+            assert result.exit_code == 0
+            assert stdout_buf.getvalue() == b"".join(chunks)
+            assert stderr_buf.getvalue() == "done\n"
             t.join(timeout=2)
         finally:
             fake.close_stdout()

@@ -16,6 +16,7 @@ Usage with builder API:
 
 import base64
 import copy
+import io
 import json
 import os
 import shutil
@@ -23,7 +24,7 @@ import socket
 import subprocess
 import tempfile
 import threading
-from typing import IO, Any, Callable, Iterable
+from typing import IO, Any, Callable, Iterable, cast
 
 from .builder import Sandbox
 from .types import (
@@ -45,6 +46,16 @@ from .types import (
     PortForwardBinding,
     RPCError,
 )
+
+
+def _is_binary_writer(writer: object) -> bool:
+    """Return whether an output writer expects ``bytes`` rather than ``str``."""
+    if isinstance(writer, io.TextIOBase):
+        return False
+    if isinstance(writer, (io.RawIOBase, io.BufferedIOBase)):
+        return True
+    mode = getattr(writer, "mode", None)
+    return isinstance(mode, str) and "b" in mode
 
 
 class _PendingRequest:
@@ -1007,8 +1018,8 @@ class Client:
     def exec_stream(
         self,
         command: str,
-        stdout: IO[str] | None = None,
-        stderr: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
+        stderr: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         timeout: float | None = None,
     ) -> ExecStreamResult:
@@ -1017,6 +1028,8 @@ class Client:
         Args:
             command: The command to execute.
             stdout: File-like object to write stdout to (e.g., sys.stdout).
+                Binary writers (e.g., ``open(path, "wb")``) receive raw bytes;
+                text writers receive UTF-8 decoded text.
             stderr: File-like object to write stderr to (e.g., sys.stderr).
             working_dir: Optional working directory.
             timeout: Optional timeout in seconds. If the command doesn't
@@ -1031,17 +1044,11 @@ class Client:
             params["working_dir"] = working_dir
 
         def on_notification(method: str, notif_params: dict[str, Any]) -> None:
-            data_b64 = notif_params.get("data", "")
-            try:
-                decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
-            except Exception:
-                return
-            if method == "exec_stream.stdout" and stdout is not None:
-                stdout.write(decoded)
-                stdout.flush()
-            elif method == "exec_stream.stderr" and stderr is not None:
-                stderr.write(decoded)
-                stderr.flush()
+            data_b64 = str(notif_params.get("data", ""))
+            if method == "exec_stream.stdout":
+                self._write_output_chunk(stdout, data_b64)
+            elif method == "exec_stream.stderr":
+                self._write_output_chunk(stderr, data_b64)
 
         result = self._send_request(
             "exec_stream", params, on_notification=on_notification, timeout=timeout
@@ -1067,7 +1074,7 @@ class Client:
         def on_notification(method: str, notif_params: dict[str, Any]) -> None:
             if method != "log_stream.data":
                 return
-            self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+            self._write_output_chunk(stdout, str(notif_params.get("data", "")))
 
         self._send_request(
             "log_stream", on_notification=on_notification, timeout=timeout
@@ -1081,14 +1088,19 @@ class Client:
                 return True
         return False
 
-    def _write_decoded_chunk(self, writer: IO[str] | None, data_b64: str) -> None:
+    def _write_output_chunk(
+        self, writer: IO[str] | IO[bytes] | None, data_b64: str
+    ) -> None:
         if writer is None:
             return
         try:
-            decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
+            data = base64.b64decode(data_b64)
         except Exception:
             return
-        writer.write(decoded)
+        if _is_binary_writer(writer):
+            cast(IO[bytes], writer).write(data)
+        else:
+            cast(IO[str], writer).write(data.decode("utf-8", errors="replace"))
         flush = getattr(writer, "flush", None)
         if callable(flush):
             flush()
@@ -1145,8 +1157,8 @@ class Client:
         self,
         command: str,
         stdin: IO[str] | IO[bytes] | None = None,
-        stdout: IO[str] | None = None,
-        stderr: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
+        stderr: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         timeout: float | None = None,
         user: str = "",
@@ -1156,7 +1168,8 @@ class Client:
         Args:
             command: The command to execute.
             stdin: Optional input stream to forward to the process.
-            stdout: Optional writer for streaming stdout chunks.
+            stdout: Optional writer for streaming stdout chunks. Binary
+                writers receive raw bytes; text writers receive UTF-8 text.
             stderr: Optional writer for streaming stderr chunks.
             working_dir: Optional working directory.
             timeout: Optional timeout in seconds.
@@ -1192,10 +1205,10 @@ class Client:
                 ready_event.set()
                 return
             if method == "exec_pipe.stdout":
-                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+                self._write_output_chunk(stdout, str(notif_params.get("data", "")))
                 return
             if method == "exec_pipe.stderr":
-                self._write_decoded_chunk(stderr, str(notif_params.get("data", "")))
+                self._write_output_chunk(stderr, str(notif_params.get("data", "")))
 
         try:
             result = self._send_request(
@@ -1215,7 +1228,7 @@ class Client:
         self,
         command: str,
         stdin: IO[str] | IO[bytes] | None = None,
-        stdout: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         rows: int = 24,
         cols: int = 80,
@@ -1296,7 +1309,7 @@ class Client:
                 ready_event.set()
                 return
             if method == "exec_tty.stdout":
-                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+                self._write_output_chunk(stdout, str(notif_params.get("data", "")))
 
         try:
             result = self._send_request(

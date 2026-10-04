@@ -124,9 +124,7 @@ with Client() as client:
 
 ### Stdin/Stdout File Transfers
 
-Use `exec_pipe` to send an input stream to a guest process and receive its output
-without a PTY. This example uploads a local ASCII text file while streaming its
-contents back to another local file:
+Use `exec_pipe` to send an input stream to a guest process and receive its output without a PTY. This example uploads a local file while streaming its contents back to another local file:
 
 ```python
 import sys
@@ -136,11 +134,9 @@ with Client() as client:
     client.launch(Sandbox("alpine:latest"))
     client.exec("mkdir -p /workspace")
 
-    with open("input.txt", "rb") as source, open(
-        "output.txt", "w", encoding="utf-8"
-    ) as output:
+    with open("input.bin", "rb") as source, open("output.bin", "wb") as output:
         result = client.exec_pipe(
-            "tee /workspace/input.txt",
+            "tee /workspace/input.bin",
             stdin=source,
             stdout=output,
             stderr=sys.stderr,
@@ -149,10 +145,7 @@ with Client() as client:
             raise RuntimeError(f"File transfer exited with {result.exit_code}")
 ```
 
-Python `exec_pipe` accepts text or binary stdin, but its stdout/stderr writers
-receive decoded UTF-8 text. `exec_stream` also delivers text. Do not use these
-output writers for raw binary downloads; use `read_file`, which returns `bytes`,
-when byte-exact file contents are needed. `write_file` accepts `bytes` or `str`.
+Output writers opened in binary mode (such as `open(path, "wb")` or `io.BytesIO`) receive the exact bytes; text writers receive decoded text. `read_file` is limited to 16 MiB, so stream larger files to a binary writer instead. `write_file` accepts `bytes` or `str`.
 
 ### Managed Block Volumes
 
@@ -390,13 +383,13 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.launch(sandbox)` | Create a VM and start image ENTRYPOINT/CMD in detached mode — returns VM ID |
 | `.create(opts)` | Create a VM from `CreateOptions` (does not auto-start ENTRYPOINT unless `launch_entrypoint=True`) — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
-| `.exec_stream(command, stdout=None, stderr=None, working_dir="")` | Stream text command output, returns `ExecStreamResult` |
+| `.exec_stream(command, stdout=None, stderr=None, working_dir="")` | Stream command output, returns `ExecStreamResult` |
 | `.log()` | Return the current buffered VM log as `str` |
 | `.log_stream(stdout=None)` | Stream VM log output until cancelled |
-| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="", timeout=None, user="")` | Text/binary stdin and text stdout/stderr (no PTY) as an optional user (uid, uid:gid, or username), returns `ExecPipeResult` |
+| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="", timeout=None, user="")` | Pipe stdin/stdout/stderr (no PTY) as an optional user (uid, uid:gid, or username), returns `ExecPipeResult` |
 | `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None, timeout=None, user="")` | Interactive PTY exec as an optional user (uid, uid:gid, or username), returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
-| `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
+| `.read_file(path)` | Read a file (up to 16 MiB) from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
 | `.volume_create(name, size_mb=10240)` | Create a named ext4 block volume — returns `VolumeInfo` |
 | `.volume_list()` | List managed block volumes — returns `list[VolumeInfo]` |
