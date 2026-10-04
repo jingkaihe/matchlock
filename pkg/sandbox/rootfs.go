@@ -91,7 +91,6 @@ func prepareOverlayUpperRootfs(rootfsPath string) error {
 	injections := []injection{
 		{guestInitPath, "/upper/opt/matchlock/guest-init"},
 		{guestInitPath, "/upper/opt/matchlock/guest-agent"},
-		{guestInitPath, "/upper/opt/matchlock/guest-fused"},
 		{guestInitPath, "/upper/init"},
 	}
 

@@ -44,10 +44,6 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		}
 	}
 
-	wireVFS, localHooks, localMutateHooks, localActionHooks, err := compileVFSHooks(opts.VFSInterception)
-	if err != nil {
-		return "", err
-	}
 	wireNetwork, localNetworkHooks, err := compileNetworkHooks(opts.NetworkInterception)
 	if err != nil {
 		return "", err
@@ -94,20 +90,6 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["network"] = network
 	}
 
-	if len(opts.Mounts) > 0 || opts.Workspace != "" || wireVFS != nil {
-		vfs := make(map[string]interface{})
-		if len(opts.Mounts) > 0 {
-			vfs["mounts"] = opts.Mounts
-		}
-		if opts.Workspace != "" {
-			vfs["workspace"] = opts.Workspace
-		}
-		if wireVFS != nil {
-			vfs["interception"] = wireVFS
-		}
-		params["vfs"] = vfs
-	}
-
 	if len(opts.Env) > 0 {
 		params["env"] = opts.Env
 	}
@@ -138,7 +120,6 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	}
 
 	c.vmID = createResult.ID
-	c.setVFSHooks(localHooks, localMutateHooks, localActionHooks)
 
 	if len(opts.PortForwards) > 0 {
 		if _, err := c.portForwardMappings(context.Background(), opts.PortForwardAddresses, opts.PortForwards); err != nil {

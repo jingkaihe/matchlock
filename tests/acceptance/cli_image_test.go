@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"database/sql"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,41 +35,64 @@ func TestCLIBuildMissingContext(t *testing.T) {
 }
 
 func TestCLIDockerfileBuild(t *testing.T) {
-	contextDir := t.TempDir()
-	dockerfile := filepath.Join(contextDir, "Dockerfile")
-	helloFile := filepath.Join(contextDir, "hello.txt")
+	for _, name := range []string{"context-dockerfile", "external-dockerfile"} {
+		t.Run(name, func(t *testing.T) {
+			// Unix socket paths have a small limit, especially on macOS.
+			contextDir, err := os.MkdirTemp("", "matchlock-build-")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.RemoveAll(contextDir) })
+			listener, err := net.Listen("unix", filepath.Join(contextDir, "runtime.sock"))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = listener.Close() })
+			dockerfile := filepath.Join(contextDir, "Dockerfile")
+			content := strings.Repeat("hello from streamed context\n", 10000)
+			require.NoError(t, os.WriteFile(filepath.Join(contextDir, "hello.txt"), []byte(content), 0644))
+			require.NoError(t, os.Symlink("hello.txt", filepath.Join(contextDir, "link.txt")))
+			require.NoError(t, os.WriteFile(filepath.Join(contextDir, "ignored.txt"), []byte("do not upload"), 0644))
+			require.NoError(t, os.WriteFile(filepath.Join(contextDir, ".dockerignore"), []byte("ignored.txt\n"), 0644))
 
-	err := os.WriteFile(helloFile, []byte("hello from matchlock build"), 0644)
-	require.NoError(t, err)
-	err = os.WriteFile(dockerfile, []byte(`FROM busybox:latest
-COPY hello.txt /hello.txt
-`), 0644)
-	require.NoError(t, err)
+			if name == "external-dockerfile" {
+				dockerfileDir := filepath.Join(t.TempDir(), "external dockerfile")
+				require.NoError(t, os.MkdirAll(dockerfileDir, 0755))
+				dockerfile = filepath.Join(dockerfileDir, "Dockerfile.custom")
+				// The selected external Dockerfile must win over a same-named context file.
+				require.NoError(t, os.WriteFile(filepath.Join(contextDir, "Dockerfile.custom"), []byte("INVALID dockerfile\n"), 0644))
+				// Dockerfile-specific ignores take precedence over the context .dockerignore.
+				require.NoError(t, os.WriteFile(filepath.Join(contextDir, ".dockerignore"), []byte("hello.txt\n"), 0644))
+				require.NoError(t, os.WriteFile(dockerfile+".dockerignore", []byte("ignored.txt\nDockerfile.custom\n"), 0644))
+				require.NoError(t, os.WriteFile(filepath.Join(dockerfileDir, "host-only.txt"), []byte("not part of the context"), 0644))
+			}
+			require.NoError(t, os.WriteFile(dockerfile, []byte(`FROM busybox:latest
+COPY . /context
+RUN test -f /context/hello.txt && test -L /context/link.txt && test ! -e /context/ignored.txt && test ! -e /context/host-only.txt && test ! -e /context/Dockerfile.custom && test ! -e /context/runtime.sock
+`), 0644))
 
-	tag := "matchlock-test-build:latest"
+			tag := "matchlock-test-build-" + name + ":latest"
+			t.Cleanup(func() { runCLI(t, "image", "rm", tag) })
+			args := []string{
+				"build", "--build-cpus", "1", "--build-memory", "1024", "--build-disk", "2048",
+				"-f", dockerfile, "-t", tag,
+			}
+			if name == "external-dockerfile" {
+				args = append(args, "--no-cache")
+			}
+			args = append(args, contextDir)
+			stdout, stderr, exitCode := runCLIWithTimeout(t, 10*time.Minute, args...)
+			require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
+			assert.Contains(t, stdout, "Successfully built and tagged")
 
-	t.Cleanup(func() {
-		runCLI(t, "image", "rm", tag)
-	})
+			imgStdout, _, imgExitCode := runCLI(t, "image", "ls")
+			require.Equal(t, 0, imgExitCode)
+			assert.Contains(t, imgStdout, tag)
 
-	stdout, stderr, exitCode := runCLIWithTimeout(t, 10*time.Minute,
-		"build",
-		"-f", dockerfile,
-		"-t", tag,
-		contextDir,
-	)
-	require.Equalf(t, 0, exitCode, "stdout: %s\nstderr: %s", stdout, stderr)
-	assert.Contains(t, stdout, "Successfully built and tagged")
-
-	imgStdout, _, imgExitCode := runCLI(t, "image", "ls")
-	require.Equal(t, 0, imgExitCode)
-	assert.Contains(t, imgStdout, tag)
-
-	runStdout, runStderr, runExitCode := runCLIWithTimeout(t, 2*time.Minute,
-		"run", "--image", tag, "cat", "/hello.txt",
-	)
-	require.Equalf(t, 0, runExitCode, "stdout: %s\nstderr: %s", runStdout, runStderr)
-	assert.Equal(t, "hello from matchlock build", strings.TrimSpace(runStdout))
+			runStdout, runStderr, runExitCode := runCLIWithTimeout(t, 2*time.Minute,
+				"run", "--image", tag, "--no-network", "--", "sh", "-c",
+				"test ! -e /opt/matchlock/guest-fused && ! grep -q ' fuse' /proc/mounts && cat /context/link.txt",
+			)
+			require.Equalf(t, 0, runExitCode, "stdout: %s\nstderr: %s", runStdout, runStderr)
+			assert.Equal(t, content, runStdout)
+		})
+	}
 }
 
 func TestCLIImageLsShowsHeader(t *testing.T) {

@@ -1,9 +1,6 @@
 import { cloneCreateOptions, Sandbox } from "./builder";
 import { MatchlockError } from "./errors";
 import {
-  VFS_HOOK_OP_READ,
-  VFS_HOOK_OP_READDIR,
-  VFS_HOOK_OP_WRITE,
   type BinaryLike,
   type Config,
   type CreateOptions,
@@ -38,7 +35,6 @@ import {
   toError,
   validateAddHost,
 } from "./client/utils";
-import { VFSHooks } from "./client/vfs-hooks";
 import { volumeCreate, volumeList, volumeRemove } from "./client/volumes";
 import type { JSONObject, JSONValue } from "./client/wire";
 
@@ -48,7 +44,6 @@ export class Client {
   private readonly config: Required<Config>;
   private readonly transport: RPCTransport;
   private readonly execAPI: ExecAPI;
-  private readonly vfsHooks = new VFSHooks();
   private readonly networkHooks = new NetworkHooks();
 
   private vmIDValue = "";
@@ -58,15 +53,9 @@ export class Client {
 
   constructor(config: Config = {}) {
     this.config = defaultConfig(config);
-    this.transport = new RPCTransport(
-      this.config,
-      (method, params) => {
-        this.handleNotification(method, params);
-      },
-      () => {
-        void this.networkHooks.stop();
-      },
-    );
+    this.transport = new RPCTransport(this.config, () => {
+      void this.networkHooks.stop();
+    });
     this.execAPI = new ExecAPI(
       (method, params, options, onNotification) =>
         this.sendRequest(method, params, options, onNotification),
@@ -91,7 +80,6 @@ export class Client {
     }
     this.closing = true;
     this.lastVMID = this.vmIDValue;
-    this.vfsHooks.clearLocalHooks();
     await this.networkHooks.stop();
 
     try {
@@ -145,8 +133,6 @@ export class Client {
       validateAddHost(mapping);
     }
 
-    const [wireVFS, localHooks, localMutateHooks, localActionHooks] =
-      this.vfsHooks.compile(options.vfsInterception);
     let [wireNetworkInterception, localNetworkHooks] =
       this.networkHooks.compile(options.networkInterception);
 
@@ -161,7 +147,7 @@ export class Client {
       startedNetworkHookServer = true;
     }
 
-    const params = buildCreateParams(options, wireVFS, wireNetworkInterception);
+    const params = buildCreateParams(options, wireNetworkInterception);
 
     let result: JSONObject;
     try {
@@ -182,7 +168,6 @@ export class Client {
     }
 
     this.vmIDValue = id;
-    this.vfsHooks.setLocalHooks(localHooks, localMutateHooks, localActionHooks);
 
     if ((options.portForwards ?? []).length > 0) {
       await this.portForwardMappings(
@@ -304,25 +289,11 @@ export class Client {
     mode: number,
     options: RequestOptions = {},
   ): Promise<void> {
-    const original = toBuffer(content);
-
-    await this.vfsHooks.applyLocalActionHooks(
-      VFS_HOOK_OP_WRITE,
-      path,
-      original.length,
-      mode,
-    );
-    const mutated = await this.vfsHooks.applyLocalWriteMutations(
-      path,
-      original,
-      mode,
-    );
-
     await this.sendRequest(
       "write_file",
       {
         path,
-        content: mutated.toString("base64"),
+        content: toBuffer(content).toString("base64"),
         mode,
       },
       options,
@@ -330,8 +301,6 @@ export class Client {
   }
 
   async readFile(path: string, options: RequestOptions = {}): Promise<Buffer> {
-    await this.vfsHooks.applyLocalActionHooks(VFS_HOOK_OP_READ, path, 0, 0);
-
     const result = asObject(
       await this.sendRequest("read_file", { path }, options),
     );
@@ -342,8 +311,6 @@ export class Client {
     path: string,
     options: RequestOptions = {},
   ): Promise<FileInfo[]> {
-    await this.vfsHooks.applyLocalActionHooks(VFS_HOOK_OP_READDIR, path, 0, 0);
-
     const result = asObject(
       await this.sendRequest("list_files", { path }, options),
     );
@@ -415,12 +382,6 @@ export class Client {
     }
 
     return this.transport.sendRequest(method, params, options, onNotification);
-  }
-
-  private handleNotification(method: string, params: JSONObject): void {
-    if (method === "event") {
-      this.vfsHooks.handleFileEventNotification(params, this);
-    }
   }
 
   private writeStreamChunk(

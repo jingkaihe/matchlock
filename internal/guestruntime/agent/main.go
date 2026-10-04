@@ -3,7 +3,7 @@
 // Guest agent runs inside the Firecracker VM and handles:
 // 1. Command execution requests from the host
 // 2. Ready signal to indicate VM is ready
-// 3. VFS client connection to host for FUSE
+// 3. Guest file read/write/list requests from the host
 package guestagent
 
 import (
@@ -31,11 +31,9 @@ const (
 	cancelGracePeriod = 5 * time.Second
 	maxReadFileBytes  = 16 * 1024 * 1024
 
-	AF_VSOCK        = 40
-	VMADDR_CID_HOST = 2
+	AF_VSOCK = 40
 
 	VsockPortExec  = 5000
-	VsockPortVFS   = 5001
 	VsockPortReady = 5002
 
 	MsgTypeExec        uint8 = 1
@@ -785,14 +783,46 @@ func applyUserEnv(cmd *exec.Cmd, user string) {
 	cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+user)
 }
 
-func sendMessage(fd int, msgType uint8, data []byte) {
-	header := make([]byte, 5)
-	header[0] = msgType
-	binary.BigEndian.PutUint32(header[1:], uint32(len(data)))
-	syscall.Write(fd, header)
-	if len(data) > 0 {
-		syscall.Write(fd, data)
+// frameWriteLocks serializes framed writes per connection fd. Exec handlers
+// send stdout and stderr from separate goroutines, so each frame's header and
+// payload must reach the host without interleaving with another frame.
+var frameWriteLocks sync.Map // map[int]*sync.Mutex
+
+func frameWriteLock(fd int) *sync.Mutex {
+	if mu, ok := frameWriteLocks.Load(fd); ok {
+		return mu.(*sync.Mutex)
 	}
+	mu, _ := frameWriteLocks.LoadOrStore(fd, new(sync.Mutex))
+	return mu.(*sync.Mutex)
+}
+
+func sendMessage(fd int, msgType uint8, data []byte) {
+	frame := make([]byte, 5+len(data))
+	frame[0] = msgType
+	binary.BigEndian.PutUint32(frame[1:5], uint32(len(data)))
+	copy(frame[5:], data)
+
+	mu := frameWriteLock(fd)
+	mu.Lock()
+	defer mu.Unlock()
+	_ = writeFull(fd, frame)
+}
+
+func writeFull(fd int, buf []byte) error {
+	for len(buf) > 0 {
+		n, err := syscall.Write(fd, buf)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		buf = buf[n:]
+	}
+	return nil
 }
 
 func sendExitCode(fd int, code int) {
@@ -827,16 +857,7 @@ func sendExecResponse(fd int, resp *ExecResponse) {
 	if err != nil {
 		return
 	}
-
-	header := make([]byte, 5)
-	header[0] = MsgTypeExecResult
-	header[1] = byte(len(data) >> 24)
-	header[2] = byte(len(data) >> 16)
-	header[3] = byte(len(data) >> 8)
-	header[4] = byte(len(data))
-
-	syscall.Write(fd, header)
-	syscall.Write(fd, data)
+	sendMessage(fd, MsgTypeExecResult, data)
 }
 
 func sendFileResponse(fd int, resp *FileResponse) {
@@ -992,32 +1013,6 @@ func acceptVsock(listenFd int) (int, error) {
 	return int(nfd), nil
 }
 
-func dialVsock(cid, port uint32) (int, error) {
-	fd, err := syscall.Socket(AF_VSOCK, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return -1, errx.Wrap(ErrSocket, err)
-	}
-
-	addr := sockaddrVM{
-		Family: AF_VSOCK,
-		CID:    cid,
-		Port:   port,
-	}
-
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_CONNECT,
-		uintptr(fd),
-		uintptr(unsafe.Pointer(&addr)),
-		unsafe.Sizeof(addr),
-	)
-	if errno != 0 {
-		syscall.Close(fd)
-		return -1, errx.Wrap(ErrConnect, errno)
-	}
-
-	return fd, nil
-}
-
 func readFull(fd int, buf []byte) (int, error) {
 	total := 0
 	for total < len(buf) {
@@ -1031,21 +1026,4 @@ func readFull(fd int, buf []byte) (int, error) {
 		total += n
 	}
 	return total, nil
-}
-
-// VFS client for FUSE daemon (placeholder - would need full FUSE implementation)
-type VFSClient struct {
-	fd int
-}
-
-func NewVFSClient() (*VFSClient, error) {
-	fd, err := dialVsock(VMADDR_CID_HOST, VsockPortVFS)
-	if err != nil {
-		return nil, err
-	}
-	return &VFSClient{fd: fd}, nil
-}
-
-func (c *VFSClient) Close() error {
-	return syscall.Close(c.fd)
 }

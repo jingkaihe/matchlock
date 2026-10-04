@@ -6,11 +6,10 @@ import "errors"
 
 var (
 	// Vsock errors
-	ErrSocket  = errors.New("socket")
-	ErrBind    = errors.New("bind")
-	ErrListen  = errors.New("listen")
-	ErrConnect = errors.New("connect")
-	ErrEOF     = errors.New("EOF")
+	ErrSocket = errors.New("socket")
+	ErrBind   = errors.New("bind")
+	ErrListen = errors.New("listen")
+	ErrEOF    = errors.New("EOF")
 
 	// User resolution errors
 	ErrResolveUID    = errors.New("resolve uid")

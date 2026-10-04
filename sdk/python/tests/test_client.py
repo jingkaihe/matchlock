@@ -14,9 +14,7 @@ import pytest
 from matchlock.builder import Sandbox
 from matchlock.client import (
     Client,
-    _LocalVFSActionHook,
-    _LocalVFSMutateHook,
-    _LocalVFSHook,
+    _is_binary_writer,
     _PendingRequest,
 )
 from matchlock.types import (
@@ -29,7 +27,6 @@ from matchlock.types import (
     FileInfo,
     HostIPMapping,
     MatchlockError,
-    MountConfig,
     NetworkBodyTransform,
     NetworkHookRule,
     NetworkInterceptionConfig,
@@ -37,10 +34,6 @@ from matchlock.types import (
     PortForwardBinding,
     RPCError,
     VolumeInfo,
-    VFS_HOOK_ACTION_ALLOW,
-    VFS_HOOK_ACTION_BLOCK,
-    VFSHookRule,
-    VFSInterceptionConfig,
 )
 
 
@@ -798,86 +791,6 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
-    def test_create_with_vfs(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                workspace="/code",
-                mounts={"/data": MountConfig(type="host_fs", host_path="/h")},
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs"
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_with_vfs_interception(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs-hooks"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            phase="before",
-                            ops=["create"],
-                            path="/workspace/blocked.txt",
-                            action="block",
-                        )
-                    ],
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs-hooks"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert req["method"] == "create"
-            assert req["params"]["vfs"]["interception"] == {
-                "rules": [
-                    {
-                        "phase": "before",
-                        "ops": ["create"],
-                        "path": "/workspace/blocked.txt",
-                        "action": "block",
-                    }
-                ],
-            }
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
     def test_create_with_env(self):
         client, fake = make_client_with_fake()
         try:
@@ -904,306 +817,6 @@ class TestClientCreate:
             req = json.loads(req_line)
             assert req["method"] == "create"
             assert req["params"]["env"] == {"FOO": "bar", "BAR": "baz"}
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_with_vfs_callback_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs-callback"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            phase="after",
-                            ops=["write"],
-                            path="/workspace/*",
-                            hook=lambda event: None,
-                        )
-                    ],
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs-callback"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert req["params"]["vfs"]["interception"] == {
-                "emit_events": True,
-            }
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_rejects_before_callback_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            name="before",
-                            phase="before",
-                            hook=lambda event: None,
-                        )
-                    ]
-                ),
-            )
-            with pytest.raises(MatchlockError, match="phase=after"):
-                client.create(opts)
-        finally:
-            fake.close_stdout()
-
-    def test_create_with_vfs_dangerous_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs-dangerous-callback"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            phase="after",
-                            ops=["write"],
-                            path="/workspace/*",
-                            dangerous_hook=lambda c, event: None,
-                        )
-                    ],
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs-dangerous-callback"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert req["params"]["vfs"]["interception"] == {
-                "emit_events": True,
-            }
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_rejects_before_dangerous_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            name="before-dangerous",
-                            phase="before",
-                            dangerous_hook=lambda c, event: None,
-                        )
-                    ]
-                ),
-            )
-            with pytest.raises(MatchlockError, match="phase=after"):
-                client.create(opts)
-        finally:
-            fake.close_stdout()
-
-    def test_create_with_vfs_mutate_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs-mutate-callback"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            phase="before",
-                            ops=["write"],
-                            path="/workspace/*",
-                            mutate_hook=lambda req: b"mutated",
-                        )
-                    ],
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs-mutate-callback"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert "vfs" not in req["params"] or "interception" not in req[
-                "params"
-            ].get("vfs", {})
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_rejects_after_mutate_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            name="after-mutate",
-                            phase="after",
-                            mutate_hook=lambda req: b"x",
-                        )
-                    ]
-                ),
-            )
-            with pytest.raises(MatchlockError, match="phase=before"):
-                client.create(opts)
-        finally:
-            fake.close_stdout()
-
-    def test_create_passes_through_wire_exec_after_action(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-wire-exec"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            name="wire-exec",
-                            phase="after",
-                            action="exec_after",
-                        )
-                    ]
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-wire-exec"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert req["params"]["vfs"]["interception"] == {
-                "rules": [
-                    {
-                        "name": "wire-exec",
-                        "phase": "after",
-                        "action": "exec_after",
-                    }
-                ]
-            }
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_create_rejects_wire_mutate_write_action(self):
-        client, fake = make_client_with_fake()
-        try:
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            name="wire-mutate",
-                            phase="before",
-                            action="mutate_write",
-                        )
-                    ]
-                ),
-            )
-            with pytest.raises(MatchlockError, match="requires mutate_hook callback"):
-                client.create(opts)
-        finally:
-            fake.close_stdout()
-
-    def test_create_with_vfs_action_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "result": {"id": "vm-vfs-action-callback"},
-                    }
-                )
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            opts = CreateOptions(
-                image="img",
-                vfs_interception=VFSInterceptionConfig(
-                    rules=[
-                        VFSHookRule(
-                            phase="before",
-                            ops=["write"],
-                            path="/workspace/*",
-                            action_hook=lambda req: VFS_HOOK_ACTION_ALLOW,
-                        )
-                    ],
-                ),
-            )
-            vm_id = client.create(opts)
-            assert vm_id == "vm-vfs-action-callback"
-
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            assert "vfs" not in req["params"] or "interception" not in req[
-                "params"
-            ].get("vfs", {})
             t.join(timeout=2)
         finally:
             fake.close_stdout()
@@ -1716,6 +1329,64 @@ class TestClientExecStream:
             fake.close_stdout()
 
 
+    def test_exec_stream_binary_writer_receives_raw_bytes(self):
+        client, fake = make_client_with_fake()
+        try:
+            payload = b"\x00\xff\x80binary\n"
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_stream.stdout",
+                        "params": {"id": 1, "data": base64.b64encode(payload).decode()},
+                    }
+                )
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 5},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+            stdout_buf = io.BytesIO()
+            result = client.exec_stream("cat data.bin", stdout=stdout_buf)
+            assert result.exit_code == 0
+            assert stdout_buf.getvalue() == payload
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
+class TestIsBinaryWriter:
+    def test_text_writers(self, tmp_path):
+        assert not _is_binary_writer(io.StringIO())
+        with open(tmp_path / "out.txt", "w", encoding="utf-8") as text_file:
+            assert not _is_binary_writer(text_file)
+
+    def test_binary_writers(self, tmp_path):
+        assert _is_binary_writer(io.BytesIO())
+        with open(tmp_path / "out.bin", "wb") as binary_file:
+            assert _is_binary_writer(binary_file)
+        with open(tmp_path / "raw.bin", "wb", buffering=0) as raw_file:
+            assert _is_binary_writer(raw_file)
+
+    def test_tempfile_wrappers_use_mode(self):
+        import tempfile
+
+        with tempfile.NamedTemporaryFile() as binary_file:
+            assert _is_binary_writer(binary_file)
+        with tempfile.NamedTemporaryFile("w+", encoding="utf-8") as text_file:
+            assert not _is_binary_writer(text_file)
+
+
 class TestClientLog:
     def test_log_returns_buffered_output(self):
         client, fake = make_client_with_fake()
@@ -1865,6 +1536,63 @@ class TestClientExecPipe:
             fake.close_stdout()
 
 
+    def test_exec_pipe_binary_writer_receives_raw_bytes(self):
+        client, fake = make_client_with_fake()
+        try:
+            payload = bytes(range(256)) * 4
+            # Split a multi-byte UTF-8 sequence across chunks as well.
+            chunks = [payload[:300] + b"\xe2\x82", b"\xac" + payload[300:]]
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {"jsonrpc": "2.0", "method": "exec_pipe.ready", "params": {"id": 1}}
+                )
+                for chunk in chunks:
+                    fake.push_response(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "exec_pipe.stdout",
+                            "params": {
+                                "id": 1,
+                                "data": base64.b64encode(chunk).decode(),
+                            },
+                        }
+                    )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exec_pipe.stderr",
+                        "params": {"id": 1, "data": base64.b64encode(b"done\n").decode()},
+                    }
+                )
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"exit_code": 0, "duration_ms": 5},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
+
+            stdout_buf = io.BytesIO()
+            stderr_buf = io.StringIO()
+            result = client.exec_pipe(
+                "cat /workspace/image.tar", stdout=stdout_buf, stderr=stderr_buf
+            )
+
+            assert result.exit_code == 0
+            assert stdout_buf.getvalue() == b"".join(chunks)
+            assert stderr_buf.getvalue() == "done\n"
+            t.join(timeout=2)
+        finally:
+            fake.close_stdout()
+
+
 class TestClientExecInteractive:
     def test_exec_interactive_streams_and_sends_resize(self):
         client, fake = make_client_with_fake()
@@ -1989,96 +1717,6 @@ class TestClientFileOps:
         finally:
             fake.close_stdout()
 
-    def test_write_file_applies_local_mutate_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            client._set_local_vfs_hooks(
-                [],
-                [
-                    _LocalVFSMutateHook(
-                        name="mut",
-                        ops={"write"},
-                        path="/workspace/*",
-                        hook=lambda req: (
-                            f"size={req.size};mode={oct(req.mode)}".encode()
-                        ),
-                    )
-                ],
-                [],
-            )
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response({"jsonrpc": "2.0", "id": 1, "result": {}})
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            client.write_file("/workspace/test.txt", b"abcd")
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            payload = base64.b64decode(req["params"]["content"])
-            assert payload == b"size=4;mode=0o644"
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_write_file_mutate_hook_none_keeps_original(self):
-        client, fake = make_client_with_fake()
-        try:
-            client._set_local_vfs_hooks(
-                [],
-                [
-                    _LocalVFSMutateHook(
-                        name="noop",
-                        ops={"write"},
-                        path="/workspace/*",
-                        hook=lambda req: None,
-                    )
-                ],
-                [],
-            )
-
-            def respond():
-                import time
-
-                time.sleep(0.05)
-                fake.push_response({"jsonrpc": "2.0", "id": 1, "result": {}})
-
-            t = threading.Thread(target=respond, daemon=True)
-            t.start()
-            client.write_file("/workspace/test.txt", b"abcd")
-            req_line = fake.stdin.getvalue().splitlines()[0]
-            req = json.loads(req_line)
-            payload = base64.b64decode(req["params"]["content"])
-            assert payload == b"abcd"
-            t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_write_file_blocked_by_local_action_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            client._set_local_vfs_hooks(
-                [],
-                [],
-                [
-                    _LocalVFSActionHook(
-                        name="block-writes",
-                        ops={"write"},
-                        path="/workspace/*",
-                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
-                    )
-                ],
-            )
-
-            with pytest.raises(MatchlockError, match="blocked operation"):
-                client.write_file("/workspace/test.txt", b"abcd")
-            assert fake.stdin.getvalue() == ""
-        finally:
-            fake.close_stdout()
-
     def test_read_file(self):
         client, fake = make_client_with_fake()
         try:
@@ -2101,27 +1739,6 @@ class TestClientFileOps:
             content = client.read_file("/workspace/test.txt")
             assert content == b"file contents"
             t.join(timeout=2)
-        finally:
-            fake.close_stdout()
-
-    def test_read_file_blocked_by_local_action_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            client._set_local_vfs_hooks(
-                [],
-                [],
-                [
-                    _LocalVFSActionHook(
-                        name="block-reads",
-                        ops={"read"},
-                        path="/workspace/*",
-                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
-                    )
-                ],
-            )
-            with pytest.raises(MatchlockError, match="blocked operation"):
-                client.read_file("/workspace/test.txt")
-            assert fake.stdin.getvalue() == ""
         finally:
             fake.close_stdout()
 
@@ -2192,135 +1809,6 @@ class TestClientFileOps:
             t.join(timeout=2)
         finally:
             fake.close_stdout()
-
-    def test_list_files_blocked_by_local_action_hook(self):
-        client, fake = make_client_with_fake()
-        try:
-            client._set_local_vfs_hooks(
-                [],
-                [],
-                [
-                    _LocalVFSActionHook(
-                        name="block-readdir",
-                        ops={"readdir"},
-                        path="/workspace*",
-                        hook=lambda req: VFS_HOOK_ACTION_BLOCK,
-                    )
-                ],
-            )
-            with pytest.raises(MatchlockError, match="blocked operation"):
-                client.list_files("/workspace")
-            assert fake.stdin.getvalue() == ""
-        finally:
-            fake.close_stdout()
-
-
-class TestVFSCallbackNotifications:
-    def test_safe_event_callback_suppresses_recursion(self):
-        client = Client(Config(binary_path="fake"))
-        runs = 0
-        done = threading.Event()
-
-        def hook(event):
-            nonlocal runs
-            assert event.mode == 0o640
-            assert event.uid == 123
-            assert event.gid == 456
-            runs += 1
-            client._handle_event_notification(
-                {"file": {"op": "write", "path": "/workspace/nested.txt"}}
-            )
-            done.set()
-
-        client._set_local_vfs_hooks(
-            [
-                _LocalVFSHook(
-                    name="after",
-                    ops={"write"},
-                    path="/workspace/*",
-                    timeout_ms=0,
-                    dangerous=False,
-                    hook=hook,
-                )
-            ],
-            [],
-            [],
-        )
-
-        client._handle_event_notification(
-            {
-                "file": {
-                    "op": "write",
-                    "path": "/workspace/trigger.txt",
-                    "size": 1,
-                    "mode": 0o640,
-                    "uid": 123,
-                    "gid": 456,
-                }
-            }
-        )
-        assert done.wait(timeout=2)
-        # Give nested event delivery a moment; recursion guard keeps this at one.
-        threading.Event().wait(0.1)
-        assert runs == 1
-
-    def test_dangerous_event_callback_allows_recursion(self):
-        client = Client(Config(binary_path="fake"))
-        runs = 0
-        done = threading.Event()
-
-        def hook(c: Client, event):
-            nonlocal runs
-            assert event.mode == 0o640
-            assert event.uid == 123
-            assert event.gid == 456
-            runs += 1
-            if runs < 3:
-                c._handle_event_notification(
-                    {
-                        "file": {
-                            "op": "write",
-                            "path": "/workspace/nested.txt",
-                            "size": 1,
-                            "mode": 0o640,
-                            "uid": 123,
-                            "gid": 456,
-                        }
-                    }
-                )
-            if runs >= 3:
-                done.set()
-
-        client._set_local_vfs_hooks(
-            [
-                _LocalVFSHook(
-                    name="dangerous-after",
-                    ops={"write"},
-                    path="/workspace/*",
-                    timeout_ms=0,
-                    dangerous=True,
-                    hook=hook,
-                )
-            ],
-            [],
-            [],
-        )
-
-        client._handle_event_notification(
-            {
-                "file": {
-                    "op": "write",
-                    "path": "/workspace/trigger.txt",
-                    "size": 1,
-                    "mode": 0o640,
-                    "uid": 123,
-                    "gid": 456,
-                }
-            }
-        )
-        assert done.wait(timeout=2)
-        assert runs >= 3
-
 
 class TestClientProcessNotRunning:
     def test_send_request_raises_when_not_started(self):

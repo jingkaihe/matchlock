@@ -2,11 +2,10 @@
 
 // guest-init is the unified guest runtime binary.
 // Invoked as /init it acts as PID1 and performs bootstrapping.
-// Invoked as guest-agent or guest-fused (via argv[0]) it runs that mode.
+// Invoked as guest-agent (via argv[0]) it runs the exec and file service.
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"math"
 	"net"
@@ -21,27 +20,21 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	guestagent "github.com/jingkaihe/matchlock/internal/guestruntime/agent"
-	guestfused "github.com/jingkaihe/matchlock/internal/guestruntime/fused"
 	"golang.org/x/sys/unix"
 )
 
 const (
 	procCmdlinePath   = "/proc/cmdline"
-	procMountsPath    = "/proc/mounts"
 	etcHostnamePath   = "/etc/hostname"
 	etcHostsPath      = "/etc/hosts"
 	etcResolvConfPath = "/etc/resolv.conf"
 
-	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
 
 	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	networkInterface  = "eth0"
 	defaultNetworkMTU = 1500
-	workspaceWaitStep = 100 * time.Millisecond
-	workspaceWaitMax  = 30 * time.Second
-	fuseSuperMagic    = 0x65735546
 
 	overlayLowerMount = "/run/matchlock/lower"
 	overlayUpperMount = "/run/matchlock/upperfs"
@@ -71,7 +64,6 @@ type bootConfig struct {
 	DNSServers []string
 	Hostname   string
 	AddHosts   []hostIPMapping
-	Workspace  string
 	CPUs       float64
 	MTU        int
 	NoNetwork  bool
@@ -91,9 +83,6 @@ func main() {
 	case "guest-agent":
 		guestagent.Run()
 		return
-	case "guest-fused":
-		guestfused.Run()
-		return
 	default:
 		runInit()
 	}
@@ -102,7 +91,7 @@ func main() {
 func runtimeRole() string {
 	name := filepath.Base(os.Args[0])
 	switch name {
-	case "guest-agent", "guest-fused":
+	case "guest-agent":
 		return name
 	default:
 		return "init"
@@ -139,16 +128,6 @@ func runInit() {
 	}
 	if err := mountExtraDisks(cfg.Disks); err != nil {
 		fatal(err)
-	}
-
-	if cfg.Workspace != "" {
-		if err := startGuestFused(guestFusedPath); err != nil {
-			fatal(err)
-		}
-
-		if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
-			fatal(err)
-		}
 	}
 
 	if err := unix.Exec(guestAgentPath, []string{guestAgentPath}, os.Environ()); err != nil {
@@ -190,12 +169,6 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			v := strings.TrimPrefix(field, "hostname=")
 			if v != "" {
 				cfg.Hostname = v
-			}
-
-		case strings.HasPrefix(field, "matchlock.workspace="):
-			v := strings.TrimPrefix(field, "matchlock.workspace=")
-			if v != "" {
-				cfg.Workspace = v
 			}
 
 		case strings.HasPrefix(field, "matchlock.mtu="):
@@ -753,72 +726,6 @@ func chownDiskMountRoot(d diskMount) error {
 		return errx.With(ErrMountExtraDisk, " chown %s: %w", d.Path, err)
 	}
 	return nil
-}
-
-func startGuestFused(path string) error {
-	cmd := exec.Command(path)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return errx.With(ErrStartGuestFused, " %s: %w", path, err)
-	}
-	go func() {
-		_ = cmd.Wait()
-	}()
-	return nil
-}
-
-func waitForWorkspaceMount(mountsPath, workspace string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for {
-		mounted, err := workspaceMounted(mountsPath, workspace)
-		if err != nil {
-			warnf("workspace mount check failed: %v", err)
-		} else if mounted {
-			fuseReady, fuseErr := workspaceIsFUSE(workspace)
-			if fuseErr != nil {
-				warnf("workspace fs type check failed: %v", fuseErr)
-			} else if fuseReady {
-				return nil
-			}
-		}
-		if time.Now().After(deadline) {
-			return errx.With(ErrWorkspaceMountWait, ": %s", workspace)
-		}
-		time.Sleep(workspaceWaitStep)
-	}
-}
-
-func workspaceMounted(mountsPath, workspace string) (bool, error) {
-	f, err := os.Open(mountsPath)
-	if err != nil {
-		return false, errx.Wrap(ErrWorkspaceMount, err)
-	}
-	defer f.Close()
-
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		fields := strings.Fields(s.Text())
-		if len(fields) < 3 {
-			continue
-		}
-		source, target, fstype := fields[0], fields[1], fields[2]
-		if target == workspace && source == "matchlock" && strings.HasPrefix(fstype, "fuse.") {
-			return true, nil
-		}
-	}
-	if err := s.Err(); err != nil {
-		return false, errx.Wrap(ErrWorkspaceMount, err)
-	}
-	return false, nil
-}
-
-func workspaceIsFUSE(workspace string) (bool, error) {
-	var st unix.Statfs_t
-	if err := unix.Statfs(workspace, &st); err != nil {
-		return false, errx.Wrap(ErrWorkspaceMount, err)
-	}
-	return uint64(st.Type) == fuseSuperMagic, nil
 }
 
 func mountIgnore(source, target, fstype string, flags uintptr, data string) {

@@ -133,7 +133,6 @@ func TestPrepareOverlayUpperRootfs_AvoidsShadowingMergedUSR(t *testing.T) {
 		"/upper/init",
 		"/upper/opt/matchlock/guest-init",
 		"/upper/opt/matchlock/guest-agent",
-		"/upper/opt/matchlock/guest-fused",
 	} {
 		assert.Equal(t, "guest-init-binary", debugfsCat(t, rootfs, path), path)
 		assert.Contains(t, debugfsStatMode(t, rootfs, path), "0755", path)

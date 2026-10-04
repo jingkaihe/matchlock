@@ -50,7 +50,6 @@ sandbox = (
     .with_memory(512)
     .with_disk_size(2048)
     .with_timeout(300)
-    .with_workspace("/home/user/code")
     .allow_host("api.openai.com", "pypi.org")
     .with_port_forward(18080, 8080)
     .with_port_forward_addresses("127.0.0.1")
@@ -86,15 +85,25 @@ with Client() as client:
     print(f"Duration: {result.duration_ms}ms")
 ```
 
-### File Operations
+### Guest Filesystem and File Operations
 
-Read, write, and list files inside the sandbox:
+Files live on the guest's native filesystem, not in a shared host directory.
+The writable root filesystem belongs to the sandbox; copy out results before
+removing it, or use a managed block volume for persistent data. File operations
+are explicit transfers over the SDK's JSON-RPC connection and the guest-agent
+vsock service. They do not expose a host filesystem or install filesystem hooks.
+
+`/workspace` is an ordinary guest path, not an automatically mounted directory.
+Create it before using it. Commands use the image's `WORKDIR` by default; pass
+`working_dir` to select an existing guest directory for a particular execution.
 
 ```python
 from matchlock import Client, Sandbox
 
 with Client() as client:
     client.launch(Sandbox("alpine:latest"))
+
+    client.exec("mkdir -p /workspace")
 
     # Write a file
     client.write_file("/workspace/hello.txt", "Hello, world!")
@@ -108,6 +117,62 @@ with Client() as client:
     files = client.list_files("/workspace")
     for f in files:
         print(f"{f.name} ({f.size} bytes, dir={f.is_dir})")
+
+    result = client.exec("./script.sh", working_dir="/workspace")
+    print(result.stdout)  # "hi\n"
+```
+
+### Stdin/Stdout File Transfers
+
+Use `exec_pipe` to send an input stream to a guest process and receive its output without a PTY. This example uploads a local file while streaming its contents back to another local file:
+
+```python
+import sys
+from matchlock import Client, Sandbox
+
+with Client() as client:
+    client.launch(Sandbox("alpine:latest"))
+    client.exec("mkdir -p /workspace")
+
+    with open("input.bin", "rb") as source, open("output.bin", "wb") as output:
+        result = client.exec_pipe(
+            "tee /workspace/input.bin",
+            stdin=source,
+            stdout=output,
+            stderr=sys.stderr,
+        )
+        if result.exit_code != 0:
+            raise RuntimeError(f"File transfer exited with {result.exit_code}")
+```
+
+Output writers opened in binary mode (such as `open(path, "wb")` or `io.BytesIO`) receive the exact bytes; text writers receive decoded text. `read_file` is limited to 16 MiB, so stream larger files to a binary writer instead. `write_file` accepts `bytes` or `str`.
+
+### Managed Block Volumes
+
+Named volumes are managed ext4 disk images, separate from the sandbox's writable
+root filesystem. When attached, the guest accesses them as block devices; they
+are not shared host directories. They persist independently of a VM until removed.
+
+```python
+from matchlock import Client
+
+client = Client()
+volume = client.volume_create("sdk-data", size_mb=1024)
+print(volume.name, volume.size, volume.path)
+for existing in client.volume_list():
+    print(existing.name)
+
+# When the volume is no longer attached or needed:
+# client.volume_remove("sdk-data")
+```
+
+These helpers manage volumes without creating a VM. `VolumeInfo.path` is the host
+path of the backing disk image, not a directory exposed to the guest. The Python
+builder and `CreateOptions` do not currently expose block-disk attachment. Use
+the CLI's `--disk` option to launch a VM with a volume created above:
+
+```bash
+matchlock run --image alpine:latest --disk @sdk-data:/data -- sh -c 'echo persisted > /data/hello.txt'
 ```
 
 ### Network Policy & Secrets
@@ -221,35 +286,6 @@ sandbox = Sandbox("alpine:latest").with_network_interception(
 )
 ```
 
-### Filesystem Mounts
-
-Mount host directories or use in-memory/snapshot filesystems:
-
-```python
-from matchlock import Client, Sandbox, MountConfig
-
-sandbox = (
-    Sandbox("alpine:latest")
-    .mount_host_dir("/workspace/src", "/home/user/project/src")
-    .mount_host_dir_readonly("/workspace/config", "/home/user/project/config")
-    .mount_memory("/workspace/tmp")
-    .mount_overlay("/workspace/data", "/home/user/project/data")
-    # Or use the generic mount() method:
-    .mount("/workspace/custom", MountConfig(type="host_fs", host_path="/tmp/custom"))
-)
-```
-
-Pass `owner_uid` and/or `owner_gid` to have all files in the mount appear owned by a specific user inside the VM. This is useful when the sandbox runs as a non-root user (via `.with_user()`). Both values must be integers in `[0, 4294967295]`; a `ValueError` is raised otherwise. Only `host_fs` mounts support this option:
-
-```python
-sandbox = (
-    Sandbox("alpine:latest")
-    .with_user("1000:1000")
-    .mount_host_dir("/workspace/src", "/home/user/project/src", owner_uid=1000, owner_gid=1000)
-    .mount_host_dir_readonly("/workspace/config", "/home/user/project/config", owner_uid=1000)
-)
-```
-
 ### Custom Configuration
 
 ```python
@@ -257,7 +293,7 @@ from matchlock import Client, Config
 
 config = Config(
     binary_path="/usr/local/bin/matchlock",
-    use_sudo=True,  # Required for TAP devices on Linux
+    use_sudo=False,  # Run as your normal user after Linux setup
 )
 
 with Client(config) as client:
@@ -322,7 +358,6 @@ Fluent builder for sandbox configuration.
 | `.with_memory(mb)` | Set memory in MB |
 | `.with_disk_size(mb)` | Set disk size in MB |
 | `.with_timeout(seconds)` | Set max execution time |
-| `.with_workspace(path)` | Set guest VFS mount point (default: `/workspace`) |
 | `.allow_host(*hosts)` | Add allowed network hosts (supports wildcards) |
 | `.block_private_ips()` | Block access to private IP ranges |
 | `.with_block_private_ips(enabled)` | Explicitly set private IP blocking true/false |
@@ -334,11 +369,8 @@ Fluent builder for sandbox configuration.
 | `.with_port_forward_addresses(*addresses)` | Set bind addresses for configured port mappings |
 | `.with_network_interception(config=None)` | Force interception and optionally apply typed network hook rules |
 | `.add_secret(name, value, *hosts)` | Inject a secret for specific hosts |
-| `.mount(guest_path, config)` | Add a VFS mount with custom `MountConfig` |
-| `.mount_host_dir(guest, host, *, owner_uid=None, owner_gid=None)` | Mount a host directory (read-write); optionally override file ownership inside the VM |
-| `.mount_host_dir_readonly(guest, host, *, owner_uid=None, owner_gid=None)` | Mount a host directory (read-only); optionally override file ownership inside the VM |
-| `.mount_memory(guest_path)` | Mount an in-memory filesystem |
-| `.mount_overlay(guest, host)` | Mount an isolated snapshot of host path |
+| `.with_user(user)` | Set the guest execution user |
+| `.with_image_config(config)` | Merge image metadata, including `working_dir`; does not create directories |
 | `.options()` | Return the built `CreateOptions` |
 
 ### `Client(config: Config | None = None)`
@@ -351,14 +383,17 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.launch(sandbox)` | Create a VM and start image ENTRYPOINT/CMD in detached mode — returns VM ID |
 | `.create(opts)` | Create a VM from `CreateOptions` (does not auto-start ENTRYPOINT unless `launch_entrypoint=True`) — returns VM ID |
 | `.exec(command, working_dir="")` | Execute a command, returns `ExecResult` |
-| `.exec_stream(command, stdout, stderr, working_dir)` | Stream command output, returns `ExecStreamResult` |
+| `.exec_stream(command, stdout=None, stderr=None, working_dir="")` | Stream command output, returns `ExecStreamResult` |
 | `.log()` | Return the current buffered VM log as `str` |
 | `.log_stream(stdout=None)` | Stream VM log output until cancelled |
-| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="", timeout=None, user="")` | Bidirectional pipe-mode exec as an optional user (uid, uid:gid, or username), returns `ExecPipeResult` |
+| `.exec_pipe(command, stdin=None, stdout=None, stderr=None, working_dir="", timeout=None, user="")` | Pipe stdin/stdout/stderr (no PTY) as an optional user (uid, uid:gid, or username), returns `ExecPipeResult` |
 | `.exec_interactive(command, stdin=None, stdout=None, working_dir="", rows=24, cols=80, resize=None, timeout=None, user="")` | Interactive PTY exec as an optional user (uid, uid:gid, or username), returns `ExecInteractiveResult` |
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
-| `.read_file(path)` | Read a file from the sandbox — returns `bytes` |
+| `.read_file(path)` | Read a file (up to 16 MiB) from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
+| `.volume_create(name, size_mb=10240)` | Create a named ext4 block volume — returns `VolumeInfo` |
+| `.volume_list()` | List managed block volumes — returns `list[VolumeInfo]` |
+| `.volume_remove(name)` | Delete a managed block volume that is no longer in use |
 | `.port_forward(*specs)` | Apply one or more `[LOCAL_PORT:]REMOTE_PORT` mappings |
 | `.port_forward_with_addresses(addresses, *specs)` | Apply port mappings bound on specific host addresses |
 | `.close(timeout=0)` | Shut down the sandbox VM. `timeout` in seconds; 0 = kill immediately |
@@ -370,13 +405,14 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | Type | Fields |
 |---|---|
 | `Config` | `binary_path: str`, `use_sudo: bool` |
-| `CreateOptions` | `image`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `mounts`, `env`, `vfs_interception`, `secrets`, `workspace`, `dns_servers`, `network_mtu`, `port_forwards`, `port_forward_addresses`, `image_config`, `launch_entrypoint` |
+| `CreateOptions` | `image`, `kernel_ref`, `privileged`, `cpus`, `memory_mb`, `disk_size_mb`, `timeout_seconds`, `allowed_hosts`, `add_hosts`, `block_private_ips`, `block_private_ips_set`, `no_network`, `force_interception`, `network_interception`, `env`, `secrets`, `dns_servers`, `hostname`, `network_mtu`, `port_forwards`, `port_forward_addresses`, `image_config`, `launch_entrypoint` |
+| `ImageConfig` | `user`, `working_dir`, `entrypoint`, `cmd`, `env` |
 | `ExecResult` | `exit_code: int`, `stdout: str`, `stderr: str`, `duration_ms: int` |
 | `ExecStreamResult` | `exit_code: int`, `duration_ms: int` |
 | `ExecPipeResult` | `exit_code: int`, `duration_ms: int` |
 | `ExecInteractiveResult` | `exit_code: int`, `duration_ms: int` |
 | `FileInfo` | `name: str`, `size: int`, `mode: int`, `is_dir: bool` |
-| `MountConfig` | `type: str`, `host_path: str`, `readonly: bool` |
+| `VolumeInfo` | `name: str`, `size: str`, `path: str` (backing ext4 image) |
 | `PortForward` | `local_port: int`, `remote_port: int` |
 | `PortForwardBinding` | `address: str`, `local_port: int`, `remote_port: int` |
 | `Secret` | `name: str`, `value: str`, `hosts: list[str]` |

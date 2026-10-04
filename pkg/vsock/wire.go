@@ -7,14 +7,16 @@
 // Both exist because *Conn does not satisfy net.Conn (its SetDeadline methods
 // accept interface{} instead of time.Time). The net.Conn variants in this file
 // are used by the VM backends (Darwin uses Virtualization.framework's net.Conn,
-// Linux uses UDS-forwarded net.Conn) and by ExecPipe.
+// Linux uses UDS-forwarded net.Conn) through Exec and ExecPipe.
 package vsock
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
-
+	"errors"
+	"io"
 	"net"
 	"time"
 
@@ -166,6 +168,123 @@ func ListFilesVsock(conn net.Conn, path string) ([]api.FileInfo, error) {
 	return files, nil
 }
 
+// Exec executes a command over a vsock connection without stdin. When
+// opts.Stdout or opts.Stderr is set, that stream is forwarded as it arrives and
+// is not retained in the result, so large outputs use bounded host memory.
+// Streams without a writer are buffered in the result. The caller must supply
+// an already-dialed conn; Exec takes ownership and closes it when done.
+func Exec(ctx context.Context, conn net.Conn, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
+	start := time.Now()
+	defer conn.Close()
+
+	// Closing the connection unblocks reads and makes the guest agent
+	// terminate the command.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
+	req := ExecRequest{Command: command}
+	var stdoutWriter, stderrWriter io.Writer
+	if opts != nil {
+		req.WorkingDir = opts.WorkingDir
+		req.Env = opts.Env
+		req.User = opts.User
+		stdoutWriter, stderrWriter = opts.Stdout, opts.Stderr
+	}
+	reqData, err := json.Marshal(req)
+	if err != nil {
+		return nil, errx.Wrap(ErrEncodeExecRequest, err)
+	}
+
+	msgType := MsgTypeExec
+	if stdoutWriter != nil || stderrWriter != nil {
+		msgType = MsgTypeExecStream
+	}
+	if err := SendMessage(conn, msgType, reqData); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, errx.Wrap(ErrWriteRequest, err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	header := make([]byte, 5)
+	for {
+		if _, err := ReadFull(conn, header); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errx.Wrap(ErrReadResponseHeader, err)
+		}
+		length := binary.BigEndian.Uint32(header[1:])
+		data := make([]byte, length)
+		if length > 0 {
+			if _, err := ReadFull(conn, data); err != nil {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				return nil, errx.Wrap(ErrReadResponseData, err)
+			}
+		}
+
+		var writeErr error
+		switch header[0] {
+		case MsgTypeStdout:
+			writeErr = writeOrBufferExecOutput(stdoutWriter, &stdout, data)
+		case MsgTypeStderr:
+			writeErr = writeOrBufferExecOutput(stderrWriter, &stderr, data)
+		case MsgTypeExecResult:
+			var resp ExecResponse
+			if err := json.Unmarshal(data, &resp); err != nil {
+				return nil, errx.Wrap(ErrDecodeExecResponse, err)
+			}
+			duration := time.Since(start)
+			result := &api.ExecResult{
+				ExitCode:   resp.ExitCode,
+				Stdout:     stdout.Bytes(),
+				Stderr:     stderr.Bytes(),
+				Duration:   duration,
+				DurationMS: duration.Milliseconds(),
+			}
+			// Batch-mode guests return output in the response instead of chunks.
+			if len(result.Stdout) == 0 && len(resp.Stdout) > 0 {
+				result.Stdout = resp.Stdout
+			}
+			if len(result.Stderr) == 0 && len(resp.Stderr) > 0 {
+				result.Stderr = resp.Stderr
+			}
+			if resp.Error != "" {
+				return result, errx.With(ErrExecRemote, ": %s", resp.Error)
+			}
+			return result, nil
+		}
+		if writeErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, writeErr
+		}
+	}
+}
+
+func writeOrBufferExecOutput(w io.Writer, buf *bytes.Buffer, data []byte) error {
+	if w == nil {
+		buf.Write(data)
+		return nil
+	}
+	return writeExecOutput(w, data)
+}
+
+func writeExecOutput(w io.Writer, data []byte) error {
+	n, err := w.Write(data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return errx.Wrap(ErrWriteExecOutput, err)
+	}
+	return nil
+}
+
 // ExecPipe executes a command over a vsock connection with bidirectional
 // stdin/stdout/stderr piping (no PTY). The caller must supply an already-dialed
 // conn; ExecPipe takes ownership and closes it when done.
@@ -206,7 +325,7 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 	}
 
 	done := make(chan *api.ExecResult, 1)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 
 	// connClosed is closed when the response reader finishes (exit received
 	// or read error). The stdin goroutine checks this to avoid writing to an
@@ -226,16 +345,22 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 					default:
 					}
 					if sendErr := SendMessage(conn, MsgTypeStdin, buf[:n]); sendErr != nil {
+						// The command may have exited without consuming all input.
+						// Let the response reader report its exit or connection error.
 						return
 					}
 				}
 				if readErr != nil {
+					if !errors.Is(readErr, io.EOF) {
+						errCh <- errx.Wrap(ErrReadStdin, readErr)
+						return
+					}
 					select {
 					case <-connClosed:
 						return
 					default:
 					}
-					SendMessage(conn, MsgTypeStdin, nil)
+					_ = SendMessage(conn, MsgTypeStdin, nil)
 					return
 				}
 			}
@@ -271,13 +396,19 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 			}
 
 			switch msgType {
-			case MsgTypeStdout:
-				if opts != nil && opts.Stdout != nil {
-					opts.Stdout.Write(data)
+			case MsgTypeStdout, MsgTypeStderr:
+				if opts == nil {
+					continue
 				}
-			case MsgTypeStderr:
-				if opts != nil && opts.Stderr != nil {
-					opts.Stderr.Write(data)
+				writer := opts.Stdout
+				if msgType == MsgTypeStderr {
+					writer = opts.Stderr
+				}
+				if writer != nil {
+					if err := writeExecOutput(writer, data); err != nil {
+						errCh <- err
+						return
+					}
 				}
 			case MsgTypeExit:
 				exitCode := 0
@@ -298,6 +429,9 @@ func ExecPipe(ctx context.Context, conn net.Conn, command string, opts *api.Exec
 	case result := <-done:
 		return result, nil
 	case err := <-errCh:
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	case <-ctx.Done():
 		return nil, ctx.Err()

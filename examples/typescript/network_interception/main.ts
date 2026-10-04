@@ -43,8 +43,6 @@ async function main(): Promise<void> {
   const client = new Client();
 
   const sandbox = new Sandbox("python:3.12-alpine")
-    .withWorkspace("/workspace")
-    .mountMemory("/workspace")
     .allowHost(
       "dl-cdn.alpinelinux.org",
       "files.pythonhosted.org",

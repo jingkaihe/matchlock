@@ -10,7 +10,6 @@ import type {
   JSONObject,
   JSONValue,
   WireNetworkInterceptionConfig,
-  WireVFSInterceptionConfig,
 } from "./wire";
 
 export function validateCreateOptions(options: CreateOptions): void {
@@ -35,7 +34,6 @@ export function validateCreateOptions(options: CreateOptions): void {
 
 export function buildCreateParams(
   options: CreateOptions,
-  wireVFS: WireVFSInterceptionConfig | undefined,
   wireNetworkInterception: WireNetworkInterceptionConfig | undefined,
 ): JSONObject {
   const resources = {
@@ -61,43 +59,6 @@ export function buildCreateParams(
   const network = buildCreateNetworkParams(options, wireNetworkInterception);
   if (network) {
     params.network = network;
-  }
-
-  if (
-    (options.mounts && Object.keys(options.mounts).length > 0) ||
-    options.workspace ||
-    wireVFS
-  ) {
-    const vfs: JSONObject = {};
-    if (options.mounts && Object.keys(options.mounts).length > 0) {
-      const mounts: JSONObject = {};
-      for (const [guestPath, config] of Object.entries(options.mounts)) {
-        const mount: JSONObject = {
-          type: config.type ?? "memory",
-        };
-        if (config.hostPath) {
-          mount.host_path = config.hostPath;
-        }
-        if (config.readonly) {
-          mount.readonly = true;
-        }
-        if (config.ownerUID !== undefined) {
-          mount.owner_uid = config.ownerUID;
-        }
-        if (config.ownerGID !== undefined) {
-          mount.owner_gid = config.ownerGID;
-        }
-        mounts[guestPath] = mount;
-      }
-      vfs.mounts = mounts;
-    }
-    if (options.workspace) {
-      vfs.workspace = options.workspace;
-    }
-    if (wireVFS) {
-      vfs.interception = wireVFS as unknown as JSONValue;
-    }
-    params.vfs = vfs;
   }
 
   if (options.env && Object.keys(options.env).length > 0) {

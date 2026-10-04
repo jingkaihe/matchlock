@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -216,148 +217,50 @@ func TestNetworkConfigValidateRejectsPlaceholderOverlapWithGeneratedFormat(t *te
 	assert.Contains(t, err.Error(), `"B"`)
 }
 
-func TestDefaultConfig_VFSDisabledByDefault(t *testing.T) {
+func TestParseConfigRejectsLegacyVFS(t *testing.T) {
+	for _, data := range []string{
+		`{"vfs":{}}`,
+		`{"vfs":{"workspace":"/workspace"}}`,
+		`{"vfs":{"mounts":{"/workspace":{"type":"host_fs","host_path":"/tmp"}}}}`,
+		`{"vfs":{"interception":{"emit_events":true}}}`,
+		`{"VFS":{}}`,
+	} {
+		t.Run(data, func(t *testing.T) {
+			_, err := ParseConfig([]byte(data))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidConfig)
+			assert.Contains(t, err.Error(), "vfs is no longer supported")
+		})
+	}
+}
+
+func TestParseConfigAllowsAbsentOrNullVFS(t *testing.T) {
+	for _, data := range []string{
+		`{"image":"alpine:latest"}`,
+		`{"image":"alpine:latest","vfs": null }`,
+	} {
+		t.Run(data, func(t *testing.T) {
+			cfg, err := ParseConfig([]byte(data))
+			require.NoError(t, err)
+			assert.Equal(t, "alpine:latest", cfg.Image)
+			encoded, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), `"vfs"`)
+		})
+	}
+}
+
+func TestConfigJSONRoundTripPreservesDisksAndImageConfig(t *testing.T) {
+	uid := uint32(1000)
 	cfg := DefaultConfig()
-	require.Nil(t, cfg.VFS)
-	assert.False(t, cfg.HasVFSMounts())
-	assert.Equal(t, "", cfg.GetWorkspace())
-}
+	cfg.Image = "alpine:latest"
+	cfg.Env = map[string]string{"FOO": "bar"}
+	cfg.ImageCfg = &ImageConfig{WorkingDir: "/app", User: "1000"}
+	cfg.ExtraDisks = []DiskMount{{HostPath: "/tmp/data.ext4", GuestMount: "/data", OwnerUID: &uid}}
+	encoded, err := json.Marshal(cfg)
+	require.NoError(t, err)
 
-func TestValidateVFS_RejectsWorkspaceWithoutMounts(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace",
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "requires at least one")
-}
-
-func TestValidateVFS_RejectsMountsWithoutWorkspace(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Mounts: map[string]MountConfig{
-				"/workspace/data": {Type: MountTypeMemory},
-			},
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "vfs.workspace is required")
-}
-
-func TestValidateVFS_RejectsInterceptionWithoutMounts(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Interception: &VFSInterceptionConfig{
-				EmitEvents: true,
-			},
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "vfs.interception requires at least one")
-}
-
-func TestValidateVFS_RejectsMountOutsideWorkspace(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace/project",
-			Mounts: map[string]MountConfig{
-				"/workspace": {Type: MountTypeMemory},
-			},
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "must be within workspace")
-}
-
-func TestValidateVFS_AllowsValidWorkspaceMounts(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace/project",
-			Mounts: map[string]MountConfig{
-				"/workspace/project/data": {Type: MountTypeMemory},
-			},
-		},
-	}
-
-	require.NoError(t, cfg.ValidateVFS())
-	assert.True(t, cfg.HasVFSMounts())
-	assert.Equal(t, "/workspace/project", cfg.GetWorkspace())
-}
-
-func TestValidateVFS_RejectsOwnerOverrideOnMemoryMount(t *testing.T) {
-	uid := uint32(1000)
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace",
-			Mounts: map[string]MountConfig{
-				"/workspace/data": {Type: MountTypeMemory, OwnerUID: &uid},
-			},
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "owner_uid/owner_gid are only supported for host_fs")
-}
-
-func TestValidateVFS_RejectsOwnerOverrideOnOverlayMount(t *testing.T) {
-	gid := uint32(1000)
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace",
-			Mounts: map[string]MountConfig{
-				"/workspace/data": {Type: MountTypeOverlay, HostPath: "/tmp/data", OwnerGID: &gid},
-			},
-		},
-	}
-
-	err := cfg.ValidateVFS()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidConfig)
-	assert.Contains(t, err.Error(), "owner_uid/owner_gid are only supported for host_fs")
-}
-
-func TestValidateVFS_AllowsOwnerOverrideOnHostFSMount(t *testing.T) {
-	uid := uint32(1000)
-	gid := uint32(1000)
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace",
-			Mounts: map[string]MountConfig{
-				"/workspace/data": {Type: MountTypeHostFS, HostPath: "/tmp/data", OwnerUID: &uid, OwnerGID: &gid},
-			},
-		},
-	}
-
-	require.NoError(t, cfg.ValidateVFS())
-}
-
-func TestValidateVFS_AllowsInterceptionWithMounts(t *testing.T) {
-	cfg := &Config{
-		VFS: &VFSConfig{
-			Workspace: "/workspace",
-			Mounts: map[string]MountConfig{
-				"/workspace/data": {Type: MountTypeMemory},
-			},
-			Interception: &VFSInterceptionConfig{
-				EmitEvents: true,
-			},
-		},
-	}
-
-	require.NoError(t, cfg.ValidateVFS())
+	var decoded Config
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	assert.Equal(t, cfg, &decoded)
 }

@@ -643,85 +643,37 @@ func TestHandlerExecTTY(t *testing.T) {
 	assert.Equal(t, "tty-out", ttyOut)
 }
 
-func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
-	vm := &mockVM{id: "vm-test"}
-	factoryCalls := 0
+func TestHandlerCreateRejectsLegacyVFS(t *testing.T) {
+	for _, legacyConfig := range []map[string]interface{}{
+		{},
+		{"workspace": "/workspace/project"},
+		{"mounts": map[string]interface{}{
+			"/workspace": map[string]interface{}{"type": "memory"},
+		}},
+		{"interception": map[string]interface{}{"emit_events": true}},
+	} {
+		data, err := json.Marshal(legacyConfig)
+		require.NoError(t, err)
+		t.Run(string(data), func(t *testing.T) {
+			factoryCalls := 0
+			rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+				factoryCalls++
+				return &mockVM{id: "vm-test"}, nil
+			})
+			defer rpc.close()
 
-	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
-		factoryCalls++
-		return vm, nil
-	})
-	defer rpc.close()
+			rpc.send("create", 1, map[string]interface{}{
+				"image": "alpine:latest",
+				"vfs":   legacyConfig,
+			})
 
-	rpc.send("create", 1, map[string]interface{}{
-		"image": "alpine:latest",
-		"vfs": map[string]interface{}{
-			"workspace": "/workspace/project",
-			"mounts": map[string]interface{}{
-				"/workspace": map[string]interface{}{
-					"type": api.MountTypeMemory,
-				},
-			},
-		},
-	})
-
-	msg := rpc.read()
-	require.NotNil(t, msg.Error, "expected create to fail for mount outside workspace")
-	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
-	require.Contains(t, msg.Error.Message, "must be within workspace")
-	require.Equal(t, 0, factoryCalls, "factory should not have been called")
-}
-
-func TestHandlerCreateRejectsWorkspaceWithoutMounts(t *testing.T) {
-	vm := &mockVM{id: "vm-test"}
-	factoryCalls := 0
-
-	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
-		factoryCalls++
-		return vm, nil
-	})
-	defer rpc.close()
-
-	rpc.send("create", 1, map[string]interface{}{
-		"image": "alpine:latest",
-		"vfs": map[string]interface{}{
-			"workspace": "/workspace/project",
-		},
-	})
-
-	msg := rpc.read()
-	require.NotNil(t, msg.Error, "expected create to fail for workspace-only VFS config")
-	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
-	require.Contains(t, msg.Error.Message, "requires at least one")
-	require.Equal(t, 0, factoryCalls, "factory should not have been called")
-}
-
-func TestHandlerCreateRejectsMountsWithoutWorkspace(t *testing.T) {
-	vm := &mockVM{id: "vm-test"}
-	factoryCalls := 0
-
-	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
-		factoryCalls++
-		return vm, nil
-	})
-	defer rpc.close()
-
-	rpc.send("create", 1, map[string]interface{}{
-		"image": "alpine:latest",
-		"vfs": map[string]interface{}{
-			"mounts": map[string]interface{}{
-				"/workspace/project/data": map[string]interface{}{
-					"type": api.MountTypeMemory,
-				},
-			},
-		},
-	})
-
-	msg := rpc.read()
-	require.NotNil(t, msg.Error, "expected create to fail when mounts are set without workspace")
-	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
-	require.Contains(t, msg.Error.Message, "vfs.workspace is required")
-	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+			msg := rpc.read()
+			require.NotNil(t, msg.Error, "expected create to reject legacy VFS configuration")
+			assert.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+			assert.Contains(t, msg.Error.Message, "vfs is no longer supported")
+			assert.Equal(t, 0, factoryCalls, "factory should not have been called")
+		})
+	}
 }
 
 func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {

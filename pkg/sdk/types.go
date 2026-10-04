@@ -39,18 +39,11 @@ type CreateOptions struct {
 	ForceInterception bool
 	// NetworkInterception configures host-side network interception rules.
 	NetworkInterception *NetworkInterceptionConfig
-	// Mounts defines VFS mount configurations
-	Mounts map[string]MountConfig
 	// Env defines non-secret environment variables for command execution.
 	// These are visible in VM state and inspect/get outputs.
 	Env map[string]string
 	// Secrets defines secrets to inject (replaced in HTTP requests to allowed hosts)
 	Secrets []Secret
-	// Workspace is the mount point for VFS in the guest.
-	// This must be set when Mounts is non-empty.
-	Workspace string
-	// VFSInterception configures host-side VFS interception hooks/rules.
-	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
 	// Hostname overrides the default guest hostname (sandbox's ID)
@@ -194,143 +187,6 @@ type NetworkHookRule struct {
 // NetworkInterceptionConfig configures host-side network interception rules.
 type NetworkInterceptionConfig struct {
 	Rules []NetworkHookRule `json:"rules,omitempty"`
-}
-
-// MountConfig defines a VFS mount
-type MountConfig struct {
-	Type     string  `json:"type"` // memory, host_fs, overlay
-	HostPath string  `json:"host_path,omitempty"`
-	Readonly bool    `json:"readonly,omitempty"`
-	OwnerUID *uint32 `json:"owner_uid,omitempty"`
-	OwnerGID *uint32 `json:"owner_gid,omitempty"`
-}
-
-// VFSInterceptionConfig configures host-side VFS interception rules.
-type VFSInterceptionConfig struct {
-	EmitEvents bool          `json:"emit_events,omitempty"`
-	Rules      []VFSHookRule `json:"rules,omitempty"`
-}
-
-// VFS hook phases.
-type VFSHookPhase = string
-
-const (
-	VFSHookPhaseBefore VFSHookPhase = "before"
-	VFSHookPhaseAfter  VFSHookPhase = "after"
-)
-
-// VFS hook actions.
-type VFSHookAction = string
-
-const (
-	VFSHookActionAllow VFSHookAction = "allow"
-	VFSHookActionBlock VFSHookAction = "block"
-)
-
-// VFS hook operations.
-type VFSHookOp = string
-
-const (
-	VFSHookOpStat      VFSHookOp = "stat"
-	VFSHookOpReadDir   VFSHookOp = "readdir"
-	VFSHookOpOpen      VFSHookOp = "open"
-	VFSHookOpCreate    VFSHookOp = "create"
-	VFSHookOpMkdir     VFSHookOp = "mkdir"
-	VFSHookOpChmod     VFSHookOp = "chmod"
-	VFSHookOpRemove    VFSHookOp = "remove"
-	VFSHookOpRemoveAll VFSHookOp = "remove_all"
-	VFSHookOpRename    VFSHookOp = "rename"
-	VFSHookOpSymlink   VFSHookOp = "symlink"
-	VFSHookOpReadlink  VFSHookOp = "readlink"
-	VFSHookOpRead      VFSHookOp = "read"
-	VFSHookOpWrite     VFSHookOp = "write"
-	VFSHookOpClose     VFSHookOp = "close"
-	VFSHookOpSync      VFSHookOp = "sync"
-	VFSHookOpTruncate  VFSHookOp = "truncate"
-)
-
-// VFSHookRule describes a single interception rule.
-type VFSHookRule struct {
-	Name      string        `json:"name,omitempty"`
-	Phase     VFSHookPhase  `json:"phase,omitempty"`  // before, after
-	Ops       []VFSHookOp   `json:"ops,omitempty"`    // read, write, create, ...
-	Path      string        `json:"path,omitempty"`   // filepath-style glob
-	Action    VFSHookAction `json:"action,omitempty"` // allow, block
-	TimeoutMS int           `json:"timeout_ms,omitempty"`
-	// Hook is safe-by-default and does not expose client methods.
-	Hook VFSHookFunc `json:"-"`
-	// DangerousHook disables recursion suppression and may retrigger itself.
-	// Use only when you intentionally want re-entrant callbacks.
-	DangerousHook VFSDangerousHookFunc `json:"-"`
-	MutateHook    VFSMutateHookFunc    `json:"-"`
-	ActionHook    VFSActionHookFunc    `json:"-"`
-}
-
-// VFSHookEvent contains metadata about an intercepted file event.
-type VFSHookEvent struct {
-	Op   VFSHookOp
-	Path string
-	Size int64
-	Mode uint32
-	UID  int
-	GID  int
-}
-
-// VFSHookFunc runs in the SDK process when a matching after-file-event is observed.
-// Returning an error currently does not fail the triggering VFS operation.
-type VFSHookFunc func(ctx context.Context, event VFSHookEvent) error
-
-// VFSDangerousHookFunc runs with a client handle and can trigger re-entrant hook execution.
-// Use this only when you intentionally need side effects that call back into the sandbox.
-type VFSDangerousHookFunc func(ctx context.Context, client *Client, event VFSHookEvent) error
-
-// VFSMutateRequest is passed to SDK-local mutate hooks before WriteFile.
-type VFSMutateRequest struct {
-	Path string
-	Size int
-	Mode uint32
-	UID  int
-	GID  int
-}
-
-// VFSMutateHookFunc computes replacement bytes for SDK WriteFile calls.
-// This hook runs in the SDK process and currently applies only to write_file RPCs.
-type VFSMutateHookFunc func(ctx context.Context, req VFSMutateRequest) ([]byte, error)
-
-// VFSActionRequest is passed to SDK-local allow/block action hooks.
-type VFSActionRequest struct {
-	Op   VFSHookOp
-	Path string
-	Size int
-	Mode uint32
-	UID  int
-	GID  int
-}
-
-// VFSActionHookFunc decides whether an operation should be allowed or blocked.
-type VFSActionHookFunc func(ctx context.Context, req VFSActionRequest) VFSHookAction
-
-type compiledVFSHook struct {
-	name      string
-	ops       map[string]struct{}
-	path      string
-	timeout   time.Duration
-	dangerous bool
-	callback  func(ctx context.Context, client *Client, event VFSHookEvent) error
-}
-
-type compiledVFSMutateHook struct {
-	name     string
-	ops      map[string]struct{}
-	path     string
-	callback VFSMutateHookFunc
-}
-
-type compiledVFSActionHook struct {
-	name     string
-	ops      map[string]struct{}
-	path     string
-	callback VFSActionHookFunc
 }
 
 type compiledNetworkHook struct {

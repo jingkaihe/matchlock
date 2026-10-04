@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 )
 
+// PackagedDir holds the Firecracker and jailer binaries shipped by the
+// matchlock Linux packages.
+const PackagedDir = "/usr/libexec/matchlock"
+
 const (
-	defaultLibexecDir = "/usr/libexec/matchlock"
-	envFirecracker    = "MATCHLOCK_FIRECRACKER"
-	envJailer         = "MATCHLOCK_JAILER"
+	envFirecracker = "MATCHLOCK_FIRECRACKER"
+	envJailer      = "MATCHLOCK_JAILER"
 )
 
 func ResolveFirecrackerPath() string {
@@ -27,7 +30,7 @@ func resolveBinary(name, envVar string) string {
 		return override
 	}
 
-	packaged := filepath.Join(defaultLibexecDir, name)
+	packaged := filepath.Join(PackagedDir, name)
 	if _, err := os.Stat(packaged); err == nil {
 		return packaged
 	}

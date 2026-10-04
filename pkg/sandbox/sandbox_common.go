@@ -11,58 +11,9 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/api"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
-	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vsock"
 )
-
-// createProvider builds a VFS Provider for the given mount config.
-// Returns ErrInvalidMountConfig if owner_uid or owner_gid are set on a
-// non-host_fs mount type, since ownership overrides are only applied by the
-// RealFSProvider and have no effect on memory or overlay mounts.
-func createProvider(mount api.MountConfig) (vfs.Provider, error) {
-	if (mount.OwnerUID != nil || mount.OwnerGID != nil) && mount.Type != api.MountTypeHostFS {
-		return nil, errx.With(ErrInvalidMountConfig, ": owner_uid/owner_gid are only supported for host_fs mounts, got %q", mount.Type)
-	}
-
-	switch mount.Type {
-	case api.MountTypeMemory:
-		return vfs.NewMemoryProvider(), nil
-	case api.MountTypeHostFS:
-		p := vfs.NewRealFSProvider(mount.HostPath)
-		if mount.OwnerUID != nil || mount.OwnerGID != nil {
-			uid := uint32(0)
-			gid := uint32(0)
-			if mount.OwnerUID != nil {
-				uid = *mount.OwnerUID
-			}
-			if mount.OwnerGID != nil {
-				gid = *mount.OwnerGID
-			}
-			p = p.WithOwner(uid, gid)
-		}
-		if mount.Readonly {
-			return vfs.NewReadonlyProvider(p), nil
-		}
-		return p, nil
-	default:
-		return vfs.NewMemoryProvider(), nil
-	}
-}
-
-func buildVFSProviders(config *api.Config) (map[string]vfs.Provider, error) {
-	vfsProviders := make(map[string]vfs.Provider)
-	if config.VFS != nil && config.VFS.Mounts != nil {
-		for path, mount := range config.VFS.Mounts {
-			provider, err := createProvider(mount)
-			if err != nil {
-				return nil, err
-			}
-			vfsProviders[path] = provider
-		}
-	}
-	return vfsProviders, nil
-}
 
 func buildExtraDiskConfigs(disks []api.DiskMount) ([]vm.DiskConfig, error) {
 	extraDisks := make([]vm.DiskConfig, 0, len(disks))
@@ -86,10 +37,7 @@ func buildExtraDiskConfigs(disks []api.DiskMount) ([]vm.DiskConfig, error) {
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {
 	opts := &api.ExecOptions{
-		// Matchlock defaults execution to image WORKDIR, falling back to the
-		// configured workspace path when VFS is enabled.
-		WorkingDir: config.GetWorkspace(),
-		Env:        make(map[string]string),
+		Env: make(map[string]string),
 	}
 
 	if ic := config.ImageCfg; ic != nil {

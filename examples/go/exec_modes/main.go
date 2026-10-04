@@ -46,7 +46,7 @@ func run() error {
 	defer client.Remove()
 	defer client.Close(0)
 
-	sandbox := sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace")
+	sandbox := sdk.New("alpine:latest")
 
 	vmID, err := client.Launch(sandbox)
 	if err != nil {
@@ -57,7 +57,7 @@ func run() error {
 	ctx := context.Background()
 	var pipeStdout, pipeStderr bytes.Buffer
 	pipeResult, err := client.ExecPipeWithOptions(ctx, "id -u; cat; echo pipe-stderr >&2", sdk.ExecPipeOptions{
-		WorkingDir: "/workspace",
+		WorkingDir: "/tmp",
 		User:       "65534:65534",
 		Stdin:      strings.NewReader("hello from stdin\n"),
 		Stdout:     &pipeStdout,
@@ -120,7 +120,7 @@ func run() error {
 	}()
 
 	ttyResult, err := client.ExecInteractive(ctx, "sh", &sdk.ExecInteractiveOptions{
-		WorkingDir: "/workspace",
+		WorkingDir: "/tmp",
 		Rows:       uint16(rows),
 		Cols:       uint16(cols),
 		Stdin:      os.Stdin,

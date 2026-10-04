@@ -26,7 +26,6 @@ const REQUEST_NOTIFICATION_METHODS = new Set<string>([
 
 export class RPCTransport {
   private readonly config: Required<Config>;
-  private readonly onNotification: (method: string, params: JSONObject) => void;
   private readonly onClosed: (error?: Error) => void;
 
   private process: ChildProcessWithoutNullStreams | undefined;
@@ -37,11 +36,9 @@ export class RPCTransport {
 
   constructor(
     config: Required<Config>,
-    onNotification: (method: string, params: JSONObject) => void,
     onClosed: (error?: Error) => void,
   ) {
     this.config = config;
-    this.onNotification = onNotification;
     this.onClosed = onClosed;
   }
 
@@ -319,10 +316,7 @@ export class RPCTransport {
       if (pending?.onNotification) {
         pending.onNotification(method, params);
       }
-      return;
     }
-
-    this.onNotification(method, params);
   }
 
   private async waitForProcessExit(timeoutMs: number): Promise<void> {
