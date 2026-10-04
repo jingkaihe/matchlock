@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/image"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
+	"github.com/jingkaihe/matchlock/pkg/vsock"
 )
 
 var buildCmd = &cobra.Command{
@@ -40,7 +42,7 @@ func init() {
 	buildCmd.Flags().StringP("file", "f", "Dockerfile", "Path to Dockerfile")
 	buildCmd.Flags().Float64("build-cpus", 0, "Number of CPUs for BuildKit VM (supports fractional values, 0 = all available)")
 	buildCmd.Flags().Int("build-memory", 0, "Memory in MB for BuildKit VM (0 = all available)")
-	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM")
+	buildCmd.Flags().Int("build-disk", 10240, "Disk size in MB for BuildKit VM (holds the uploaded build context)")
 	buildCmd.Flags().Bool("no-cache", false, "Do not use BuildKit build cache")
 	buildCmd.Flags().Int("build-cache-size", 10240, "BuildKit cache disk size in MB")
 	buildCmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for BuildKit guest interface")
@@ -281,21 +283,16 @@ func runDockerfileBuild(cmd *cobra.Command, contextDir, dockerfile, tag string) 
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "Starting BuildKit daemon and building image from %s...\n", dockerfile)
-
-	execOpts := &api.ExecOptions{
-		WorkingDir: "/",
-		Stdout:     os.Stderr,
-		Stderr:     os.Stderr,
-	}
-
 	noCacheOpt := ""
 	if noCache {
 		noCacheOpt = "  --no-cache \\\n"
 	}
 
+	// Stdout carries only the docker-format image tarball from buildctl; every
+	// other message goes to stderr so it cannot corrupt the stream.
 	buildScript := fmt.Sprintf(`#!/bin/sh
 set -e
+exec 3>&1 1>&2
 export HOME=/root
 export TMPDIR=/var/lib/buildkit/tmp
 mkdir -p $TMPDIR
@@ -303,7 +300,7 @@ SOCK=/tmp/buildkit.sock
 buildkitd --root /var/lib/buildkit \
   --addr unix://$SOCK \
   --oci-worker-snapshotter native \
-  >/tmp/buildkitd.log 2>&1 &
+  >/tmp/buildkitd.log 2>&1 3>&- &
 BKPID=$!
 trap 'kill "$BKPID" 2>/dev/null || true' EXIT
 for i in $(seq 1 30); do [ -S $SOCK ] && break; sleep 1; done
@@ -318,7 +315,7 @@ buildctl --addr unix://$SOCK build \
   --frontend dockerfile.v0 \
   --local context=/workspace/context \
   --local dockerfile=/workspace/dockerfile \
-%s  --output type=docker,dest=/workspace/output/image.tar
+%s  --output type=docker,dest=- >&3
 RC=$?
 [ $RC -ne 0 ] && { echo "=== buildkitd log ===" >&2; cat /tmp/buildkitd.log >&2; }
 exit $RC
@@ -328,19 +325,11 @@ exit $RC
 		return errx.Wrap(ErrWriteBuildScript, err)
 	}
 
-	result, execErr := sb.Exec(ctx, "/workspace/buildkit-run.sh", execOpts)
-	if execErr != nil {
-		return errx.Wrap(ErrBuildKitBuild, execErr)
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("BuildKit build failed (exit %d)", result.ExitCode)
-	}
+	fmt.Fprintf(os.Stderr, "Starting BuildKit daemon and building image from %s as %s...\n", dockerfile, tag)
 
-	fmt.Fprintf(os.Stderr, "Importing built image as %s...\n", tag)
-
-	importResult, err := importBuildImage(ctx, sb, builder, tag)
+	importResult, err := buildAndImportImage(ctx, sb, builder, "/workspace/buildkit-run.sh", tag)
 	if err != nil {
-		return errx.Wrap(ErrImportImage, err)
+		return err
 	}
 
 	fmt.Printf("Successfully built and tagged %s\n", tag)
@@ -359,7 +348,7 @@ func uploadBuildContext(ctx context.Context, sb *sandbox.Sandbox, contextDir, do
 		w.CloseWithError(err)
 		done <- err
 	}()
-	result, execErr := sb.Exec(ctx, "mkdir -p /workspace/output && tar -xf - -C /workspace", &api.ExecOptions{
+	result, execErr := sb.Exec(ctx, "mkdir -p /workspace && tar -xf - -C /workspace", &api.ExecOptions{
 		WorkingDir: "/",
 		Stdin:      r,
 		Stdout:     os.Stderr,
@@ -380,23 +369,45 @@ func uploadBuildContext(ctx context.Context, sb *sandbox.Sandbox, contextDir, do
 	return nil
 }
 
-func importBuildImage(ctx context.Context, sb *sandbox.Sandbox, builder *image.Builder, tag string) (*image.BuildResult, error) {
+type buildExecer interface {
+	Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+}
+
+type imageImporter interface {
+	Import(ctx context.Context, reader io.Reader, tag string) (*image.BuildResult, error)
+}
+
+// buildAndImportImage runs the BuildKit script and streams the image tarball
+// from its stdout straight into the host image store, so the image is never
+// staged on the build VM's disk.
+func buildAndImportImage(ctx context.Context, sb buildExecer, importer imageImporter, script, tag string) (*image.BuildResult, error) {
 	r, w := io.Pipe()
 	done := make(chan error, 1)
 	go func() {
-		_, err := sb.ReadFileTo(ctx, "/workspace/output/image.tar", w)
+		result, err := sb.Exec(ctx, script, &api.ExecOptions{
+			WorkingDir: "/",
+			Stdout:     w,
+			Stderr:     os.Stderr,
+		})
+		if err != nil {
+			err = errx.Wrap(ErrBuildKitBuild, err)
+		} else if result.ExitCode != 0 {
+			err = errx.With(ErrBuildKitBuild, ": exit code %d", result.ExitCode)
+		}
+		// A failed build must not look like a complete tarball to the importer.
 		w.CloseWithError(err)
 		done <- err
 	}()
-	result, importErr := builder.Import(ctx, r, tag)
-	// Import may fail before draining the stream (for example, a full host disk).
+	result, importErr := importer.Import(ctx, r, tag)
+	// Stop the build if the import fails before draining the stream (for
+	// example, a full host disk); the guest command is terminated.
 	r.Close()
-	readErr := <-done
-	if importErr != nil {
-		return nil, importErr
+	buildErr := <-done
+	if buildErr != nil && (importErr == nil || !errors.Is(buildErr, vsock.ErrWriteExecOutput)) {
+		return nil, buildErr
 	}
-	if readErr != nil {
-		return nil, errx.Wrap(ErrReadBuildImage, readErr)
+	if importErr != nil {
+		return nil, errx.Wrap(ErrImportImage, importErr)
 	}
 	return result, nil
 }

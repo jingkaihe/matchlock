@@ -23,7 +23,6 @@ var (
 	ErrStartBuildSandbox   = errors.New("starting BuildKit sandbox")
 	ErrWriteBuildScript    = errors.New("write build script")
 	ErrBuildKitBuild       = errors.New("BuildKit build")
-	ErrReadBuildImage      = errors.New("read built image stream")
 	ErrImportImage         = errors.New("import built image")
 )
 

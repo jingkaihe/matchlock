@@ -122,11 +122,7 @@ the SDK file APIs to upload and retrieve files, or stream larger inputs and outp
 through command stdin/stdout. Filesystem operations happen on native guest storage.
 Use `matchlock volume` with `run --disk @name:/guest/path` for persistent storage.
 
-`matchlock build` runs BuildKit inside a VM. It streams the build context and
-Dockerfile into guest-local storage over vsock, then streams the resulting image
-tarball back into the host image store. `.dockerignore` and Dockerfile-specific
-ignore files control which context files are uploaded. Build cache persists on an
-attached ext4 block volume; no host directory is shared during the build.
+`matchlock build` runs BuildKit inside a VM and imports the result into the local image store. The build context is copied into the VM, honouring `.dockerignore` and Dockerfile-specific ignore files, so `--build-disk` must be large enough to hold it. The build cache persists between builds, and no host directory is shared with the VM.
 
 ## SDK
 
