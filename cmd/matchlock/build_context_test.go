@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -194,6 +195,31 @@ func TestWriteBuildContextNegatedGlob(t *testing.T) {
 	require.NoError(t, writeBuildContext(context.Background(), &archive, dir, dockerfile))
 	headers, _ := readContextArchive(t, &archive)
 	assert.Contains(t, headers, "context/nested/child/keep.txt")
+}
+
+func TestWriteBuildContextBatchesSmallWrites(t *testing.T) {
+	dir := t.TempDir()
+	dockerfile := filepath.Join(dir, "Dockerfile")
+	require.NoError(t, os.WriteFile(dockerfile, []byte("FROM scratch"), 0644))
+	for i := 0; i < 500; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%03d.txt", i)), []byte("x"), 0644))
+	}
+	var w countingContextWriter
+	require.NoError(t, writeBuildContext(context.Background(), &w, dir, dockerfile))
+	// Unbuffered, each file costs a header, data, and padding write.
+	assert.Less(t, w.writes, 10)
+	headers, _ := readContextArchive(t, &w.buf)
+	assert.Contains(t, headers, "context/f499.txt")
+}
+
+type countingContextWriter struct {
+	buf    bytes.Buffer
+	writes int
+}
+
+func (w *countingContextWriter) Write(p []byte) (int, error) {
+	w.writes++
+	return w.buf.Write(p)
 }
 
 type failingContextWriter struct{ err error }

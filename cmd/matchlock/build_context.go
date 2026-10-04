@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -52,7 +53,10 @@ func writeBuildContext(ctx context.Context, w io.Writer, contextDir, dockerfile 
 		return err
 	}
 
-	tw := tar.NewWriter(w)
+	// tar.Writer issues a separate small write per header and padding block;
+	// batch them so each transfer frame carries a useful amount of data.
+	bw := bufio.NewWriterSize(w, 256*1024)
+	tw := tar.NewWriter(bw)
 	for _, dir := range []string{"context", "dockerfile"} {
 		if err := tw.WriteHeader(&tar.Header{Name: dir + "/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
 			return err
@@ -168,7 +172,10 @@ func writeBuildContext(ctx context.Context, w io.Writer, contextDir, dockerfile 
 	if _, err := tw.Write(ignoreData); err != nil {
 		return err
 	}
-	return tw.Close()
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	return bw.Flush()
 }
 
 func mayIncludeBuildDescendant(matcher *patternmatcher.PatternMatcher, dir string) bool {
