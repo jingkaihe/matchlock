@@ -371,14 +371,11 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 		return 1, errx.Wrap(ErrExecEncodeReq, err)
 	}
 
-	header := make([]byte, 5)
-	header[0] = vsock.MsgTypeExecTTY
-	binary.BigEndian.PutUint32(header[1:], uint32(len(reqData)))
-
-	if _, err := conn.Write(header); err != nil {
-		return 1, errx.Wrap(ErrExecWriteHeader, err)
-	}
-	if _, err := conn.Write(reqData); err != nil {
+	// One FrameWriter for the whole session so the initial ExecTTY frame and
+	// every concurrent stdin/resize/signal frame are single locked writes and
+	// cannot interleave each other's header and payload.
+	fw := vsock.NewFrameWriter(conn)
+	if err := fw.Send(vsock.MsgTypeExecTTY, reqData); err != nil {
 		return 1, errx.Wrap(ErrExecWriteReq, err)
 	}
 
@@ -423,7 +420,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				vsock.SendMessage(conn, vsock.MsgTypeStdin, buf[:n])
+				fw.Send(vsock.MsgTypeStdin, buf[:n])
 			}
 			if err != nil {
 				return
@@ -436,7 +433,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 			data := make([]byte, 4)
 			binary.BigEndian.PutUint16(data[0:2], size[0])
 			binary.BigEndian.PutUint16(data[2:4], size[1])
-			vsock.SendMessage(conn, vsock.MsgTypeResize, data)
+			fw.Send(vsock.MsgTypeResize, data)
 		}
 	}()
 
@@ -446,7 +443,7 @@ func (m *DarwinMachine) ExecInteractive(ctx context.Context, command string, opt
 	case err := <-errCh:
 		return 1, err
 	case <-ctx.Done():
-		vsock.SendMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
+		fw.Send(vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
 		return 1, ctx.Err()
 	}
 }

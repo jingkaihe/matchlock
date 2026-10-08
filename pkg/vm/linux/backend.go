@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,6 +36,18 @@ const (
 	VsockPortVFS = 5001
 	// VsockPortReady is the port for ready signal
 	VsockPortReady = 5002
+
+	// vmmLogTailBytes bounds how much of the VMM log is attached to an
+	// early-exit error. The tail carries the real reason (e.g. Firecracker's
+	// "VM config error") without echoing an entire boot log.
+	vmmLogTailBytes = 2048
+
+	// vmmExitWaitTimeout bounds how long Close waits for the VMM process to be
+	// reaped before tearing down its TAP. Stop has already signaled (and, on a
+	// canceled context, killed) the process, so this is only a safety net
+	// against an unkillable VMM; it must be long enough that the kernel has
+	// released the TAP descriptor, or DeleteInterface would see EBUSY.
+	vmmExitWaitTimeout = 10 * time.Second
 )
 
 type LinuxBackend struct{}
@@ -47,9 +61,19 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	// Custom kernel args would replace the generated matchlock.* cmdline and
+	// silently drop matchlock.swap=; reject that before creating any host
+	// resources (TAP) so the failure is clean.
+	if err := vm.ValidateSwapDisks(config); err != nil {
+		return nil, err
+	}
+
 	vcpus, ok := api.VCPUCount(config.CPUs)
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
+	}
+	if vcpus > api.MaxFirecrackerVCPUs {
+		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be <= %d (Firecracker maximum)", api.MaxFirecrackerVCPUs)
 	}
 	hostCPUs := runtime.NumCPU()
 	if vcpus > hostCPUs {
@@ -77,6 +101,25 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 			syscall.Close(tapFD)
 			DeleteInterface(tapName)
 			return nil, errx.Wrap(ErrTAPConfigure, err)
+		}
+
+		// The IPv6 guest link goes on next to the IPv4 one. It is skipped
+		// entirely when the config carries no IPv6 fields, so an IPv4-only
+		// sandbox keeps the exact TAP state it had before. IPv6 addresses are
+		// installed over rtnetlink because the IPv4 SIOCSIFADDR ioctl cannot
+		// carry a 128-bit address (see ConfigureInterfaceIPv6).
+		link, hasLink, err := ParseIPv6Link(config)
+		if err != nil {
+			syscall.Close(tapFD)
+			DeleteInterface(tapName)
+			return nil, errx.Wrap(ErrTAPConfigureIPv6, err)
+		}
+		if hasLink {
+			if err := ConfigureInterfaceIPv6(tapName, link.TapCIDR()); err != nil {
+				syscall.Close(tapFD)
+				DeleteInterface(tapName)
+				return nil, errx.Wrap(ErrTAPConfigureIPv6, err)
+			}
 		}
 
 		if err := SetMTU(tapName, effectiveMTU(config.MTU)); err != nil {
@@ -123,11 +166,35 @@ type LinuxMachine struct {
 	cmd        *exec.Cmd
 	pid        int
 	started    bool
+
+	// done is closed exactly once when cmd.Wait returns; waitErr holds the raw
+	// wait error. Exactly one goroutine (started by Start) calls cmd.Wait, so
+	// Stop, Wait, and waitForReady can observe the VMM exit without racing a
+	// one-shot Wait. mutex guards these fields and the test seams below.
+	done    chan struct{}
+	waitErr error
+	mutex   sync.Mutex
+
+	// stopOnce ensures only the first Stop signals the process.
+	stopOnce sync.Once
+
+	// Test seams; nil in production (see backend_ready_test.go).
+	newCommandFn     func(ctx context.Context, name string, args ...string) *exec.Cmd
+	dialVsockFn      func(port uint32) (net.Conn, error)
+	readVMMLogTailFn func() string
+	stopFn           func(ctx context.Context) error
 }
 
 func (m *LinuxMachine) Start(ctx context.Context) error {
 	if m.started {
 		return nil
+	}
+
+	// generateFirecrackerConfig uses KernelArgs verbatim when set, which would
+	// drop matchlock.swap=. Create rejects that combination, but guard here too
+	// so a machine assembled without Create cannot silently boot without swap.
+	if err := vm.ValidateSwapDisks(m.config); err != nil {
+		return err
 	}
 
 	fcConfig := m.generateFirecrackerConfig()
@@ -137,10 +204,18 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		return errx.Wrap(ErrWriteConfig, err)
 	}
 
-	m.cmd = exec.CommandContext(ctx, firecracker.ResolveFirecrackerPath(),
+	name := firecracker.ResolveFirecrackerPath()
+	args := []string{
 		"--api-sock", m.config.SocketPath,
 		"--config-file", configPath,
-	)
+	}
+	var cmd *exec.Cmd
+	if m.newCommandFn != nil {
+		cmd = m.newCommandFn(ctx, name, args...)
+	} else {
+		cmd = exec.CommandContext(ctx, name, args...)
+	}
+	m.cmd = cmd
 
 	if m.config.LogPath != "" {
 		logFile, err := os.OpenFile(m.config.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0644)
@@ -158,6 +233,19 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 	m.pid = m.cmd.Process.Pid
 	m.started = true
 
+	// Exactly one goroutine calls Wait; the raw error is memoized and done is
+	// closed once so waitForReady/Stop/Wait share the single wait result.
+	m.mutex.Lock()
+	m.done = make(chan struct{})
+	m.mutex.Unlock()
+	go func() {
+		err := m.cmd.Wait()
+		m.mutex.Lock()
+		m.waitErr = err
+		m.mutex.Unlock()
+		close(m.done)
+	}()
+
 	if m.tapName != "" {
 		// Give Firecracker a moment to open the TAP device, then configure it.
 		time.Sleep(100 * time.Millisecond)
@@ -169,13 +257,21 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 		}
 		_ = ConfigureInterface(m.tapName, subnetCIDR)
 		_ = SetMTU(m.tapName, effectiveMTU(m.config.MTU))
+
+		// Firecracker resets the interface when it opens the TAP, so the IPv6
+		// address Create installed is re-applied here too. Best effort like the
+		// IPv4 re-configuration above: Create already rejected a malformed link,
+		// and the guest boot waits on the ready signal either way.
+		if link, hasLink, err := ParseIPv6Link(m.config); err == nil && hasLink {
+			_ = ConfigureInterfaceIPv6(m.tapName, link.TapCIDR())
+		}
 	}
 
 	// Wait for VM to be ready
 	if m.config.VsockCID > 0 {
 		if err := m.waitForReady(ctx, 30*time.Second); err != nil {
 			m.Stop(ctx)
-			return errx.Wrap(ErrVMNotReady, err)
+			return err
 		}
 	} else {
 		// Fallback: wait a bit for boot
@@ -197,8 +293,15 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return errx.Wrap(ErrVMNotReady, ctx.Err())
 		default:
+		}
+
+		// A VMM that has already exited will never signal ready. Surface the
+		// real reason from its log (e.g. a rejected --config-file) instead of
+		// waiting out the full timeout and reporting a generic timeout.
+		if m.vmmExited() {
+			return m.vmmExitedError()
 		}
 
 		// Try to connect to the ready port via UDS forwarded by Firecracker
@@ -225,7 +328,92 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return ErrVMReadyTimeout
+	return errx.Wrap(ErrVMNotReady, ErrVMReadyTimeout)
+}
+
+// vmmExited reports whether the VMM process has exited. It only observes the
+// wait goroutine started by Start; it never calls Wait itself.
+func (m *LinuxMachine) vmmExited() bool {
+	m.mutex.Lock()
+	done := m.done
+	m.mutex.Unlock()
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForVMMExit blocks until the single wait goroutine observes the VMM exit
+// or timeout elapses, returning true when the process was reaped. It is
+// deliberately context-independent: teardown must reap the VMM before deleting
+// its persistent TAP even when the caller's context is already canceled.
+func (m *LinuxMachine) waitForVMMExit(timeout time.Duration) bool {
+	m.mutex.Lock()
+	done := m.done
+	m.mutex.Unlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// vmmExitedError builds the error returned when the VMM exits before the ready
+// signal. It includes the tail of the VMM log, which carries the real config
+// error (e.g. "VM config error") written by Firecracker for a rejected
+// --config-file.
+func (m *LinuxMachine) vmmExitedError() error {
+	if tail := m.vmmLogTail(); tail != "" {
+		return errx.With(ErrVMNotReady, ": VMM exited before ready signal: %s", tail)
+	}
+	return errx.With(ErrVMNotReady, ": VMM exited before ready signal")
+}
+
+// vmmLogTail returns the tail of the VMM log. Tests inject readVMMLogTailFn to
+// exercise the early-exit path without a real VMM writing to LogPath.
+func (m *LinuxMachine) vmmLogTail() string {
+	if m.readVMMLogTailFn != nil {
+		return m.readVMMLogTailFn()
+	}
+	return readLogTail(m.config.LogPath)
+}
+
+// readLogTail returns up to vmmLogTailBytes of the end of path, best effort.
+func readLogTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	start := int64(0)
+	if info.Size() > vmmLogTailBytes {
+		start = info.Size() - vmmLogTailBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(f, vmmLogTailBytes))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // dialVsock connects to the guest via the Firecracker vsock UDS
@@ -234,6 +422,9 @@ func (m *LinuxMachine) waitForReady(ctx context.Context, timeout time.Duration) 
 // 2. Send "CONNECT <port>\n"
 // 3. Read "OK <assigned_port>\n" acknowledgement
 func (m *LinuxMachine) dialVsock(port uint32) (net.Conn, error) {
+	if m.dialVsockFn != nil {
+		return m.dialVsockFn(port)
+	}
 	if m.config.VsockPath == "" {
 		return nil, ErrVsockNotConfigured
 	}
@@ -272,7 +463,81 @@ func (m *LinuxMachine) DialVsock(port uint32) (net.Conn, error) {
 	return m.dialVsock(port)
 }
 
+// IPv6Link is the per-VM IPv6 guest link derived from a VMConfig: the host-side
+// gateway address that sits on the TAP, the guest address, and the prefix length
+// of the unique-local /64 the subnet allocator hands the VM.
+//
+// It is exported because every Linux VM backend installs the SAME link on its
+// own TAP: the Firecracker path here and the QEMU TCG path (pkg/vm/qemu) both
+// call ParseIPv6Link and then ConfigureInterfaceIPv6/IPv6KernelArg, so the two
+// backends cannot drift apart. A backend that skips the install leaves the
+// sandbox's proxy bound to an address that does not exist (EADDRNOTAVAIL) while
+// the ip6 table is already fail-closed for a guest with no IPv6.
+type IPv6Link struct {
+	Gateway   string
+	Guest     string
+	PrefixLen int
+}
+
+// TapCIDR is the address/prefix to configure on the TAP. It always carries the
+// gateway address (never a network address), so a Subnet6CIDR supplied in
+// network form still puts the gateway on the link.
+func (l IPv6Link) TapCIDR() string {
+	return fmt.Sprintf("%s/%d", l.Gateway, l.PrefixLen)
+}
+
+// KernelArg is the matchlock.ipv6=<guest>/<prefixlen>,<gateway> cmdline field.
+// guest-init uses it to configure the guest address and its ::/0 route, because
+// the kernel ip= boot argument configures IPv4 only.
+func (l IPv6Link) KernelArg() string {
+	return fmt.Sprintf(" matchlock.ipv6=%s/%d,%s", l.Guest, l.PrefixLen, l.Gateway)
+}
+
+// ParseIPv6Link derives the optional IPv6 guest link of a VMConfig. It is the
+// shared entry point of every Linux backend (see IPv6Link). hasLink is
+// false when the config carries no IPv6 fields at all (IPv4-only sandbox or
+// --no-network), which keeps those boot args and TAP configurations
+// byte-identical to before; a partially-set or malformed link is an error
+// rather than a silently missing half-configured link.
+func ParseIPv6Link(cfg *vm.VMConfig) (IPv6Link, bool, error) {
+	if cfg == nil || cfg.GatewayIPv6 == "" || cfg.GuestIPv6 == "" || cfg.Subnet6CIDR == "" {
+		return IPv6Link{}, false, nil
+	}
+	for _, addr := range []string{cfg.GatewayIPv6, cfg.GuestIPv6} {
+		ip := net.ParseIP(addr)
+		if ip == nil || ip.To4() != nil {
+			return IPv6Link{}, false, errx.With(ErrInvalidIPv6Address, ": %q is not an IPv6 address", addr)
+		}
+	}
+	_, ipNet, err := net.ParseCIDR(cfg.Subnet6CIDR)
+	if err != nil {
+		return IPv6Link{}, false, errx.With(ErrInvalidCIDR, " %s: %w", cfg.Subnet6CIDR, err)
+	}
+	prefixLen, bits := ipNet.Mask.Size()
+	if bits != 128 {
+		return IPv6Link{}, false, errx.With(ErrInvalidCIDR, ": %s is not an IPv6 CIDR", cfg.Subnet6CIDR)
+	}
+	return IPv6Link{Gateway: cfg.GatewayIPv6, Guest: cfg.GuestIPv6, PrefixLen: prefixLen}, true, nil
+}
+
+// IPv6KernelArg returns the matchlock.ipv6= cmdline field for cfg, or "" when no
+// IPv6 link is configured. A malformed link can only reach a boot arg if the
+// backend is driven without Create, which validates the same derivation before
+// any host resource is created.
+func IPv6KernelArg(cfg *vm.VMConfig) string {
+	link, hasLink, err := ParseIPv6Link(cfg)
+	if err != nil || !hasLink {
+		return ""
+	}
+	return link.KernelArg()
+}
+
 func (m *LinuxMachine) generateFirecrackerConfig() []byte {
+	// One effective vCPU count drives both the VMM machine-config and the
+	// guest's matchlock.cpus= boot arg, so the guest never sees more CPUs than
+	// the VMM was given. Create rejects explicit overshoot, but cap here too so
+	// the two values stay consistent even if a caller bypasses Create.
+	vcpus := effectiveVCPUs(m.config.CPUs)
 	kernelArgs := m.config.KernelArgs
 	if kernelArgs == "" {
 		workspace := m.config.Workspace
@@ -284,9 +549,13 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if workspace != "" {
 			workspaceArg = " matchlock.workspace=" + workspace
 		}
+		exactArg := ""
+		if len(m.config.ExactMounts) > 0 {
+			exactArg = " matchlock.exact.mounts=" + strings.Join(m.config.ExactMounts, ",")
+		}
 
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s matchlock.dns=%s",
-			hostname, workspaceArg, vm.KernelDNSParam(m.config.DNSServers))
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off init=/init hostname=%s%s%s matchlock.dns=%s",
+			hostname, workspaceArg, exactArg, vm.KernelDNSParam(m.config.DNSServers))
 		if m.config.NoNetwork {
 			kernelArgs += " ip=off matchlock.no_network=1"
 		} else {
@@ -301,11 +570,14 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 			mtu := effectiveMTU(m.config.MTU)
 			kernelArgs += fmt.Sprintf(" ip=%s::%s:255.255.255.0::eth0:off%s matchlock.mtu=%d",
 				guestIP, gatewayIP, vm.KernelIPDNSSuffix(m.config.DNSServers), mtu)
+			// The kernel ip= argument is IPv4-only, so the IPv6 address and
+			// default route travel in their own field next to it.
+			kernelArgs += IPv6KernelArg(m.config)
 		}
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
-		kernelArgs += fmt.Sprintf(" matchlock.cpus=%g", m.config.CPUs)
+		kernelArgs += fmt.Sprintf(" matchlock.cpus=%d", vcpus)
 		devLetter := 'b' // vda is rootfs
 		if m.config.OverlayEnabled {
 			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))
@@ -331,6 +603,12 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		for _, disk := range m.config.ExtraDisks {
 			dev := fmt.Sprintf("vd%c", devLetter)
 			devLetter++
+			if disk.Swap {
+				// Swap is never mounted; tell guest-init which device to
+				// swapon instead of emitting a mount spec.
+				kernelArgs += fmt.Sprintf(" matchlock.swap=%s", dev)
+				continue
+			}
 			diskMount := diskKernelArg(disk)
 			kernelArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 		}
@@ -399,7 +677,7 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 	cfg.BootSource.KernelImagePath = m.config.KernelPath
 	cfg.BootSource.BootArgs = kernelArgs
 	cfg.Drives = drives
-	cfg.MachineConfig.VCPUCount = int(math.Ceil(m.config.CPUs))
+	cfg.MachineConfig.VCPUCount = vcpus
 	cfg.MachineConfig.MemSizeMiB = m.config.MemoryMB
 	cfg.NetworkInterfaces = make([]struct {
 		IfaceID     string `json:"iface_id"`
@@ -456,45 +734,76 @@ func effectiveMTU(mtu int) int {
 	return api.DefaultNetworkMTU
 }
 
+// effectiveVCPUs rounds cpus up to a whole vCPU count and caps it at the
+// Firecracker maximum. The result is the single source of truth for both the
+// VMM machine-config and the guest's matchlock.cpus= boot arg.
+func effectiveVCPUs(cpus float64) int {
+	v := int(math.Ceil(cpus))
+	if v < 1 {
+		return 1
+	}
+	if v > api.MaxFirecrackerVCPUs {
+		return api.MaxFirecrackerVCPUs
+	}
+	return v
+}
+
 func (m *LinuxMachine) Stop(ctx context.Context) error {
-	if m.cmd == nil || m.cmd.Process == nil {
+	if m.stopFn != nil {
+		return m.stopFn(ctx)
+	}
+
+	m.mutex.Lock()
+	cmd := m.cmd
+	done := m.done
+	m.mutex.Unlock()
+
+	if cmd == nil || cmd.Process == nil || done == nil {
 		return nil
 	}
 
-	// Check if process already exited
-	if m.cmd.ProcessState != nil && m.cmd.ProcessState.Exited() {
+	// Fast path: the wait goroutine already observed the exit.
+	select {
+	case <-done:
 		return nil
+	default:
 	}
 
-	if err := m.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		// Process already finished is not an error
-		if err.Error() == "os: process already finished" {
-			return nil
+	// Idempotent: only the first Stop signals the process.
+	m.stopOnce.Do(func() {
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			_ = cmd.Process.Kill()
 		}
-		return m.cmd.Process.Kill()
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := m.cmd.Process.Wait()
-		done <- err
-	}()
+	})
 
 	select {
 	case <-done:
 		return nil
 	case <-time.After(5 * time.Second):
-		return m.cmd.Process.Kill()
+		return cmd.Process.Kill()
 	case <-ctx.Done():
-		return m.cmd.Process.Kill()
+		return cmd.Process.Kill()
 	}
 }
 
 func (m *LinuxMachine) Wait(ctx context.Context) error {
-	if m.cmd == nil {
+	m.mutex.Lock()
+	done := m.done
+	cmd := m.cmd
+	m.mutex.Unlock()
+	if cmd == nil || done == nil {
 		return nil
 	}
-	return m.cmd.Wait()
+
+	select {
+	case <-done:
+		m.mutex.Lock()
+		err := m.waitErr
+		m.mutex.Unlock()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *LinuxMachine) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
@@ -693,15 +1002,11 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 		return 1, errx.Wrap(ErrExecEncodeRequest, err)
 	}
 
-	// Send TTY exec request
-	header := make([]byte, 5)
-	header[0] = vsock.MsgTypeExecTTY
-	binary.BigEndian.PutUint32(header[1:], uint32(len(reqData)))
-
-	if _, err := conn.Write(header); err != nil {
-		return 1, errx.Wrap(ErrExecWriteHeader, err)
-	}
-	if _, err := conn.Write(reqData); err != nil {
+	// One FrameWriter for the whole session so the initial ExecTTY frame and
+	// every concurrent stdin/resize/signal frame are single locked writes and
+	// cannot interleave each other's header and payload.
+	fw := vsock.NewFrameWriter(conn)
+	if err := fw.Send(vsock.MsgTypeExecTTY, reqData); err != nil {
 		return 1, errx.Wrap(ErrExecWriteRequest, err)
 	}
 
@@ -748,7 +1053,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 {
-				vsock.SendMessage(conn, vsock.MsgTypeStdin, buf[:n])
+				fw.Send(vsock.MsgTypeStdin, buf[:n])
 			}
 			if err != nil {
 				return
@@ -762,7 +1067,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 			data := make([]byte, 4)
 			binary.BigEndian.PutUint16(data[0:2], size[0]) // rows
 			binary.BigEndian.PutUint16(data[2:4], size[1]) // cols
-			vsock.SendMessage(conn, vsock.MsgTypeResize, data)
+			fw.Send(vsock.MsgTypeResize, data)
 		}
 	}()
 
@@ -772,7 +1077,7 @@ func (m *LinuxMachine) ExecInteractive(ctx context.Context, command string, opts
 	case err := <-errCh:
 		return 1, err
 	case <-ctx.Done():
-		vsock.SendMessage(conn, vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
+		fw.Send(vsock.MsgTypeSignal, []byte{byte(syscall.SIGTERM)})
 		return 1, ctx.Err()
 	}
 }
@@ -815,8 +1120,16 @@ func (m *LinuxMachine) Close(ctx context.Context) error {
 		if err := m.Stop(ctx); err != nil {
 			errs = append(errs, errx.Wrap(ErrStop, err))
 		}
-		// Wait for process to fully exit
-		m.cmd.Wait()
+		// Always wait for the single Wait goroutine to observe the VMM exit
+		// before tearing down the TAP. Wait(ctx) is context-sensitive and Close
+		// is routinely called with an already-canceled context (e.g. a zero
+		// --graceful-shutdown window), so waiting on ctx would return while the
+		// VMM is still dying. DeleteInterface then races the still-attached
+		// persistent TAP and fails with EBUSY, leaking the interface. Do not
+		// call cmd.Wait again: the Start goroutine owns that one-shot wait.
+		if !m.waitForVMMExit(vmmExitWaitTimeout) {
+			errs = append(errs, errx.With(ErrStop, ": timeout waiting for VMM to exit before TAP teardown"))
+		}
 	}
 
 	if m.tapFD > 0 {

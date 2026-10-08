@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
+	"github.com/jingkaihe/matchlock/pkg/image"
 )
 
 // DefaultWorkspace is the conventional mount point for the VFS in the guest.
@@ -22,6 +23,10 @@ const (
 	DefaultTimeoutSeconds         = 300
 	DefaultNetworkMTU             = 1500
 	DefaultGracefulShutdownPeriod = 0
+	// maxSwapMB caps the requested guest swap device size in megabytes. It is
+	// well below the u32 last_page ceiling of the version-1 swap header (which
+	// supports ~16 TiB at 4 KiB pages), so the cap is also format-safe.
+	maxSwapMB = 65536
 )
 
 type ImageConfig struct {
@@ -46,6 +51,11 @@ type Config struct {
 	Env              map[string]string `json:"env,omitempty"`
 	ExtraDisks       []DiskMount       `json:"extra_disks,omitempty"`
 	ImageCfg         *ImageConfig      `json:"image_config,omitempty"`
+	// ImageIdentity, when non-nil, pins the resolved image identity that RPC
+	// create must match against the actual built/resolved image BEFORE the VM is
+	// created or started. When nil, VM creation preserves legacy behavior (no
+	// identity check).
+	ImageIdentity *image.Identity `json:"image_identity,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -72,8 +82,46 @@ type Resources struct {
 	CPUs           float64       `json:"cpus,omitempty"`
 	MemoryMB       int           `json:"memory_mb,omitempty"`
 	DiskSizeMB     int           `json:"disk_size_mb,omitempty"`
+	SwapMB         int           `json:"swap_mb,omitempty"`
 	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
 	Timeout        time.Duration `json:"-"`
+}
+
+// Validate checks resource config invariants.
+//
+// The swap size bound and the negative-value rejection live here (rather than
+// only in the CLI) so that every caller — CLI, JSON-RPC create, and the
+// SDK/sandbox path — is subject to the same checks and cannot bypass them by
+// constructing api.Config directly.
+//
+// Zero is always valid and means "unset"/"use default" (for SwapMB it means
+// swap off); every other field must be non-negative, and CPUs must be a
+// finite value greater than zero.
+func (r *Resources) Validate() error {
+	if r == nil {
+		return nil
+	}
+	if r.CPUs != 0 && !IsValidCPUCount(r.CPUs) {
+		// 0 means "unset"/"use default" and is intentionally allowed; any
+		// non-zero value must be a finite, strictly positive vCPU count.
+		return errx.With(ErrInvalidConfig, ": resources.cpus must be > 0 (got %v)", r.CPUs)
+	}
+	if r.MemoryMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.memory_mb must be >= 0 (got %d)", r.MemoryMB)
+	}
+	if r.DiskSizeMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.disk_size_mb must be >= 0 (got %d)", r.DiskSizeMB)
+	}
+	if r.SwapMB < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.swap_mb must be >= 0 (got %d)", r.SwapMB)
+	}
+	if r.SwapMB > maxSwapMB {
+		return errx.With(ErrInvalidConfig, ": resources.swap_mb must be <= %d (got %d)", maxSwapMB, r.SwapMB)
+	}
+	if r.TimeoutSeconds < 0 {
+		return errx.With(ErrInvalidConfig, ": resources.timeout_seconds must be >= 0 (got %d)", r.TimeoutSeconds)
+	}
+	return nil
 }
 
 // DefaultDNSServers are used when no custom DNS servers are configured.
@@ -85,8 +133,13 @@ type HostIPMapping struct {
 }
 
 type NetworkConfig struct {
-	AllowedHosts    []string                   `json:"allowed_hosts,omitempty"`
-	AddHosts        []HostIPMapping            `json:"add_hosts,omitempty"`
+	AllowedHosts []string        `json:"allowed_hosts,omitempty"`
+	AddHosts     []HostIPMapping `json:"add_hosts,omitempty"`
+	// AllowPrivate lists destinations exempt from BlockPrivateIPs. Entries are
+	// host names, IP literals or CIDRs, optionally suffixed with :port (or
+	// [v6]:port); a bare entry matches any port. It only lifts the private
+	// block and never widens AllowedHosts or overrides NoNetwork.
+	AllowPrivate    []string                   `json:"allow_private,omitempty"`
 	BlockPrivateIPs bool                       `json:"block_private_ips,omitempty"`
 	NoNetwork       bool                       `json:"no_network,omitempty"`
 	Intercept       bool                       `json:"intercept,omitempty"`
@@ -128,6 +181,9 @@ func (n *NetworkConfig) Validate() error {
 	if len(n.AllowedHosts) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.allowed_hosts")
 	}
+	if len(n.AllowPrivate) > 0 {
+		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.allow_private")
+	}
 	if len(n.Secrets) > 0 {
 		return errx.With(ErrInvalidConfig, ": network.no_network cannot be combined with network.secrets")
 	}
@@ -147,10 +203,17 @@ type Secret struct {
 }
 
 type VFSConfig struct {
-	Workspace    string                 `json:"workspace,omitempty"`
-	DirectMounts map[string]DirectMount `json:"direct_mounts,omitempty"`
-	Mounts       map[string]MountConfig `json:"mounts,omitempty"`
-	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
+	// Workspace is the conventional mount point for the VFS in the guest. In
+	// exact-destination mode it is optional and may name a runtime/config
+	// staging area; otherwise every mount must live beneath it.
+	Workspace string `json:"workspace,omitempty"`
+	// ExactDestinations admits host mounts at arbitrary absolute guest paths
+	// (for example /opt/project or /root/.../worktree) rather than confining all
+	// mounts beneath Workspace. Shadowing a prohibited guest OS root is rejected.
+	ExactDestinations bool                   `json:"exact_destinations,omitempty"`
+	DirectMounts      map[string]DirectMount `json:"direct_mounts,omitempty"`
+	Mounts            map[string]MountConfig `json:"mounts,omitempty"`
+	Interception      *VFSInterceptionConfig `json:"interception,omitempty"`
 }
 
 // GetWorkspace returns the configured workspace path, or empty when unset.
@@ -216,14 +279,35 @@ func (c *Config) HasVFSMounts() bool {
 	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
 }
 
+// Validate checks all config sections. It is the shared entry point used by the
+// CLI, JSON-RPC create, and the sandbox/SDK paths so that no caller can bypass a
+// config invariant (notably the swap size cap enforced by Resources.Validate).
+// It is nil-safe at every level.
+func (c *Config) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if err := c.Resources.Validate(); err != nil {
+		return err
+	}
+	if err := c.Network.Validate(); err != nil {
+		return err
+	}
+	return c.ValidateVFS()
+}
+
 // ValidateVFS checks VFS config invariants.
 //
-// Rules:
+// Rules (legacy single-workspace mode, the default):
 // - vfs.workspace requires at least one vfs.mounts entry
 // - vfs.mounts requires a non-empty vfs.workspace
-// - vfs.interception requires at least one vfs.mounts entry
 // - vfs.workspace must be a safe absolute guest path
 // - every vfs.mounts key must be under vfs.workspace
+//
+// Rules (exact-destination mode, vfs.exact_destinations=true):
+//   - workspace is optional and, if set, must be a safe non-shadowing guest path
+//   - every vfs.mounts key may be an arbitrary absolute guest destination but
+//     must not shadow a prohibited guest OS root
 func (c *Config) ValidateVFS() error {
 	if c == nil || c.VFS == nil {
 		return nil
@@ -233,20 +317,40 @@ func (c *Config) ValidateVFS() error {
 	hasWorkspace := strings.TrimSpace(workspace) != ""
 	hasMounts := len(c.VFS.Mounts) > 0
 	hasInterception := c.VFS.Interception != nil
+	exact := c.VFS.ExactDestinations
 
-	if hasWorkspace && !hasMounts {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
-	}
-	if hasMounts && !hasWorkspace {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
-	}
 	if hasInterception && !hasMounts {
 		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
 	}
 	if !hasMounts {
+		if hasWorkspace && !exact {
+			return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
+		}
 		return nil
 	}
 
+	if exact {
+		if hasWorkspace {
+			if err := ValidateGuestMount(workspace); err != nil {
+				return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+			}
+			if err := ValidateExactDestinationMount(workspace); err != nil {
+				return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
+			}
+		}
+		if err := ValidateExactDestinationMounts(c.VFS.Mounts); err != nil {
+			return errx.With(ErrInvalidConfig, ": %v", err)
+		}
+		if err := ValidateVFSMountOwnership(c.VFS.Mounts); err != nil {
+			return errx.With(ErrInvalidConfig, ": %v", err)
+		}
+		return nil
+	}
+
+	// Legacy single-workspace confinement.
+	if !hasWorkspace {
+		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
+	}
 	if err := ValidateGuestMount(workspace); err != nil {
 		return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
 	}
@@ -287,16 +391,24 @@ func (c *Config) Merge(other *Config) *Config {
 		if result.Resources == nil {
 			result.Resources = &Resources{}
 		}
-		if other.Resources.CPUs > 0 {
+		// Merge overrides when non-zero; 0 means "leave base unchanged"
+		// (and for SwapMB, 0 means swap off). Using != 0 rather than > 0 is
+		// deliberate: negative values must survive the merge so that
+		// Config.Validate can reject them instead of silently normalizing
+		// them away to the base default.
+		if other.Resources.CPUs != 0 {
 			result.Resources.CPUs = other.Resources.CPUs
 		}
-		if other.Resources.MemoryMB > 0 {
+		if other.Resources.MemoryMB != 0 {
 			result.Resources.MemoryMB = other.Resources.MemoryMB
 		}
-		if other.Resources.DiskSizeMB > 0 {
+		if other.Resources.DiskSizeMB != 0 {
 			result.Resources.DiskSizeMB = other.Resources.DiskSizeMB
 		}
-		if other.Resources.TimeoutSeconds > 0 {
+		if other.Resources.SwapMB != 0 {
+			result.Resources.SwapMB = other.Resources.SwapMB
+		}
+		if other.Resources.TimeoutSeconds != 0 {
 			result.Resources.TimeoutSeconds = other.Resources.TimeoutSeconds
 		}
 	}
@@ -323,6 +435,9 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.ImageCfg != nil {
 		result.ImageCfg = other.ImageCfg
+	}
+	if other.ImageIdentity != nil {
+		result.ImageIdentity = other.ImageIdentity
 	}
 	return &result
 }

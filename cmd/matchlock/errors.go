@@ -7,6 +7,7 @@ var (
 	ErrGetHomeDir          = errors.New("get home dir")
 	ErrCreateCacheDir      = errors.New("create cache dir")
 	ErrCreateCacheImage    = errors.New("create cache image")
+	ErrStatCacheImage      = errors.New("stat cache image")
 	ErrTruncateCacheImage  = errors.New("truncate cache image")
 	ErrOpenLockFile        = errors.New("open lock file")
 	ErrAcquireLock         = errors.New("acquire lock")
@@ -42,9 +43,15 @@ var (
 	ErrSaveTag = errors.New("saving tag")
 )
 
+// Kernel errors
+var (
+	ErrPullKernel = errors.New("pull kernel")
+)
+
 // RPC errors
 var (
-	ErrBuildRootfs = errors.New("failed to build rootfs")
+	ErrBuildRootfs           = errors.New("failed to build rootfs")
+	ErrImageIdentityMismatch = errors.New("image identity mismatch")
 )
 
 // Run errors
@@ -73,6 +80,8 @@ var (
 	ErrPrepareDetachedIO      = errors.New("prepare detached stdio")
 	ErrStartDetachedRun       = errors.New("start detached run")
 	ErrFindDetachedVM         = errors.New("find detached VM")
+	ErrDetachedRunExited      = errors.New("detached run exited before registering a VM")
+	ErrDetachedStartupTimeout = errors.New("timed out waiting for detached run to register a VM")
 	ErrCreateSandbox          = errors.New("creating sandbox")
 	ErrStartSandbox           = errors.New("starting sandbox")
 	ErrCloseSandbox           = errors.New("closing sandbox")
@@ -91,11 +100,6 @@ var (
 	ErrTunAccess      = errors.New("/dev/net/tun access")
 	ErrNFTablesCheck  = errors.New("nf_tables availability check")
 	ErrDetermineUser  = errors.New("could not determine user")
-	ErrDownloadFailed = errors.New("download failed")
-	ErrGzipReader     = errors.New("gzip reader")
-	ErrTarReader      = errors.New("tar reader")
-	ErrCreateFile     = errors.New("create file")
-	ErrWriteFile      = errors.New("write file")
 	ErrCreateNetdev   = errors.New("create netdev group")
 	ErrAddToNetdev    = errors.New("add user to netdev group")
 	ErrChownTun       = errors.New("chown /dev/net/tun")

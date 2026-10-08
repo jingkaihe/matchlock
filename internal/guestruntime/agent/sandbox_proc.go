@@ -60,6 +60,11 @@ const (
 	capSysModule = 16 // kernel module loading
 	capSysRawio  = 17 // raw I/O port access
 	capSysBoot   = 22 // kexec_load, reboot
+	// CAP_BPF gates the bpf() syscall through bpf_capable() (CAP_SYS_ADMIN is
+	// already dropped). A workload that retained it could enumerate and detach
+	// the swap-device cgroup policy guest-init attaches at boot, so it must be
+	// dropped from the bounding set as well.
+	capBPF = 39
 )
 
 type sockFprog struct {
@@ -166,7 +171,7 @@ func runSandboxLauncher() {
 
 	if !privileged {
 		// Drop specific dangerous capabilities from the bounding set
-		for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot} {
+		for _, cap := range []uintptr{capSysPtrace, capSysAdmin, capSysModule, capSysRawio, capSysBoot, capBPF} {
 			syscall.RawSyscall(syscall.SYS_PRCTL, prCapBSetDrop, cap, 0)
 		}
 
@@ -222,7 +227,7 @@ func runSandboxLauncher() {
 	userSpec := os.Getenv("MATCHLOCK_USER")
 	os.Unsetenv("MATCHLOCK_USER")
 	if userSpec != "" {
-		uid, gid, homeDir, err := resolveUser(userSpec)
+		uid, gid, _, err := resolveUser(userSpec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "matchlock: resolve user %q: %v\n", userSpec, err)
 			os.Exit(127)
@@ -239,9 +244,9 @@ func runSandboxLauncher() {
 			fmt.Fprintf(os.Stderr, "matchlock: setuid(%d): %v\n", uid, err)
 			os.Exit(127)
 		}
-		if homeDir != "" {
-			os.Setenv("HOME", homeDir)
-		}
+		// HOME (and USER/LOGNAME/SHELL) were resolved from the effective
+		// user's passwd entry while assembling the exec environment, so do not
+		// override HOME here: a request/image HOME must reach the child intact.
 	}
 
 	// Filter out our internal env vars from the environment
@@ -377,52 +382,162 @@ func resolveGIDFrom(s, groupPath string) (int, error) {
 	return 0, errx.With(ErrGroupNotFound, ": %q", s)
 }
 
-func lookupPasswdByNameFrom(name, passwdPath string) (int, int, string, bool) {
+// passwdEntry is a single parsed /etc/passwd line.
+type passwdEntry struct {
+	Name  string
+	UID   int
+	GID   int
+	Home  string
+	Shell string
+}
+
+// isPasswdCommentOrBlank reports whether a passwd line should be ignored.
+func isPasswdCommentOrBlank(line string) bool {
+	return line == "" || strings.HasPrefix(line, "#")
+}
+
+// newPasswdEntry builds a passwdEntry from SplitN(line, ":", 7) fields. The
+// caller must have already checked that there are at least 6 fields.
+func newPasswdEntry(fields []string) passwdEntry {
+	uid, _ := strconv.Atoi(fields[2])
+	gid, _ := strconv.Atoi(fields[3])
+	shell := ""
+	if len(fields) >= 7 {
+		shell = fields[6]
+	}
+	return passwdEntry{
+		Name:  fields[0],
+		UID:   uid,
+		GID:   gid,
+		Home:  fields[5],
+		Shell: shell,
+	}
+}
+
+// lookupPasswdEntryByNameFrom scans passwdPath once for the passwd entry whose
+// login name is name. Blank and '#' comment lines are skipped. It returns false
+// when the file cannot be read or no entry matches.
+func lookupPasswdEntryByNameFrom(name, passwdPath string) (passwdEntry, bool) {
 	f, err := os.Open(passwdPath)
 	if err != nil {
-		return 0, 0, "", false
+		return passwdEntry{}, false
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "#") || line == "" {
+		if isPasswdCommentOrBlank(line) {
 			continue
 		}
 		fields := strings.SplitN(line, ":", 7)
 		if len(fields) >= 6 && fields[0] == name {
-			uid, _ := strconv.Atoi(fields[2])
-			gid, _ := strconv.Atoi(fields[3])
-			return uid, gid, fields[5], true
+			return newPasswdEntry(fields), true
 		}
 	}
-	return 0, 0, "", false
+	return passwdEntry{}, false
 }
 
-func lookupPasswdByUIDFrom(uid int, passwdPath string) (gid int, shell string, homeDir string) {
+// lookupPasswdEntryByUIDFrom scans passwdPath once for the passwd entry whose
+// numeric user id is uid. Blank and '#' comment lines are skipped. It returns
+// false when the file cannot be read or no entry matches.
+func lookupPasswdEntryByUIDFrom(uid int, passwdPath string) (passwdEntry, bool) {
 	f, err := os.Open(passwdPath)
 	if err != nil {
-		return uid, "", ""
+		return passwdEntry{}, false
 	}
 	defer f.Close()
 	uidStr := strconv.Itoa(uid)
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "#") || line == "" {
+		if isPasswdCommentOrBlank(line) {
 			continue
 		}
 		fields := strings.SplitN(line, ":", 7)
 		if len(fields) >= 6 && fields[2] == uidStr {
-			gid, _ := strconv.Atoi(fields[3])
-			shell := ""
-			if len(fields) >= 7 {
-				shell = fields[6]
-			}
-			return gid, shell, fields[5]
+			return newPasswdEntry(fields), true
 		}
 	}
-	return uid, "", ""
+	return passwdEntry{}, false
+}
+
+// lookupPasswdByNameFrom returns the uid, gid and home directory for a login
+// name. It is a thin wrapper over lookupPasswdEntryByNameFrom.
+func lookupPasswdByNameFrom(name, passwdPath string) (int, int, string, bool) {
+	entry, ok := lookupPasswdEntryByNameFrom(name, passwdPath)
+	if !ok {
+		return 0, 0, "", false
+	}
+	return entry.UID, entry.GID, entry.Home, true
+}
+
+// lookupPasswdByUIDFrom returns the gid, shell and home directory for a numeric
+// uid. When the uid has no passwd entry (or the file is missing) the gid
+// defaults to uid and shell/home are empty, matching the historical behavior.
+func lookupPasswdByUIDFrom(uid int, passwdPath string) (gid int, shell string, homeDir string) {
+	entry, ok := lookupPasswdEntryByUIDFrom(uid, passwdPath)
+	if !ok {
+		return uid, "", ""
+	}
+	return entry.GID, entry.Shell, entry.Home
+}
+
+// resolveUserEnvDefaultsFrom derives the HOME/USER/LOGNAME/SHELL defaults for
+// the effective user from its /etc/passwd entry. user is the MATCHLOCK_USER
+// spec ("name", "uid", or "uid:gid"); an empty user means uid 0 (root). HOME
+// always has a value: the passwd home directory when the entry exists and it is
+// non-empty, otherwise "/" (the default runc uses for a user with no passwd
+// entry). USER, LOGNAME and SHELL are only present when the passwd entry is
+// known, and SHELL is omitted when the passwd shell field is empty.
+func resolveUserEnvDefaultsFrom(user, passwdPath string) map[string]string {
+	uid := 0
+	if user != "" {
+		uidSpec := user
+		if i := strings.IndexByte(user, ':'); i >= 0 {
+			uidSpec = user[:i]
+		}
+		resolved, err := resolveUIDFrom(uidSpec, passwdPath)
+		if err != nil {
+			return map[string]string{"HOME": "/"}
+		}
+		uid = resolved
+	}
+
+	defaults := map[string]string{"HOME": "/"}
+	entry, ok := lookupPasswdEntryByUIDFrom(uid, passwdPath)
+	if !ok {
+		return defaults
+	}
+	if entry.Home != "" {
+		defaults["HOME"] = entry.Home
+	}
+	defaults["USER"] = entry.Name
+	defaults["LOGNAME"] = entry.Name
+	if entry.Shell != "" {
+		defaults["SHELL"] = entry.Shell
+	}
+	return defaults
+}
+
+// mergeExecEnv assembles a child environment. base is the agent's inherited
+// environment, defaults are passwd-derived values and requestEnv is the
+// per-exec environment (image ENV and CLI -e values already merged by the
+// host). A default is only added when its key is absent from requestEnv, and
+// requestEnv is appended last. For exec the last duplicate key wins, so request
+// values beat defaults and defaults beat the kernel-provided values in base.
+func mergeExecEnv(base []string, defaults, requestEnv map[string]string) []string {
+	env := make([]string, 0, len(base)+len(defaults)+len(requestEnv))
+	env = append(env, base...)
+	for k, v := range defaults {
+		if _, ok := requestEnv[k]; ok {
+			continue
+		}
+		env = append(env, k+"="+v)
+	}
+	for k, v := range requestEnv {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // wipeBytes zeros out a byte slice to remove sensitive data from memory.

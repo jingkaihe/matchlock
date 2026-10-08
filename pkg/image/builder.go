@@ -64,6 +64,7 @@ type BuildResult struct {
 	LayerDigests []string
 	Size         int64
 	Cached       bool
+	Source       string
 	OCI          *OCIConfig
 }
 
@@ -138,7 +139,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, errx.Wrap(ErrMetadata, err)
 	}
 
-	return newBuildResult(runtimeLayers, canonicalLayers, digest.String(), totalSize, false, ociConfig), nil
+	return newBuildResult(runtimeLayers, canonicalLayers, digest.String(), totalSize, false, "registry", ociConfig), nil
 }
 
 func (b *Builder) ingestImageLayers(img v1.Image) ([]LayerRef, []LayerRef, error) {
@@ -297,7 +298,7 @@ func (b *Builder) exportLayerAsTar(layer v1.Layer) (string, error) {
 	return tmpTar.Name(), nil
 }
 
-func newBuildResult(runtimeLayers, canonicalLayers []LayerRef, digest string, size int64, cached bool, oci *OCIConfig) *BuildResult {
+func newBuildResult(runtimeLayers, canonicalLayers []LayerRef, digest string, size int64, cached bool, source string, oci *OCIConfig) *BuildResult {
 	if len(canonicalLayers) == 0 {
 		canonicalLayers = runtimeLayers
 	}
@@ -315,6 +316,7 @@ func newBuildResult(runtimeLayers, canonicalLayers []LayerRef, digest string, si
 		LayerDigests:    layerDigests(runtimeLayers),
 		Size:            size,
 		Cached:          cached,
+		Source:          source,
 		OCI:             oci,
 	}
 }

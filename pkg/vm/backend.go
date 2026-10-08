@@ -2,12 +2,20 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
 
+	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
+
+// ErrSwapCustomKernelArgs reports a configuration that combines a swap disk
+// with caller-supplied kernel arguments. Backends that honor KernelArgs return
+// it verbatim, bypassing every generated matchlock.* argument (including
+// matchlock.swap=), so the swap device would be attached but never enabled.
+var ErrSwapCustomKernelArgs = errors.New("custom kernel args cannot be combined with a swap disk")
 
 // DiskConfig describes an additional block device to attach to the VM.
 type DiskConfig struct {
@@ -16,6 +24,11 @@ type DiskConfig struct {
 	ReadOnly   bool
 	OwnerUID   *uint32
 	OwnerGID   *uint32
+	// Swap marks a raw swap backing device (pre-formatted with a version-1
+	// swap header). It is attached read-write but never mounted, so GuestMount
+	// stays empty and the backend emits matchlock.swap=<dev> instead of
+	// matchlock.disk.<dev>= for it.
+	Swap bool
 }
 
 type VMConfig struct {
@@ -38,7 +51,11 @@ type VMConfig struct {
 	GatewayIP           string              // Host TAP IP (e.g., 192.168.100.1)
 	GuestIP             string              // Guest IP (e.g., 192.168.100.2)
 	SubnetCIDR          string              // CIDR notation (e.g., 192.168.100.1/24)
+	GatewayIPv6         string              // Host TAP IPv6 gateway, a per-VM unique-local address (e.g., fd00:100::1)
+	GuestIPv6           string              // Guest IPv6 address (e.g., fd00:100::2)
+	Subnet6CIDR         string              // IPv6 subnet prefix on the TAP (e.g., fd00:100::1/64); the TAP address is always GatewayIPv6
 	Workspace           string              // Guest VFS mount point (empty when VFS is disabled)
+	ExactMounts         []string            // Additional exact-destination guest paths to mount FUSE at (empty unless exact_destinations)
 	UseInterception     bool                // Use network interception (MITM proxy)
 	Privileged          bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	DNSServers          []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
@@ -48,6 +65,24 @@ type VMConfig struct {
 	NoNetwork           bool                // Disable guest network interface entirely
 	PrebuiltRootfs      string              // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks          []DiskConfig        // Additional block devices to attach
+}
+
+// ValidateSwapDisks rejects a VMConfig that requests a swap device while
+// supplying a custom KernelArgs string. A backend that uses KernelArgs
+// verbatim drops every generated matchlock.* argument, so the guest would
+// never be told to enable the attached swap device. Failing fast here keeps
+// that from becoming a silent no-op.
+func ValidateSwapDisks(cfg *VMConfig) error {
+	if cfg == nil || cfg.KernelArgs == "" {
+		return nil
+	}
+	for _, disk := range cfg.ExtraDisks {
+		if disk.Swap {
+			return errx.With(ErrSwapCustomKernelArgs,
+				": kernel args would drop the swap device at %q", disk.HostPath)
+		}
+	}
+	return nil
 }
 
 type Backend interface {

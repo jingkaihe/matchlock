@@ -13,7 +13,7 @@ Before submitting a PR, make sure the test suites pass:
 
 ```bash
 mise run test              # Unit tests
-mise run test:acceptance   # Acceptance tests (requires KVM on Linux / Virtualization.framework on macOS)
+mise run test:acceptance   # Acceptance tests (KVM/Firecracker on Linux, QEMU TCG fallback, or Virtualization.framework on macOS). Set MATCHLOCK_BACKEND to select a Linux backend.
 ```
 
 You only need to run acceptance tests on the platform you're developing on.

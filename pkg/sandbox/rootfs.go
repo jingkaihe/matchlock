@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,13 @@ import (
 )
 
 const defaultBootstrapRootfsMB = 64
+
+// swapPageSize is the guest page size assumed by the Linux version-1 swap
+// header. x86_64 is always 4K; arm64 is pinned to 4K via CONFIG_ARM64_4K_PAGES.
+const swapPageSize = 4096
+
+// swapMagic is the 10-byte magic terminating the first page of a swap device.
+const swapMagic = "SWAPSPACE2"
 
 func createExt4Image(path string, sizeMB int64) error {
 	if sizeMB <= 0 {
@@ -45,6 +53,69 @@ func createExt4Image(path string, sizeMB int64) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(path)
 		return errx.With(ErrCreateRootfs, ": mke2fs %s: %w: %s", path, err, out)
+	}
+	return nil
+}
+
+// createSwapImage writes a Linux version-1 swap header into a fresh sparse
+// image of sizeMB megabytes. It is pure Go so swap provisioning works on macOS
+// hosts without mkswap. The image is attached to the guest as a raw block
+// device; only page 0 carries the header and the remaining pages stay sparse
+// until the guest writes to them.
+func createSwapImage(path string, sizeMB int64) error {
+	if sizeMB <= 0 {
+		return errx.With(ErrCreateRootfs, ": invalid swap size %dMB", sizeMB)
+	}
+	sizeBytes := sizeMB * 1024 * 1024
+	if sizeBytes%swapPageSize != 0 {
+		// sizeMB is whole megabytes, so this is defensive: it guarantees the
+		// header never claims a last_page that does not match the real device.
+		return errx.With(ErrCreateRootfs, ": swap size %dMB is not %d-byte page-aligned", sizeMB, swapPageSize)
+	}
+	return writeSwapImage(path, sizeBytes)
+}
+
+// writeSwapImage writes the version-1 swap header into a sparse image of
+// exactly sizeBytes. sizeBytes must be a positive multiple of swapPageSize.
+func writeSwapImage(path string, sizeBytes int64) error {
+	if sizeBytes <= 0 {
+		return errx.With(ErrCreateRootfs, ": invalid swap image size %d bytes", sizeBytes)
+	}
+	if sizeBytes%swapPageSize != 0 {
+		return errx.With(ErrCreateRootfs, ": swap image size %d bytes is not %d-byte page-aligned", sizeBytes, swapPageSize)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return errx.With(ErrCreateRootfs, ": create %s: %w", path, err)
+	}
+	if err := f.Truncate(sizeBytes); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return errx.With(ErrCreateRootfs, ": truncate %s: %w", path, err)
+	}
+
+	// Page 0 layout (little-endian): 1024 bootbits zero, version, last_page,
+	// nr_badpages, then the SWAPSPACE2 magic ending the page.
+	header := make([]byte, swapPageSize)
+	binary.LittleEndian.PutUint32(header[1024:1028], 1)
+	binary.LittleEndian.PutUint32(header[1028:1032], uint32(sizeBytes/swapPageSize-1))
+	binary.LittleEndian.PutUint32(header[1032:1036], 0)
+	copy(header[swapPageSize-len(swapMagic):], swapMagic)
+
+	if _, err := f.WriteAt(header, 0); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return errx.With(ErrCreateRootfs, ": write swap header %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return errx.With(ErrCreateRootfs, ": sync %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return errx.With(ErrCreateRootfs, ": close %s: %w", path, err)
 	}
 	return nil
 }

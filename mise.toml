@@ -387,6 +387,10 @@ go build -ldflags="$LDFLAGS" -o ./bin/matchlock-darwin-arm64 ./cmd/matchlock/
 echo "Built: matchlock-darwin-arm64"
 """
 
+[tasks."check:darwin"]
+description = "Prove the module's test surface cross-compiles for darwin/arm64 from the Linux host"
+run = "scripts/darwin-crosscompile-gate.sh"
+
 [tasks."cross-build:guest"]
 description = "Cross-compile guest binaries for all architectures"
 run = """

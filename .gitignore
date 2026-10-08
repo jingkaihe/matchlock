@@ -29,6 +29,20 @@ coverage.txt
 .DS_Store
 Thumbs.db
 
+# Secrets and local environment
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.secret
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
 # Build artifacts
 *.img
 *.ext4

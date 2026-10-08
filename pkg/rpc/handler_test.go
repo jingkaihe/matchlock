@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jingkaihe/matchlock/internal/testutil"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 )
@@ -744,6 +747,56 @@ func TestHandlerCreateRejectsUserProvidedID(t *testing.T) {
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
 }
 
+// TestHandlerCreateRejectsNegativeSwapMB is the RPC-level regression for the
+// merge-ordering validation bypass: create must reject swap_mb: -1 at the
+// boundary instead of merging it away to the default 0 (swap off).
+func TestHandlerCreateRejectsNegativeSwapMB(t *testing.T) {
+	factoryCalls := 0
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		factoryCalls++
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"resources": map[string]interface{}{
+			"swap_mb": -1,
+		},
+	})
+
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "expected create to fail for negative swap_mb")
+	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
+	require.Contains(t, msg.Error.Message, "swap_mb")
+	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+// TestHandlerCreatePassesSwapMBToFactory guards the valid path: a positive
+// swap_mb still merges through and reaches the VM factory unchanged.
+func TestHandlerCreatePassesSwapMBToFactory(t *testing.T) {
+	var got *api.Config
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		got = config
+		return &mockVM{id: "vm-test"}, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]interface{}{
+		"image": "alpine:latest",
+		"resources": map[string]interface{}{
+			"swap_mb": 512,
+		},
+	})
+
+	msg := rpc.read()
+	require.Nil(t, msg.Error)
+	require.NotNil(t, got)
+	require.NotNil(t, got.Resources)
+	require.Equal(t, 512, got.Resources.SwapMB)
+	require.Equal(t, api.DefaultMemoryMB, got.Resources.MemoryMB, "unset fields must keep their defaults")
+}
+
 func TestHandlerCreateRejectsSecretPlaceholderOverlapWithGeneratedFormat(t *testing.T) {
 	factoryCalls := 0
 	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
@@ -1142,4 +1195,216 @@ func TestHandlerAllowListAddRequiresHosts(t *testing.T) {
 	require.NotNil(t, msg.Error)
 	assert.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
 	assert.Contains(t, msg.Error.Message, "hosts is required")
+}
+
+// mockExecRelayVM is a VM whose backend implements the optional execRelayVM
+// hook. StartExecRelay starts a real relay on the requested path so tests can
+// observe both the recorded socket path and whether the relay still accepts
+// connections after close/replace.
+type mockExecRelayVM struct {
+	mockVM
+
+	mu         sync.Mutex
+	socketPath string
+	relay      *sandbox.ExecRelay
+	startErr   error
+	closed     bool
+}
+
+func (m *mockExecRelayVM) StartExecRelay(socketPath string) (*sandbox.ExecRelay, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.socketPath = socketPath
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		return nil, err
+	}
+	if m.startErr != nil {
+		return nil, m.startErr
+	}
+
+	relay := sandbox.NewExecRelay(nil)
+	if err := relay.Start(socketPath); err != nil {
+		return nil, err
+	}
+	m.relay = relay
+	return relay, nil
+}
+
+func (m *mockExecRelayVM) Close(context.Context) error {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *mockExecRelayVM) recordedSocketPath() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.socketPath
+}
+
+func (m *mockExecRelayVM) wasClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
+}
+
+func stopMockRelay(t *testing.T, vm *mockExecRelayVM) {
+	t.Helper()
+	t.Cleanup(func() {
+		vm.mu.Lock()
+		relay := vm.relay
+		vm.mu.Unlock()
+		if relay != nil {
+			relay.Stop()
+		}
+	})
+}
+
+func assertRelayRunning(t *testing.T, socketPath string) {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err, "relay at %s should accept connections", socketPath)
+	_ = conn.Close()
+}
+
+func assertRelayStopped(t *testing.T, socketPath string) {
+	t.Helper()
+	conn, err := net.Dial("unix", socketPath)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("relay at %s still accepting connections", socketPath)
+	}
+}
+
+func TestHandlerCreateStartsExecRelay(t *testing.T) {
+	home := testutil.ShortTempDir(t)
+	t.Setenv("HOME", home)
+
+	vm := &mockExecRelayVM{mockVM: mockVM{id: "vm-relay"}}
+	stopMockRelay(t, vm)
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed")
+
+	wantPath := filepath.Join(home, ".matchlock", "vms", "vm-relay", "exec.sock")
+	testutil.RequireSockPathFits(t, wantPath)
+	assert.Equal(t, wantPath, vm.recordedSocketPath())
+	assertRelayRunning(t, wantPath)
+}
+
+func TestHandlerCloseStopsExecRelay(t *testing.T) {
+	home := testutil.ShortTempDir(t)
+	t.Setenv("HOME", home)
+
+	vm := &mockExecRelayVM{mockVM: mockVM{id: "vm-relay"}}
+	stopMockRelay(t, vm)
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	require.Nil(t, rpc.read().Error, "create failed")
+
+	rpc.send("close", 2, map[string]interface{}{})
+	require.Nil(t, rpc.read().Error, "close failed")
+
+	wantPath := filepath.Join(home, ".matchlock", "vms", "vm-relay", "exec.sock")
+	testutil.RequireSockPathFits(t, wantPath)
+	assertRelayStopped(t, wantPath)
+}
+
+func TestHandlerCreateStopsPreviousExecRelay(t *testing.T) {
+	home := testutil.ShortTempDir(t)
+	t.Setenv("HOME", home)
+
+	var (
+		mu  sync.Mutex
+		vms []*mockExecRelayVM
+	)
+	factory := func(ctx context.Context, config *api.Config) (VM, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		vm := &mockExecRelayVM{mockVM: mockVM{id: fmt.Sprintf("vm-relay-%d", len(vms))}}
+		vms = append(vms, vm)
+		return vm, nil
+	}
+
+	rpc := newTestRPCWithFactory(factory)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	require.Nil(t, rpc.read().Error, "first create failed")
+
+	mu.Lock()
+	first := vms[0]
+	firstPath := first.recordedSocketPath()
+	mu.Unlock()
+	stopMockRelay(t, first)
+	assertRelayRunning(t, firstPath)
+
+	rpc.send("create", 2, map[string]string{"image": "alpine:latest"})
+	require.Nil(t, rpc.read().Error, "second create failed")
+
+	mu.Lock()
+	require.Len(t, vms, 2)
+	first = vms[0]
+	second := vms[1]
+	mu.Unlock()
+	stopMockRelay(t, second)
+
+	testutil.RequireSockPathFits(t, firstPath)
+	testutil.RequireSockPathFits(t, second.recordedSocketPath())
+	assertRelayStopped(t, firstPath)
+	assertRelayRunning(t, second.recordedSocketPath())
+	assert.NotEqual(t, first.recordedSocketPath(), second.recordedSocketPath())
+}
+
+func TestHandlerCreateWithoutExecRelayVM(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	vm := &mockVM{id: "vm-plain"}
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.Nil(t, msg.Error, "create failed for VM without relay support")
+
+	_, err := os.Stat(filepath.Join(home, ".matchlock", "vms", "vm-plain", "exec.sock"))
+	require.True(t, os.IsNotExist(err), "no relay socket should be created for a VM without relay support")
+}
+
+func TestHandlerCreateFailsWhenExecRelayStartFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	vm := &mockExecRelayVM{
+		mockVM:   mockVM{id: "vm-relay-fail"},
+		startErr: errors.New("listen denied"),
+	}
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.NotNil(t, msg.Error, "create should fail when the exec relay cannot start")
+	assert.Equal(t, ErrCodeVMFailed, msg.Error.Code)
+	assert.Contains(t, msg.Error.Message, "start exec relay")
+	assert.True(t, vm.wasClosed(), "VM should be closed on relay start failure")
 }

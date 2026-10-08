@@ -19,6 +19,18 @@ type HTTPInterceptor struct {
 	events   chan api.Event
 	caPool   *CAPool
 	connPool *upstreamConnPool
+	// gatewayIP is the guest-visible virtual gateway of the darwin userspace
+	// network stack. On darwin that address is assigned to the netstack NIC but
+	// is NOT bound on the host (there is no TAP), so a dial to it can never
+	// connect. When it is set, a policy-verified dial address equal to it is
+	// mapped to host loopback (see mapGatewayDialHost). It is left empty by
+	// NewHTTPInterceptor, so the Linux TransparentProxy path dials every
+	// destination literally: its TAP gateway IS a real host address.
+	gatewayIP string
+	// dial is used for upstream connections. It defaults to a 30s timeout dial
+	// and is a seam for tests that need to observe the dial target or avoid real
+	// network traffic.
+	dial func(network, addr string) (net.Conn, error)
 }
 
 func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool) *HTTPInterceptor {
@@ -27,7 +39,78 @@ func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPoo
 		events:   events,
 		caPool:   caPool,
 		connPool: newUpstreamConnPool(),
+		dial:     defaultDial,
 	}
+}
+
+// defaultDial opens a TCP connection with the upstream dial timeout.
+func defaultDial(network, addr string) (net.Conn, error) {
+	return net.DialTimeout(network, addr, 30*time.Second)
+}
+
+// allowedDialIPForFamily resolves host (which may carry a port) through the
+// policy engine and returns a single verified address that the proxy may dial,
+// preferring the destination family of the intercepted connection. port is the
+// real destination port of the intercepted connection, so a port-scoped
+// allow_private exception is honored. The caller MUST dial this literal address
+// rather than the hostname, so the dial cannot be redirected by a DNS change
+// between the policy check and the dial. The returned address is drawn from the
+// verified set via selectDialIPForFamily with preferV6 == dstPrefersV6(dstIP),
+// so an IPv6-intercepted connection whose hostname is dual-stack is dialed over
+// IPv6 and never silently falls back to an unrelated IPv4 literal.
+func (i *HTTPInterceptor) allowedDialIPForFamily(host string, port int, preferV6 bool) (net.IP, bool) {
+	ips, ok := i.policy.AllowedHostIPsPort(host, port)
+	if !ok || len(ips) == 0 {
+		return nil, false
+	}
+	return selectDialIPForFamily(ips, preferV6), true
+}
+
+// dstPrefersV6 reports whether an intercepted ORIGINAL destination is an IPv6
+// literal, which is the family the proxy must dial out with so the guest's
+// IPv6 connection is not answered over an unrelated IPv4 address. Anything that
+// is not a literal IPv6 address (a hostname, an IPv4 literal, empty) keeps the
+// previous IPv4 preference.
+func dstPrefersV6(dstIP string) bool {
+	ip := net.ParseIP(dstIP)
+	return ip != nil && ip.To4() == nil
+}
+
+// selectDialIP picks the address to dial from a set that has already been
+// verified against the policy, preferring IPv4. The transparent proxy can be
+// IPv4-only (see selectDialIPForFamily for the family-aware form): a public
+// hostname that resolves AAAA-first (Go's LookupIP returns AAAA before A for a
+// dual-stack host) would otherwise be dialed at an IPv6 literal with no
+// fallback, whereas the prior hostname dial would have tried all addresses
+// (Happy Eyeballs) and fallen back to reachable IPv4. If the verified set is
+// IPv6-only it falls back to the first address, since no IPv4 alternative
+// exists. The chosen address is still a member of the policy-verified set, so
+// this does not relax the privacy check.
+func selectDialIP(ips []net.IP) net.IP {
+	return selectDialIPForFamily(ips, false)
+}
+
+// selectDialIPForFamily picks the address to dial from a policy-verified set,
+// preferring the family of the ORIGINAL destination. An IPv6-intercepted
+// connection MUST dial an IPv6 member when the set has one: the IPv4
+// preference above exists to keep an IPv6-only *dial* from failing on an
+// IPv4-only proxy, and applying it to an IPv6 destination would answer the
+// guest's IPv6 request by connecting to a different (unrelated) IPv4 address.
+// Falls back to the first address when the set has no member of the preferred
+// family, mirroring selectDialIP's IPv6-only fallback.
+func selectDialIPForFamily(ips []net.IP, preferV6 bool) net.IP {
+	for _, ip := range ips {
+		if isIPv6(ip) == preferV6 {
+			return ip
+		}
+	}
+	return ips[0]
+}
+
+// isIPv6 reports whether ip is a native IPv6 address (an IPv4 or
+// IPv4-mapped-IPv6 literal is not).
+func isIPv6(ip net.IP) bool {
+	return ip.To4() == nil
 }
 
 func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {
@@ -48,7 +131,17 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			host = dstIP
 		}
 
-		if !i.policy.IsHostAllowed(host) {
+		// Resolve the host once, verify EVERY resolved address against the
+		// policy, then bind the dial to a specific verified address. The HTTP
+		// Host header is left intact, so the upstream still sees the intended
+		// host. This removes the time-of-check-to-time-of-use escape where the
+		// dial re-resolves the hostname and may reach an address that was not
+		// checked (DNS rebinding). dstPort is the real destination port, so a
+		// port-scoped allow_private entry is enforced here.
+		// The original destination's family is the family to dial: an
+		// IPv6-intercepted request must not be answered over IPv4.
+		dialIP, ok := i.allowedDialIPForFamily(host, dstPort, dstPrefersV6(dstIP))
+		if !ok {
 			i.emitBlockedEvent(req, host, "host not in allowlist")
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
@@ -61,12 +154,16 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			return
 		}
 
-		targetHost := net.JoinHostPort(host, fmt.Sprintf("%d", dstPort))
+		// The policy decision above is on the guest-visible host; only the dial
+		// target is mapped, and only on darwin (empty gatewayIP elsewhere), so an
+		// allowlisted gateway reaches a host listener while an unallowlisted one
+		// is still refused before this point.
+		targetHost := resolvePassthroughTarget(dialIP.String(), dstPort, i.gatewayIP)
 
 		// Try to reuse an existing upstream connection from the pool.
 		pc := i.connPool.get(targetHost)
 		if pc == nil {
-			realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
+			realConn, err := i.dial("tcp", targetHost)
 			if err != nil {
 				writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
 				return
@@ -153,15 +250,37 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		serverName = dstIP
 	}
 
-	if !i.policy.IsHostAllowed(serverName) {
+	// Resolve the SNI host once, verify every resolved address against the
+	// policy, then bind the TLS dial to a specific verified address while
+	// preserving the SNI (ServerName) so certificate verification and the
+	// upstream TLS handshake still target the intended hostname. This prevents
+	// a DNS re-resolution at dial time from redirecting the TLS connection to
+	// an address that was not checked. The interceptor only serves the HTTPS
+	// destination port (443), and dstPort carries it, so a port-scoped
+	// allow_private entry is enforced here too.
+	//
+	// The original destination's family is the family to dial, so an
+	// IPv6-intercepted TLS session is not answered over an unrelated IPv4
+	// literal. Dialing stays on the "tcp" network (dual-stack) as before.
+	dialIP, ok := i.allowedDialIPForFamily(serverName, dstPort, dstPrefersV6(dstIP))
+	if !ok {
 		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
 		return
 	}
 
-	realConn, err := tls.Dial("tcp", net.JoinHostPort(serverName, fmt.Sprintf("%d", dstPort)), &tls.Config{
+	// Map the policy-verified dial address only: the TLS handshake below keeps
+	// the original serverName as SNI, and the blocked event above names the
+	// original SNI host. On darwin an allowlisted gateway maps to host loopback;
+	// elsewhere (empty gatewayIP) the literal verified address is dialed.
+	rawConn, err := i.dial("tcp", resolvePassthroughTarget(dialIP.String(), dstPort, i.gatewayIP))
+	if err != nil {
+		return
+	}
+	realConn := tls.Client(rawConn, &tls.Config{
 		ServerName: serverName,
 	})
-	if err != nil {
+	if err := realConn.Handshake(); err != nil {
+		realConn.Close()
 		return
 	}
 	defer realConn.Close()

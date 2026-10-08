@@ -3,7 +3,6 @@
 package net
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -51,9 +50,14 @@ type NetworkStack struct {
 	events      chan api.Event
 	linkEP      *socketPairEndpoint
 	dnsServers  []string
-	dnsIndex    atomic.Uint64
-	mu          sync.Mutex
-	closed      bool
+	// gatewayIP is the virtual gateway address assigned to the gVisor NIC
+	// (Config.GatewayIP). It is guest-visible only: macOS has no TAP, so the
+	// address is not bound on the host. Passthrough dials to it are mapped to
+	// host loopback by resolvePassthroughTarget.
+	gatewayIP string
+	dnsIndex  atomic.Uint64
+	mu        sync.Mutex
+	closed    bool
 }
 
 type Config struct {
@@ -316,9 +320,13 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		events:     cfg.Events,
 		linkEP:     linkEP,
 		dnsServers: cfg.DNSServers,
+		gatewayIP:  cfg.GatewayIP,
 	}
 
 	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool)
+	// Only the darwin stack maps the guest-visible virtual gateway to host
+	// loopback; the Linux TransparentProxy leaves this empty.
+	ns.interceptor.gatewayIP = cfg.GatewayIP
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
@@ -352,7 +360,9 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
 		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
-		if !ns.policy.IsHostAllowed(host) {
+		// Port-aware policy check so a port-scoped allow_private entry is
+		// honored; the destination is the ORIGINAL guest-visible one.
+		if !ns.policy.IsHostAllowedPort(dstIP, int(dstPort)) {
 			ns.emitBlockedEvent(host, "host not in allowlist")
 			guestConn.Close()
 			return
@@ -364,49 +374,41 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 func (ns *NetworkStack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
 	defer guestConn.Close()
 
-	if !ns.policy.IsHostAllowed(dstIP) {
+	// Policy is always evaluated against the ORIGINAL guest-visible destination,
+	// never the mapped dial target: removing the gateway IP from the allowlist
+	// must still close alt-port TCP.
+	if !ns.policy.IsHostAllowedPort(dstIP, int(dstPort)) {
 		ns.emitBlockedEvent(net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)), "host not in allowlist")
 		return
 	}
 
-	realConn, err := net.Dial("tcp", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)))
+	// On darwin the guest's default route points at the gVisor netstack's
+	// virtual gateway, which is not a host address. Dial host loopback for that
+	// one address; every other destination dials literally.
+	dialTarget := resolvePassthroughTarget(dstIP, dstPort, ns.gatewayIP)
+
+	realConn, err := net.Dial("tcp", dialTarget)
 	if err != nil {
+		slog.Debug("passthrough dial failed",
+			"destination", net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort)),
+			"dialTarget", dialTarget,
+			"error", err,
+		)
 		return
 	}
 	defer realConn.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		copyWithCancel(ctx, realConn, guestConn)
-		cancel()
-	}()
-	go func() {
-		copyWithCancel(ctx, guestConn, realConn)
-		cancel()
-	}()
-
-	<-ctx.Done()
-}
-
-func copyWithCancel(ctx context.Context, dst, src net.Conn) {
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		n, err := src.Read(buf)
-		if n > 0 {
-			dst.Write(buf[:n])
-		}
-		if err != nil {
-			return
-		}
-	}
+	// Relay both directions through the shared half-close relay: each direction
+	// is copied independently and its EOF is propagated as a write-side
+	// half-close instead of tearing the connection down the moment the first
+	// direction sees EOF. A guest client that sends a request and immediately
+	// half-closes (`echo PAYLOAD | nc HOST PORT` does exactly this) must still
+	// receive the upstream response; the previous context.WithCancel version
+	// cancelled the pending upstream->guest copy on the guest's first EOF, which
+	// surfaced on the wire as a clean `RC=0` with no payload. guestConn is a
+	// *gonet.TCPConn and realConn is a *net.TCPConn, both of which implement
+	// CloseWrite, so the half-close propagates end-to-end.
+	relayHalfClose(guestConn, realConn)
 }
 
 func (ns *NetworkStack) handleUDPPacket(r *udp.ForwarderRequest) bool {
@@ -418,6 +420,11 @@ func (ns *NetworkStack) handleUDPPacket(r *udp.ForwarderRequest) bool {
 	}
 
 	// Non-DNS UDP: silently drop by not creating an endpoint.
+	//
+	// There is deliberately no UDP passthrough here, so there is no passthrough
+	// dial target to map for the virtual gateway. handleDNS dials the configured
+	// upstream DNS servers (real host addresses) directly, never the guest's
+	// gateway.
 	return true
 }
 

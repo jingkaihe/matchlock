@@ -30,6 +30,29 @@ func NewMountRouter(mounts map[string]Provider) *MountRouter {
 	return r
 }
 
+// withCaller returns a clone whose mount providers carry the requesting caller
+// identity where they support it. The VFS server invokes this per request so a
+// host_fs stat through the router reports the FUSE caller's ownership instead
+// of the provider's 0/0 default (an explicit WithOwner override still wins).
+// Only the lightweight provider wrappers are copied; the underlying roots are
+// shared.
+func (r *MountRouter) withCaller(uid, gid int) Provider {
+	if r == nil {
+		return nil
+	}
+	clone := &MountRouter{mounts: make([]mount, len(r.mounts))}
+	for i, m := range r.mounts {
+		p := m.provider
+		if aware, ok := p.(interface {
+			withCaller(uid, gid int) Provider
+		}); ok {
+			p = aware.withCaller(uid, gid)
+		}
+		clone.mounts[i] = mount{path: m.path, provider: p}
+	}
+	return clone
+}
+
 func (r *MountRouter) Readonly() bool { return false }
 
 func (r *MountRouter) resolve(path string) (Provider, string, error) {
@@ -287,6 +310,31 @@ func (r *MountRouter) Readlink(path string) (string, error) {
 		return "", err
 	}
 	return p.Readlink(rel)
+}
+
+// Link hard-links oldName to newName within the confined mounts. Both paths are
+// resolved via the router (so absolute guest paths map to their provider and a
+// path outside the mounted tree fails closed), and the link is rejected when the
+// two entries belong to different providers (EXDEV), just like a cross-device
+// hard link. Providers that do not implement Link (e.g. memory) report ENOSYS.
+func (r *MountRouter) Link(oldName, newName string) error {
+	oldP, oldRel, err := r.resolve(oldName)
+	if err != nil {
+		return err
+	}
+	newP, newRel, err := r.resolve(newName)
+	if err != nil {
+		return err
+	}
+	if oldP != newP {
+		return syscall.EXDEV
+	}
+	if linker, ok := oldP.(interface {
+		Link(oldName, newName string) error
+	}); ok {
+		return linker.Link(oldRel, newRel)
+	}
+	return syscall.ENOSYS
 }
 
 func (r *MountRouter) Fsync(path string) error {

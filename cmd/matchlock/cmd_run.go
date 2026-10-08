@@ -29,6 +29,15 @@ import (
 
 const (
 	detachedVMPollInterval = 100 * time.Millisecond
+	// detachedStartupTimeout bounds how long a detached run waits for its child
+	// to register a running VM row, so a broken startup fails loudly instead of
+	// hanging forever.
+	detachedStartupTimeout = 5 * time.Minute
+	// detachedReapGrace is how long the wait lingers for the reaper's verdict
+	// once the child is observed gone.
+	detachedReapGrace = time.Second
+	// detachedStderrTailBytes caps the captured child stderr kept for an error.
+	detachedStderrTailBytes = 4096
 )
 
 var runCmd = &cobra.Command{
@@ -85,7 +94,21 @@ Wildcard Patterns for --allow-host:
 
 Custom hosts with --add-host:
   --add-host api.internal:10.0.0.10
-  --add-host db.internal:10.0.0.11`,
+  --add-host db.internal:10.0.0.11
+
+Private-IP exemptions with --allow-private:
+  Private, link-local, CGNAT and Yggdrasil destinations are blocked by default.
+  --allow-private lifts that block for exactly the listed destinations. Entries
+  are a host name, IP literal or CIDR, optionally suffixed with :port (or
+  [v6]:port); a bare entry matches any port. Repeat the flag for more entries.
+  --allow-private never widens --allow-host and cannot be combined with
+  --no-network.
+
+  Examples:
+    --allow-private 192.168.107.74:8888
+    --allow-private 200:1234::1
+    --allow-private [fd00::1]:443
+    --allow-private 100.64.0.0/10`,
 	Example: `  matchlock run --image alpine:latest -it sh
 	  matchlock run --image python:3.12-alpine python3 -c 'print(42)'
 	  matchlock run --image alpine:latest --rm=false   # keep VM alive after exit
@@ -110,6 +133,7 @@ func init() {
 	runCmd.Flags().String("workspace", "", "Guest mount point for VFS (required with --volume)")
 	runCmd.Flags().String("kernel", "", "Guest kernel ref: file:///absolute/path or OCI image reference")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
+	runCmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination (host, IP or CIDR with optional :port; repeatable)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringArrayP("volume", "v", nil, fmt.Sprintf("Volume mount, repeatable (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount; host_fs supports uid/gid owner options)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
 	runCmd.Flags().StringArray("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:option[,option...]] or @volume_name:guest_mount[:option[,option...]])")
@@ -129,6 +153,7 @@ func init() {
 	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
 	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
 	runCmd.Flags().Int("disk-size", api.DefaultDiskSizeMB, "Disk size in MB")
+	runCmd.Flags().Int("swap", 0, "Swap device size in MB (0 = off)")
 	runCmd.Flags().BoolP("detach", "d", false, "Run sandbox in detached mode (implies --rm=false; incompatible with -t/-i)")
 	runCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
@@ -145,6 +170,7 @@ func init() {
 	viper.BindPFlag("run.workspace", runCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("run.kernel", runCmd.Flags().Lookup("kernel"))
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
+	viper.BindPFlag("run.allow-private", runCmd.Flags().Lookup("allow-private"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
 	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
@@ -163,6 +189,7 @@ func init() {
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
 	viper.BindPFlag("run.disk-size", runCmd.Flags().Lookup("disk-size"))
+	viper.BindPFlag("run.swap", runCmd.Flags().Lookup("swap"))
 	viper.BindPFlag("run.detach", runCmd.Flags().Lookup("detach"))
 	viper.BindPFlag("run.tty", runCmd.Flags().Lookup("tty"))
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
@@ -170,6 +197,49 @@ func init() {
 	viper.BindPFlag("run.rm", runCmd.Flags().Lookup("rm"))
 
 	rootCmd.AddCommand(runCmd)
+}
+
+// buildRunResources assembles the resource request from resolved `run` flag
+// values. Keeping it separate makes the CLI -> api.Resources.SwapMB
+// pass-through directly testable without booting a sandbox.
+func buildRunResources(cpus float64, memoryMB, diskSizeMB, timeoutSeconds, swapMB int) *api.Resources {
+	return &api.Resources{
+		CPUs:           cpus,
+		MemoryMB:       memoryMB,
+		DiskSizeMB:     diskSizeMB,
+		SwapMB:         swapMB,
+		TimeoutSeconds: timeoutSeconds,
+	}
+}
+
+// buildRunNetworkConfig assembles the network config from resolved `run` flag
+// values. The CLI always requests BlockPrivateIPs and uses AllowPrivate as the
+// explicit exemption list, so CLI runs never disable the private block. Keeping
+// this separate makes the flag -> api.NetworkConfig wiring testable without
+// booting a sandbox.
+func buildRunNetworkConfig(
+	allowHosts []string,
+	addHosts []api.HostIPMapping,
+	allowPrivate []string,
+	noNetwork bool,
+	networkIntercept bool,
+	secrets map[string]api.Secret,
+	dnsServers []string,
+	hostname string,
+	mtu int,
+) *api.NetworkConfig {
+	return &api.NetworkConfig{
+		AllowedHosts:    allowHosts,
+		AddHosts:        addHosts,
+		AllowPrivate:    allowPrivate,
+		BlockPrivateIPs: true,
+		NoNetwork:       noNetwork,
+		Intercept:       networkIntercept,
+		Secrets:         secrets,
+		DNSServers:      dnsServers,
+		Hostname:        hostname,
+		MTU:             mtu,
+	}
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
@@ -183,6 +253,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	cpus, _ := cmd.Flags().GetFloat64("cpus")
 	memory, _ := cmd.Flags().GetInt("memory")
 	diskSize, _ := cmd.Flags().GetInt("disk-size")
+	swapMB, _ := cmd.Flags().GetInt("swap")
 	timeout, _ := cmd.Flags().GetInt("timeout")
 
 	// Exec options
@@ -206,6 +277,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
+	allowPrivate, _ := cmd.Flags().GetStringArray("allow-private")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
 	volumes, _ := cmd.Flags().GetStringArray("volume")
 	diskMountSpecs, _ := cmd.Flags().GetStringArray("disk")
@@ -236,6 +308,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if noNetwork {
 		if len(allowHosts) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --allow-host")
+		}
+		if len(allowPrivate) > 0 {
+			return fmt.Errorf("--no-network cannot be combined with --allow-private")
 		}
 		if len(secrets) > 0 || secretFile != "" || len(secretPlaceholders) > 0 {
 			return fmt.Errorf("--no-network cannot be combined with --secret")
@@ -398,32 +473,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Image:      imageName,
 		Privileged: privileged,
 		Kernel:     &api.KernelConfig{Ref: kernelRef},
-		Resources: &api.Resources{
-			CPUs:           cpus,
-			MemoryMB:       memory,
-			DiskSizeMB:     diskSize,
-			TimeoutSeconds: timeout,
-		},
-		Network: &api.NetworkConfig{
-			AllowedHosts:    allowHosts,
-			AddHosts:        addHosts,
-			BlockPrivateIPs: true,
-			NoNetwork:       noNetwork,
-			Intercept:       networkIntercept,
-			Secrets:         parsedSecrets,
-			DNSServers:      dnsServers,
-			Hostname:        hostname,
-			MTU:             networkMTU,
-		},
+		Resources:  buildRunResources(cpus, memory, diskSize, timeout, swapMB),
+		Network: buildRunNetworkConfig(
+			allowHosts,
+			addHosts,
+			allowPrivate,
+			noNetwork,
+			networkIntercept,
+			parsedSecrets,
+			dnsServers,
+			hostname,
+			networkMTU,
+		),
 		VFS:        vfsConfig,
 		Env:        parsedEnv,
 		ExtraDisks: extraDisks,
 		ImageCfg:   imageCfg,
 	}
-	if err := config.Network.Validate(); err != nil {
-		return err
-	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return err
 	}
 
@@ -441,13 +508,13 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start exec relay server so `matchlock exec` can connect from another process
-	execRelay := sandbox.NewExecRelay(sb)
 	stateMgr := state.NewManager()
-	execSocketPath := stateMgr.ExecSocketPath(sb.ID())
-	if err := execRelay.Start(execSocketPath); err != nil {
+	execRelay, err := sb.StartExecRelay(stateMgr.ExecSocketPath(sb.ID()))
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to start exec relay: %v\n", err)
+	} else {
+		defer execRelay.Stop()
 	}
-	defer execRelay.Stop()
 
 	if !rm {
 		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
@@ -533,10 +600,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		}
 		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
-			if rm {
-				if cleanupErr := cleanupSandbox(true); cleanupErr != nil {
-					return errors.Join(errx.Wrap(ErrExecCommand, err), cleanupErr)
-				}
+			// On error — including interruption of an in-flight command by a
+			// SIGTERM/SIGINT (which cancels ctx) — the sandbox must still be
+			// torn down, otherwise the QEMU child is orphaned (leaks its guest
+			// CID and /dev/vhost-vsock). For --rm we remove the VM record too;
+			// for --rm=false we stop the VM but keep the record so the caller
+			// can still inspect/log it.
+			cleanupErr := cleanupSandbox(rm)
+			if cleanupErr != nil {
+				return errors.Join(errx.Wrap(ErrExecCommand, err), cleanupErr)
 			}
 			return errx.Wrap(ErrExecCommand, err)
 		}
@@ -655,18 +727,38 @@ func startDetachedRun() error {
 	if err != nil {
 		return errx.Wrap(ErrResolveExecutable, err)
 	}
-	childArgs := detachedChildArgs(os.Args[1:])
+	return startDetachedChild(exePath, detachedChildArgs(os.Args[1:]), detachedStartupTimeout)
+}
 
+// startDetachedChild forks the detached child, reaps it exactly once, and waits
+// for it to register a running VM row. It never waits for the VM's whole
+// lifetime: as soon as the row appears the child's pid is returned to the
+// caller while the child keeps running (for --rm=false) under its own session.
+func startDetachedChild(exePath string, childArgs []string, startupTimeout time.Duration) error {
 	nullFile, err := os.OpenFile(os.DevNull, os.O_RDWR, 0600)
 	if err != nil {
 		return errx.Wrap(ErrPrepareDetachedIO, err)
 	}
 	defer nullFile.Close()
 
+	// Capture stderr so an early exit can surface the child's own diagnostic
+	// instead of discarding it to /dev/null. A regular file (not a pipe) is
+	// required because the detached child outlives this process: a pipe reader
+	// closing on parent exit would deliver SIGPIPE to the child as soon as it
+	// wrote again. The file is unlinked on return; the child keeps its fd.
+	stderrFile, err := os.CreateTemp("", "matchlock-detached-*.stderr")
+	if err != nil {
+		return errx.Wrap(ErrPrepareDetachedIO, err)
+	}
+	defer func() {
+		_ = stderrFile.Close()
+		_ = os.Remove(stderrFile.Name())
+	}()
+
 	child := exec.Command(exePath, childArgs...)
 	child.Stdin = nullFile
 	child.Stdout = nullFile
-	child.Stderr = nullFile
+	child.Stderr = stderrFile
 	child.Env = os.Environ()
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
@@ -674,9 +766,20 @@ func startDetachedRun() error {
 		return errx.Wrap(ErrStartDetachedRun, err)
 	}
 	pid := child.Process.Pid
-	_ = child.Process.Release()
 
-	vmID, err := waitDetachedVMID(pid)
+	// Reap the child exactly once. The detached child legitimately outlives
+	// startup, so this goroutine only prevents a zombie and captures an early
+	// exit; it is not awaited on the success path.
+	childExited := make(chan detachedResult, 1)
+	go func() {
+		waitErr := child.Wait()
+		childExited <- detachedResult{
+			exitErr: waitErr,
+			stderr:  readFileTail(stderrFile, detachedStderrTailBytes),
+		}
+	}()
+
+	vmID, err := waitDetachedVMID(pid, childExited, startupTimeout)
 	if err != nil {
 		return err
 	}
@@ -704,10 +807,45 @@ func detachedChildArgs(args []string) []string {
 	return out
 }
 
-func waitDetachedVMID(pid int) (string, error) {
+// detachedResult is the single report published by the detached child's reaper.
+type detachedResult struct {
+	exitErr error
+	stderr  string
+}
+
+// readFileTail returns at most the last max bytes of f. It must be called after
+// the writer has exited so the file size is stable.
+func readFileTail(f *os.File, max int) string {
+	if f == nil || max <= 0 {
+		return ""
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.Size() <= 0 {
+		return ""
+	}
+	size := fi.Size()
+	offset := int64(0)
+	if size > int64(max) {
+		offset = size - int64(max)
+	}
+	buf := make([]byte, size-offset)
+	if _, err := f.ReadAt(buf, offset); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	return string(buf)
+}
+
+func waitDetachedVMID(pid int, childExited <-chan detachedResult, timeout time.Duration) (string, error) {
 	mgr := state.NewManager()
 	ticker := time.NewTicker(detachedVMPollInterval)
 	defer ticker.Stop()
+
+	var timeoutCh <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutCh = timer.C
+	}
 
 	for {
 		states, err := mgr.List()
@@ -718,16 +856,82 @@ func waitDetachedVMID(pid int) (string, error) {
 				}
 			}
 		}
-		if !isProcessRunning(pid) {
-			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
+
+		// Prefer the child's own exit report: it carries the diagnostic that
+		// explains why no VM row ever appeared. Reaping is guaranteed to
+		// publish exactly one result, so this cannot be starved.
+		select {
+		case result := <-childExited:
+			return "", detachedExitError(pid, result)
+		case <-timeoutCh:
+			killDetachedChild(pid)
+			return "", errx.With(ErrDetachedStartupTimeout, " for detached process pid=%d after %s", pid, timeout)
+		case <-ticker.C:
 		}
 
-		<-ticker.C
+		if !isProcessRunning(pid) {
+			// The child is gone. Wait briefly for the reaper to publish its
+			// captured status so the real error is surfaced instead of a bare
+			// "process not found".
+			if result, ok := awaitDetachedResult(childExited, detachedReapGrace); ok {
+				return "", detachedExitError(pid, result)
+			}
+			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
+		}
 	}
+}
+
+// awaitDetachedResult returns the reaper's verdict, waiting up to grace for it.
+func awaitDetachedResult(childExited <-chan detachedResult, grace time.Duration) (detachedResult, bool) {
+	if childExited == nil {
+		return detachedResult{}, false
+	}
+	if grace <= 0 {
+		select {
+		case result := <-childExited:
+			return result, true
+		default:
+			return detachedResult{}, false
+		}
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case result := <-childExited:
+		return result, true
+	case <-timer.C:
+		return detachedResult{}, false
+	}
+}
+
+func detachedExitError(pid int, result detachedResult) error {
+	stderr := strings.TrimSpace(result.stderr)
+	switch {
+	case result.exitErr != nil && stderr != "":
+		return errx.With(ErrDetachedRunExited, " pid=%d: %v: %s", pid, result.exitErr, stderr)
+	case result.exitErr != nil:
+		return errx.With(ErrDetachedRunExited, " pid=%d: %v", pid, result.exitErr)
+	case stderr != "":
+		return errx.With(ErrDetachedRunExited, " pid=%d before registering a VM: %s", pid, stderr)
+	default:
+		return errx.With(ErrDetachedRunExited, " pid=%d before registering a VM", pid)
+	}
+}
+
+// killDetachedChild makes a best-effort attempt to stop a child that overran
+// the startup deadline so no orphan is left behind.
+func killDetachedChild(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 func isProcessRunning(pid int) bool {
 	if pid <= 0 {
+		return false
+	}
+	if processIsZombie(pid) {
 		return false
 	}
 	err := syscall.Kill(pid, 0)

@@ -394,6 +394,7 @@ func getImageBuildResult(db *sql.DB, scope, tag, cacheRoot string) (*BuildResult
 		Digest:          info.Meta.Digest,
 		Size:            size,
 		Cached:          true,
+		Source:          info.Meta.Source,
 		OCI:             info.Meta.OCI,
 		LayerDigests:    layerDigests(runtimeLayers),
 	}, nil

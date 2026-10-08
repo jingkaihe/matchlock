@@ -14,8 +14,10 @@ When you pass `--allow-host` or `--secret`, Matchlock seals the network - only t
 
 ### System Requirements
 
-- **Linux** with KVM support
+- **Linux** — a KVM-capable host (Firecracker) or, as a fallback, QEMU TCG (Software) when `/dev/kvm` is unavailable
 - **macOS** on Apple Silicon
+
+Matchlock selects a VM backend automatically. On Linux it prefers the KVM-accelerated **Firecracker** backend and falls back to the **QEMU TCG** (software-emulation) backend when `/dev/kvm` is absent or unusable. You can force a choice with `MATCHLOCK_BACKEND=firecracker|qemu`. QEMU TCG needs no KVM — it emulates the CPU — but still requires `/dev/vhost-vsock` access (your user must be in the `kvm` group; re-login after `sudo matchlock setup user <name>`). For details see [`docs/linux-packaging.md`](./docs/linux-packaging.md).
 
 ### Install
 
@@ -115,6 +117,33 @@ matchlock image rm myapp:latest                              # Remove a local im
 docker save myapp:latest | matchlock image import myapp:latest  # Import from tarball
 ```
 
+## Exec sessions are isolated
+
+Every `matchlock exec` (and the initial command of `matchlock run`) runs in its
+own isolated session inside the sandbox: a fresh PID and mount namespace with
+`/proc` remounted, dropped capabilities, and a seccomp filter. This is
+defence-in-depth inside the micro-VM, which remains the primary security
+boundary.
+
+Two consequences matter when scripting against a long-lived sandbox:
+
+- **Background processes die with the session.** Anything you start in the
+  background belongs to that exec's PID namespace and is killed when the exec
+  ends, so `matchlock exec vm-abc12345 -- sh -c 'server &'` leaves nothing
+  running.
+- **PIDs are per session.** The session's shell is PID 1 in its own PID
+  namespace, and process IDs are not stable from one exec to the next.
+
+To keep a persistent session open - for example, to background a server and
+inspect it in later commands - use one long-lived interactive shell:
+
+```bash
+matchlock exec -i vm-abc12345 -- sh
+```
+
+Processes started inside that shell share its session, so background jobs
+survive for as long as the shell stays open.
+
 ## SDK
 
 Matchlock ships Go, Python, and TypeScript SDKs for embedding sandboxes directly in your application. You can launch VMs, execute commands, stream output, and manage files programmatically.
@@ -170,11 +199,71 @@ func main() {
 }
 ```
 
-Go SDK private-IP behavior (`10/8`, `172.16/12`, `192.168/16`):
+Go SDK private-IP behavior:
+
+With `block_private_ips` enabled, a destination is denied when any address it
+targets (or resolves to) falls in one of these ranges:
+
+- IPv4: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`,
+  `169.254.0.0/16` (link-local), `100.64.0.0/10` (CGNAT / Tailscale-style)
+- IPv6: `::1/128`, `fc00::/7` (unique local), `fe80::/10` (link-local),
+  `200::/7` (Yggdrasil overlay)
+- IPv4-mapped IPv6 (`::ffff:0:0/96`): the embedded IPv4 address is checked
+  against the IPv4 ranges above, so `::ffff:192.168.1.1` is private while
+  `::ffff:8.8.8.8` is public. The mapped prefix is handled explicitly rather
+  than added as a CIDR entry, because `net.ParseCIDR("::ffff:0:0/96")`
+  normalizes to `0.0.0.0/0` and would otherwise mark every IPv4 address private.
+
+The same policy decides IPv6 destinations. Under interception every guest IPv6
+connection is redirected into the same proxy, so an address in `::1/128`,
+`fc00::/7` (unique local), `fe80::/10` (link-local) or `200::/7` (Yggdrasil
+overlay) is refused unless an `allow_private` entry exempts it. IPv6 is not a
+side channel around the network policy — see [IPv6 Interception](#ipv6-interception).
+
+Reach specific private endpoints without disabling the block (`--allow-private`):
+
+- CLI: `matchlock run --allow-private <entry>` is repeatable. An entry is a host
+  name, IP literal or CIDR, optionally suffixed with `:port` (or `[v6]:port`); a
+  bare entry matches any port. `--allow-private` lifts the private block only for
+  exactly those destinations. It never widens `--allow-host` and cannot be
+  combined with `--no-network`.
+- Wire API (`create`): set `network.allow_private` on the create request.
+- A name entry covers the address set the name resolves to, so a destination that
+  arrives as an IP literal is exempt as well (the passthrough proxy only sees the
+  pre-DNAT destination address, never the name). The name is resolved host-side
+  once, and refreshed with a 60 s TTL; a name entry that does not resolve never
+  matches. The `:port` scope applies to every entry form, including a name
+  entry's resolved addresses.
+- `network.add_hosts` (SDK `.AddHost(name, ip)`) is an authoritative static
+  name-to-address mapping for that resolution, so a fixture or internal name can
+  be exempted without operator DNS.
+- A name *destination* is a rebinding-safe exception: it is honored only when
+  every address the name resolves to is either public or covered by an address
+  entry (literal/CIDR) in the same list, and the verified address is the one that
+  gets dialed. A name that resolves to any unlisted private address is still
+  refused.
+
+```bash
+matchlock run --image alpine:latest \
+  --allow-private 192.168.107.74:8888 \
+  --allow-private 200:1234::1 -- curl http://192.168.107.74:8888/health
+```
+
+Control it via the Go SDK:
 
 - Default (unset): private IPs are blocked whenever a network config is sent.
 - Explicit block: call `.WithBlockPrivateIPs(true)` (or `.BlockPrivateIPs()`).
-- Explicit allow: call `.AllowPrivateIPs()` or `.WithBlockPrivateIPs(false)`.
+- Exempt specific endpoints: call `.WithAllowPrivate("<entry>", ...)`
+  (repeatable). It keeps the private block on and lifts it only for the listed
+  destinations — it is not the same as `.AllowPrivateIPs()`.
+- Disable the block entirely: call `.AllowPrivateIPs()` or
+  `.WithBlockPrivateIPs(false)`.
+
+```go
+sandbox := sdk.New("alpine:latest").
+	WithBlockPrivateIPs(true).
+	WithAllowPrivate("192.168.107.74:8888", "[200:1234::1]:443")
+```
 
 ```go
 sandbox := sdk.New("alpine:latest").
@@ -343,6 +432,59 @@ More examples in the [`examples/`](examples/) directory:
 | Streamlit chatbot using Agent Client Protocol | [`examples/agent-client-protocol/`](examples/agent-client-protocol/) |
 | Browser automation with Kodelet and Playwright MCP | [`examples/playwright/`](examples/playwright/) |
 
+## IPv6 Interception
+
+On Linux, an intercepted sandbox gets a first-class IPv6 link and its IPv6
+traffic is policed by the same proxy, the same DNS forwarder and the same policy
+engine that handle IPv4. The allow-list, `block_private_ips` and `allow_private`
+decisions are identical for IPv6 destinations.
+
+Guest link:
+
+- Every VM is leased a unique-local IPv6 /64 next to its IPv4 /24, derived from
+  the same per-VM octet: octet `N` yields `fd00:N::/64`, with the gateway
+  `fd00:N::1` on the VM's TAP and the guest address `fd00:N::2` — for example
+  `fd00:100::/64`, gateway `fd00:100::1`, guest `fd00:100::2`.
+- Both Linux backends (Firecracker and QEMU TCG) put the gateway address on the
+  TAP, and `guest-init` configures the guest address and its `::/0` route from
+  the `matchlock.ipv6=<guest>/<prefix>,<gateway>` kernel cmdline field, because
+  the kernel's `ip=` boot argument only configures IPv4.
+- The link exists only when interception is active; a plain NAT sandbox and a
+  `--no-network` sandbox stay IPv4-only.
+
+Interception:
+
+- An `ip6` nftables table (`matchlock6_<tap>`) mirrors the IPv4 table: TCP 80 and
+  443 are DNAT'd to the HTTP/HTTPS proxy, every other TCP destination is DNAT'd
+  to the passthrough proxy, and DNS (UDP and TCP 53) is DNAT'd to the DNS
+  forwarder. The proxy also listens on the IPv6 gateway and recovers the pre-DNAT
+  destination with `IP6T_SO_ORIGINAL_DST`, so the HTTP(S), passthrough and DNS
+  paths enforce exactly the same rules as their IPv4 counterparts.
+- Everything that was not redirected is dropped; ICMPv6 neighbour discovery is
+  the only other traffic the guest may exchange with the host. That replaces the
+  previous blanket IPv6 drop with "drop what is not redirected", so a raw connect
+  to an IPv6 destination the proxy does not handle gets no answer — there is no
+  IPv6 path around the proxy. It is fail closed: if the `ip6` table cannot be
+  installed, sandbox creation fails instead of running with a half-applied
+  policy.
+- IPv6 names resolve through the same DNS forwarder, which relays AAAA answers
+  unchanged; a name that resolves only to an unlisted private IPv6 address is
+  still refused. An `allow_private` name entry covers the AAAA addresses the name
+  resolves to exactly like its A records.
+
+Private IPv6 destinations are blocked by default just like IPv4 ones — exempt
+individual endpoints with `--allow-private` while the block stays on:
+
+```bash
+matchlock run --image alpine:latest \
+  --allow-private 200:1234::1 \
+  --allow-private '[fd00::/8]:8888' \
+  -- nc -w 5 200:1234::1 8080
+```
+
+macOS keeps its existing IPv4 interception behaviour; the per-VM ULA link and the
+`ip6` table are Linux-only.
+
 ## Architecture
 
 ```mermaid
@@ -358,7 +500,7 @@ graph LR
         Policy --> Proxy
     end
 
-    subgraph VM["Micro-VM (Firecracker / Virtualization.framework)"]
+    subgraph VM["Micro-VM (Firecracker / QEMU TCG / Virtualization.framework)"]
         Agent["Guest Agent"]
         FUSE["/workspace (FUSE)"]
         Image["Any OCI Image (Alpine, Ubuntu, etc.)"]
@@ -375,7 +517,9 @@ graph LR
 
 | Platform | Mode | Mechanism |
 |----------|------|-----------|
-| Linux | Transparent proxy | nftables DNAT on ports 80/443 |
+| Linux (Firecracker) | Transparent proxy | nftables DNAT on ports 80/443 |
+| Linux (QEMU TCG) | Transparent proxy | nftables DNAT on ports 80/443; guest on a TAP device with a static IP |
+| Linux (Firecracker / QEMU TCG) | Transparent proxy over IPv6 | ip6 nftables DNAT of 80/443, catch-all TCP and DNS to the same proxy/DNS forwarder; all other guest IPv6 dropped |
 | macOS | NAT (default) | Virtualization.framework built-in NAT |
 | macOS | Interception (with `--allow-host`/`--secret`) | gVisor userspace TCP/IP at L4 |
 

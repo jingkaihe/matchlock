@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -64,6 +67,82 @@ func buildVFSProviders(config *api.Config) (map[string]vfs.Provider, error) {
 	return vfsProviders, nil
 }
 
+// exactFUSEMountpoints returns the guest directory paths that need their own
+// FUSE mount so exact absolute work/repository paths are physically reachable in
+// the guest. In legacy (non-exact) mode it returns nil: the single workspace
+// FUSE mount already serves every mount beneath it, so no extra mount is needed.
+//
+// In exact mode it returns the workspace (if set) plus every exact destination
+// whose guest path is a directory and is not nested beneath the workspace or
+// another exact destination. A single-file destination that lives under the
+// workspace (for example the run progress file) is served by the workspace tree;
+// a single-file destination outside the workspace uses its parent directory as
+// the mountpoint. Nested mountpoints are collapsed to the shallowest so a FUSE
+// tree is never mounted on top of another FUSE tree (which would not work).
+func exactFUSEMountpoints(config *api.Config) []string {
+	if config == nil || config.VFS == nil || !config.VFS.ExactDestinations {
+		return nil
+	}
+	workspace := config.VFS.Workspace
+	candidates := make([]string, 0, len(config.VFS.Mounts)+1)
+	if workspace != "" {
+		candidates = append(candidates, workspace)
+	}
+	for guestPath, mount := range config.VFS.Mounts {
+		if mount.Type == api.MountTypeHostFS && mount.HostPath != "" {
+			if fi, err := os.Stat(mount.HostPath); err == nil && !fi.IsDir() {
+				// A single-file destination is not a FUSE mountpoint itself; mount
+				// its parent directory so the file is a child of the served tree.
+				candidates = append(candidates, filepath.Dir(guestPath))
+				continue
+			}
+		}
+		candidates = append(candidates, guestPath)
+	}
+	return selectNonNestedMountpoints(candidates)
+}
+
+// selectNonNestedMountpoints keeps only the shallowest absolute guest paths so
+// no mountpoint is nested inside another, deduplicates exact repeats, and drops
+// any non-absolute or malformed entry.
+func selectNonNestedMountpoints(candidates []string) []string {
+	cleaned := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		cc := filepath.Clean(c)
+		if !filepath.IsAbs(cc) {
+			continue
+		}
+		if cc == "/" {
+			// Never mount a FUSE tree over the guest root.
+			continue
+		}
+		cleaned = append(cleaned, cc)
+	}
+	sort.Slice(cleaned, func(i, j int) bool {
+		return len(cleaned[i]) < len(cleaned[j])
+	})
+	var result []string
+	seen := make(map[string]bool)
+	for _, c := range cleaned {
+		if seen[c] {
+			continue
+		}
+		nested := false
+		for _, existing := range result {
+			if existing == c || strings.HasPrefix(c, existing+"/") {
+				nested = true
+				break
+			}
+		}
+		if nested {
+			continue
+		}
+		seen[c] = true
+		result = append(result, c)
+	}
+	return result
+}
+
 func buildExtraDiskConfigs(disks []api.DiskMount) ([]vm.DiskConfig, error) {
 	extraDisks := make([]vm.DiskConfig, 0, len(disks))
 	for _, d := range disks {
@@ -82,6 +161,25 @@ func buildExtraDiskConfigs(disks []api.DiskMount) ([]vm.DiskConfig, error) {
 		})
 	}
 	return extraDisks, nil
+}
+
+// buildSwapDiskConfig returns the DiskConfig that attaches the ephemeral swap
+// image at hostPath. A swap device is attached read-write but never mounted, so
+// GuestMount stays empty; this is why it is appended after (and bypasses)
+// buildExtraDiskConfigs, whose mount validation rejects an empty GuestMount.
+func buildSwapDiskConfig(hostPath string) vm.DiskConfig {
+	return vm.DiskConfig{HostPath: hostPath, Swap: true}
+}
+
+// provisionSwapDisk formats a fresh swap image at swapPath and returns the
+// DiskConfig that attaches it to the guest. A partial image is removed by
+// createSwapImage on failure; the caller is responsible for the surrounding
+// state/root-disk cleanup.
+func provisionSwapDisk(swapPath string, sizeMB int) (vm.DiskConfig, error) {
+	if err := createSwapImage(swapPath, int64(sizeMB)); err != nil {
+		return vm.DiskConfig{}, errx.Wrap(ErrCreateVM, err)
+	}
+	return buildSwapDiskConfig(swapPath), nil
 }
 
 func prepareExecEnv(config *api.Config, caPool *sandboxnet.CAPool, pol *policy.Engine) *api.ExecOptions {

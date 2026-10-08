@@ -8,6 +8,7 @@ import "errors"
 var (
 	ErrTAPCreate         = errors.New("create TAP device")
 	ErrTAPConfigure      = errors.New("configure TAP interface")
+	ErrTAPConfigureIPv6  = errors.New("configure TAP IPv6 address")
 	ErrTAPSetMTU         = errors.New("set MTU")
 	ErrTAPDelete         = errors.New("delete interface")
 	ErrTUNOpen           = errors.New("open TUN device")
@@ -21,6 +22,19 @@ var (
 	ErrSIOCSIFNETMASK    = errors.New("SIOCSIFNETMASK")
 	ErrSIOCGIFFLAGS      = errors.New("SIOCGIFFLAGS")
 	ErrSIOCSIFFLAGS      = errors.New("SIOCSIFFLAGS")
+)
+
+// IPv6 rtnetlink errors (the SIOCSIFADDR ioctl used for IPv4 cannot carry a
+// 128-bit address, so IPv6 addresses go through RTM_NEWADDR instead)
+var (
+	ErrInvalidInterfaceIndex   = errors.New("invalid interface index")
+	ErrInvalidIPv6Address      = errors.New("invalid IPv6 address")
+	ErrInvalidIPv6PrefixLength = errors.New("invalid IPv6 prefix length")
+	ErrNetlinkSocket           = errors.New("create netlink socket")
+	ErrNetlinkBind             = errors.New("bind netlink socket")
+	ErrNetlinkSend             = errors.New("send netlink message")
+	ErrNetlinkRecv             = errors.New("receive netlink response")
+	ErrNetlinkAddrAdd          = errors.New("netlink RTM_NEWADDR")
 )
 
 // Firecracker lifecycle errors

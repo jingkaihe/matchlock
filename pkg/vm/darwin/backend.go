@@ -39,6 +39,14 @@ func (b *DarwinBackend) Name() string {
 }
 
 func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	// Custom kernel args are used verbatim and bypass every generated
+	// matchlock.* argument (including matchlock.swap=), so reject a swap disk
+	// combined with them before doing any work; otherwise the swap device would
+	// be attached but never enabled.
+	if err := vm.ValidateSwapDisks(config); err != nil {
+		return nil, err
+	}
+
 	vcpus, ok := api.VCPUCount(config.CPUs)
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
@@ -199,6 +207,11 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 		workspaceArg = " matchlock.workspace=" + workspace
 	}
 
+	exactArg := ""
+	if len(config.ExactMounts) > 0 {
+		exactArg = " matchlock.exact.mounts=" + strings.Join(config.ExactMounts, ",")
+	}
+
 	hostname := config.Hostname
 	if hostname == "" {
 		hostname = config.ID
@@ -238,6 +251,13 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	for _, disk := range config.ExtraDisks {
 		dev := fmt.Sprintf("vd%c", devLetter)
 		devLetter++
+		if disk.Swap {
+			// A swap backing device is attached but never mounted. Announce the
+			// device so guest-init can enable it at boot, and keep consuming the
+			// device letter so later disks retain their correct names.
+			diskArgs += " matchlock.swap=" + dev
+			continue
+		}
 		diskMount := diskKernelArg(disk)
 		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
 	}
@@ -249,8 +269,8 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 
 	if config.NoNetwork {
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s%s matchlock.dns=%s matchlock.no_network=1%s%s matchlock.cpus=%g",
-			hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs, config.CPUs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s%s%s matchlock.dns=%s matchlock.no_network=1%s%s matchlock.cpus=%g",
+			hostname, workspaceArg, exactArg, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs, config.CPUs,
 		)
 	}
 
@@ -264,14 +284,14 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 			gatewayIP = "192.168.100.1"
 		}
 		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
+			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
+			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspaceArg, exactArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
 		)
 	}
 
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
-		hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
+		hostname, workspaceArg, exactArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
 	)
 }
 

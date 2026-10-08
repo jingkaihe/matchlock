@@ -41,6 +41,7 @@ type Sandbox struct {
 	workspace        string
 	rootfsPath       string // Writable overlay upper disk
 	bootstrapPath    string // Bootstrap root disk (vda)
+	swapPath         string // Ephemeral swap backing image ("" when swap is off)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -58,7 +59,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	vfsEnabled := config.HasVFSMounts()
@@ -68,11 +69,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
 
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			return nil, err
-		}
-	}
 	if config.Resources == nil {
 		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
 	}
@@ -141,9 +137,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(rootfsPaths, opts.RootfsFSTypes)
 	bootstrapRootfsPath := filepath.Join(stateMgr.Dir(id), "bootstrap.ext4")
 	upperRootfsPath := filepath.Join(stateMgr.Dir(id), "upper.ext4")
+	var swapPath string
 	cleanupRootDisks := func() {
 		_ = os.Remove(bootstrapRootfsPath)
 		_ = os.Remove(upperRootfsPath)
+		if swapPath != "" {
+			_ = os.Remove(swapPath)
+		}
 	}
 	defer func() {
 		if retErr != nil {
@@ -204,10 +204,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		stateMgr.Unregister(id)
 		return nil, err
 	}
-	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks)); err != nil {
+	if config.Resources != nil && config.Resources.SwapMB > 0 {
+		swapPath = filepath.Join(stateMgr.Dir(id), "swap.raw")
+	}
+	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks), swapPath != ""); err != nil {
 		releaseSubnet()
 		stateMgr.Unregister(id)
 		return nil, err
+	}
+	if swapPath != "" {
+		swapDisk, err := provisionSwapDisk(swapPath, config.Resources.SwapMB)
+		if err != nil {
+			cleanupRootDisks()
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, err
+		}
+		extraDisks = append(extraDisks, swapDisk)
 	}
 
 	gatewayIP := ""
@@ -235,6 +248,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		GuestIP:             guestIP,
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
+		ExactMounts:         exactFUSEMountpoints(config),
 		UseInterception:     needsInterception,
 		Privileged:          config.Privileged,
 		PrebuiltRootfs:      bootstrapRootfsPath,
@@ -393,6 +407,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		workspace:        workspace,
 		rootfsPath:       upperRootfsPath,
 		bootstrapPath:    bootstrapRootfsPath,
+		swapPath:         swapPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -552,6 +567,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("vfs_stop", nil)
 	}
+	if s.vfsRoot != nil {
+		if err := vfs.CloseProvider(s.vfsRoot); err != nil {
+			errs = append(errs, errx.Wrap(ErrVFSServer, err))
+			markCleanup("vfs_root_close", err)
+		} else {
+			markCleanup("vfs_root_close", nil)
+		}
+	} else {
+		markCleanup("vfs_root_close", nil)
+	}
 	if s.vfsHooks != nil {
 		s.vfsHooks.Close()
 		markCleanup("vfs_hooks", nil)
@@ -619,6 +644,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("bootstrap_remove", err)
 	} else {
 		markCleanup("bootstrap_remove", nil)
+	}
+	if s.swapPath != "" {
+		if err := os.Remove(s.swapPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+			markCleanup("swap_remove", err)
+		} else {
+			markCleanup("swap_remove", nil)
+		}
+	} else {
+		markCleanup("swap_remove", nil)
 	}
 
 	if len(errs) > 0 {

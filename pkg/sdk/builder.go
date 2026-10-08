@@ -56,6 +56,14 @@ func (b *SandboxBuilder) WithDiskSize(mb int) *SandboxBuilder {
 	return b
 }
 
+// WithSwapMB sets the guest swap device size in megabytes (default 0 = off).
+// Swap is enabled by guest-init at boot, so the workload does not need
+// WithPrivileged to use it.
+func (b *SandboxBuilder) WithSwapMB(mb int) *SandboxBuilder {
+	b.opts.SwapMB = mb
+	return b
+}
+
 // WithTimeout sets the maximum execution time in seconds.
 func (b *SandboxBuilder) WithTimeout(seconds int) *SandboxBuilder {
 	b.opts.TimeoutSeconds = seconds
@@ -127,6 +135,16 @@ func (b *SandboxBuilder) AllowPrivateIPs() *SandboxBuilder {
 func (b *SandboxBuilder) UnsetBlockPrivateIPs() *SandboxBuilder {
 	b.opts.BlockPrivateIPs = false
 	b.opts.BlockPrivateIPsSet = false
+	return b
+}
+
+// WithAllowPrivate exempts otherwise-blocked private destinations from
+// BlockPrivateIPs. Each entry is a host name, IP literal or CIDR, optionally
+// scoped with :port (or [v6]:port); a bare entry matches any port. Unlike
+// AllowPrivateIPs, this keeps the private-IP block enabled and only lifts it for
+// the listed destinations. Calls accumulate.
+func (b *SandboxBuilder) WithAllowPrivate(entries ...string) *SandboxBuilder {
+	b.opts.AllowPrivate = append(b.opts.AllowPrivate, entries...)
 	return b
 }
 
