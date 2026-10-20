@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"runtime"
 
@@ -51,6 +52,7 @@ type Sandbox struct {
 	workspace        string
 	rootfsPath       string // Writable overlay upper disk
 	bootstrapPath    string // Bootstrap root disk (vda)
+	swapPath         string // Ephemeral swap backing image ("" when swap is off)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -65,6 +67,156 @@ type Options struct {
 	RootfsFSTypes []string
 }
 
+// interceptionWiring is the per-VM addressing the sandbox hands to every
+// consumer of the guest's network link: the backend VMConfig (the TAP addresses
+// plus the guest's ip=/matchlock.ipv6= boot args), the proxy's IPv6 bind
+// address, the DNS forwarder's IPv6 bind address and the ip6 nftables table.
+// Deriving it in ONE place from the subnet lease is what keeps those consumers
+// from drifting apart - the guest's boot arg, the address the proxy binds and
+// the ip6 DNAT target all come from here.
+//
+// The IPv6 half is live only when host-side interception is active
+// (interceptionEnabled): a plain NAT sandbox and a --no-network sandbox keep
+// the IPv4-only shape, so their backend config is byte-identical to before.
+type interceptionWiring struct {
+	gatewayIPv4 string // host TAP IPv4 address (proxy/DNS bind, ip table gateway)
+	guestIPv4   string // guest IPv4 address (boot arg)
+	subnetCIDR  string // TAP address and prefix, e.g. 192.168.100.1/24
+	gatewayIPv6 string // guest-visible IPv6 gateway; "" = IPv6 path not wired
+	guestIPv6   string // guest IPv6 address (boot arg)
+	subnet6CIDR string // network form (fd00:100::/64), never an interface address
+	tapName     string // TAP the ip6 table is built for; "" until the VM exists
+}
+
+// newInterceptionWiring derives the wiring from the VM's subnet lease.
+// intercept is the sandbox's needsProxy decision: only an intercepted sandbox
+// gets IPv6 addressing at all, because the per-TAP ip6 table is what keeps guest
+// IPv6 inside the policy path. A nil lease (--no-network) yields an empty,
+// fully inert wiring.
+func newInterceptionWiring(info *state.SubnetInfo, intercept bool) interceptionWiring {
+	var w interceptionWiring
+	if info == nil {
+		return w
+	}
+	w.gatewayIPv4 = info.GatewayIP
+	w.guestIPv4 = info.GuestIP
+	w.subnetCIDR = info.GatewayIP + "/24"
+	if intercept {
+		w.gatewayIPv6 = info.GatewayIPv6
+		w.guestIPv6 = info.GuestIPv6
+		w.subnet6CIDR = info.Subnet6
+	}
+	return w
+}
+
+// interceptionEnabled reports whether the host-side interception stack runs for
+// this sandbox. It is the single predicate behind the IPv6 wiring: the v6
+// gateway is empty unless interception is active, so no consumer (backend,
+// proxy, DNS forwarder, ip6 table) can be wired while another is not.
+func (w interceptionWiring) interceptionEnabled() bool {
+	return w.gatewayIPv4 != "" && w.gatewayIPv6 != ""
+}
+
+// applyToVMConfig copies the link into the backend config. The IPv6 fields stay
+// empty unless interception is active, which is what keeps the generated kernel
+// args and the TAP configuration unchanged for IPv4-only and --no-network
+// sandboxes.
+func (w interceptionWiring) applyToVMConfig(cfg *vm.VMConfig) {
+	cfg.GatewayIP = w.gatewayIPv4
+	cfg.GuestIP = w.guestIPv4
+	cfg.SubnetCIDR = w.subnetCIDR
+	cfg.GatewayIPv6 = w.gatewayIPv6
+	cfg.GuestIPv6 = w.guestIPv6
+	cfg.Subnet6CIDR = w.subnet6CIDR
+}
+
+// firewallTableV6 is the ip6 table the per-TAP rules install, or "" when the
+// IPv6 path is not wired (or the VM has no TAP yet). It is recorded in the
+// lifecycle resources so reconcile can remove an orphaned ip6 table.
+func (w interceptionWiring) firewallTableV6() string {
+	if w.tapName == "" || w.gatewayIPv6 == "" {
+		return ""
+	}
+	return sandboxnet.FirewallTableV6Name(w.tapName)
+}
+
+// interceptionDeps groups the constructors of the interception stack. They are
+// fields rather than direct calls so the IPv6 wiring (bind addresses, the ip6
+// redirect target, the ports the ip6 rules carry) is unit-testable without a
+// VM, a TAP or root privileges.
+type interceptionDeps struct {
+	newProxy func(*sandboxnet.ProxyConfig) (*sandboxnet.TransparentProxy, error)
+	newDNS   func(bindAddrV4, bindAddrV6 string, dnsServers []string, cfg sandboxnet.DNSForwarderConfig) (*sandboxnet.DNSForwarder, error)
+}
+
+// defaultInterceptionDeps wires the production constructors.
+func defaultInterceptionDeps() interceptionDeps {
+	return interceptionDeps{
+		newProxy: sandboxnet.NewTransparentProxy,
+		newDNS:   sandboxnet.NewConfiguredDNSForwarder,
+	}
+}
+
+// interceptionInputs are the non-addressing inputs of the interception stack.
+type interceptionInputs struct {
+	policy     *policy.Engine
+	events     chan api.Event
+	caPool     *sandboxnet.CAPool
+	dnsServers []string
+	// dnsPriority is the sandbox's DNS resolution priority
+	// (network.dns_priority, "ipv4" by default); allowPrivateName is the
+	// policy engine's allow_private name matcher. Both reach the DNS
+	// forwarder constructor so the ipv4-preferring rewrite is enabled with
+	// its carve-out fail-closed — the sandbox ALWAYS supplies an explicit
+	// matcher, even when there are no allow_private entries.
+	dnsPriority      string
+	allowPrivateName func(string) bool
+}
+
+// provisionInterception builds and starts the interception stack for one VM:
+// the proxy (IPv4 listeners, plus IPv6 listeners on the guest's gateway when the
+// v6 path is wired), the dual-stack DNS forwarder and the per-TAP nftables
+// rules (the IPv4 table and the ip6 table pointed at the gateway, whose catches
+// are redirected to the very ports the two listeners reported).
+//
+// The rules are NOT installed here - the caller owns Setup/Cleanup so the
+// rollback ordering stays in one place. Every failure after the listeners exist
+// closes them again: a failed DNS forwarder (which itself closes a partially
+// bound IPv6 socket) closes the proxy, including its IPv6 listeners, so the
+// caller only has to close the machine and release the subnet and state entry.
+func provisionInterception(deps interceptionDeps, w interceptionWiring, in interceptionInputs) (proxy *sandboxnet.TransparentProxy, dnsForwarder *sandboxnet.DNSForwarder, rules *sandboxnet.NFTablesRules, err error) {
+	proxy, err = deps.newProxy(&sandboxnet.ProxyConfig{
+		BindAddr:   w.gatewayIPv4,
+		BindAddrV6: w.gatewayIPv6,
+		Policy:     in.policy,
+		Events:     in.events,
+		CAPool:     in.caPool,
+	})
+	if err != nil {
+		return nil, nil, nil, errx.Wrap(ErrCreateProxy, err)
+	}
+	proxy.Start()
+
+	dnsForwarder, err = deps.newDNS(w.gatewayIPv4, w.gatewayIPv6, in.dnsServers, sandboxnet.DNSForwarderConfig{
+		DNSPriority:      in.dnsPriority,
+		AllowPrivateName: in.allowPrivateName,
+	})
+	if err != nil {
+		proxy.Close()
+		return nil, nil, nil, errx.Wrap(ErrCreateProxy, err)
+	}
+
+	rules = sandboxnet.NewNFTablesRules(w.tapName, w.gatewayIPv4, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), in.dnsServers)
+	// One redirect target per service: the IPv4 and the ip6 DNS DNAT rules both
+	// point at this forwarder port.
+	rules.SetDNSForwarderPort(dnsForwarder.Port())
+	// An empty gateway leaves the ip6 table fail-closed: no redirect at all,
+	// every guest IPv6 packet dropped.
+	rules.SetGatewayIPv6(w.gatewayIPv6)
+
+	return proxy, dnsForwarder, rules, nil
+}
+
 // New creates a new sandbox VM with the given configuration.
 func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
 	if opts == nil {
@@ -73,7 +225,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(opts.RootfsPaths, opts.RootfsFSTypes)
@@ -88,9 +240,28 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if err := stateMgr.Register(id, config); err != nil {
 		return nil, errx.Wrap(ErrRegisterState, err)
 	}
+	// Any create failure before the backend machine exists must not leave a
+	// permanent VM record: the attempt never produced a bootable VM, so its
+	// registry row and state directory are removed. Commit the boundary just
+	// before backend.Create, after which the existing (stopped-row) recovery
+	// semantics for machine-related failures stay in force.
+	rollback := newCreateRollback(stateMgr, id)
+	defer func() { retErr = rollback.run(retErr) }()
 	lifecycleStore := lifecycle.NewStore(stateMgr.Dir(id))
-	if err := lifecycleStore.Init(id, "firecracker", stateMgr.Dir(id)); err != nil {
-		stateMgr.Unregister(id)
+
+	// Choose the VM backend before initializing the lifecycle record so its
+	// backend label is accurate. Prefer the KVM-accelerated Firecracker backend
+	// and fall back to QEMU TCG only when KVM is definitively unavailable.
+	backendKind, selectionErr := selectBackendKind(checkKVMAvailability(), qemuFallbackAvailable)
+	if selectionErr != nil {
+		return nil, errx.Wrap(ErrCreateVM, selectionErr)
+	}
+	// Validate backend constraints before provisioning networking or injecting
+	// certificates so unsupported configurations fail without resource side effects.
+	if err := validateBackendConstraints(backendKind, config); err != nil {
+		return nil, errx.Wrap(ErrCreateVM, err)
+	}
+	if err := lifecycleStore.Init(id, backendKind.String(), stateMgr.Dir(id)); err != nil {
 		return nil, errx.Wrap(ErrLifecycleInit, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -106,9 +277,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 
 	bootstrapRootfsPath := stateMgr.Dir(id) + "/bootstrap.ext4"
 	upperRootfsPath := stateMgr.Dir(id) + "/upper.ext4"
+	var swapPath string
 	cleanupRootDisks := func() {
 		_ = os.Remove(bootstrapRootfsPath)
 		_ = os.Remove(upperRootfsPath)
+		if swapPath != "" {
+			_ = os.Remove(swapPath)
+		}
 	}
 	defer func() {
 		if retErr != nil {
@@ -116,9 +291,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}()
 
-	if err := createBootstrapRootfs(bootstrapRootfsPath); err != nil {
+	if err := createBootstrapRootfsFn(bootstrapRootfsPath); err != nil {
 		cleanupRootDisks()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareBootstrapRoot, err)
 	}
 
@@ -126,14 +300,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
 	}
-	if err := createExt4Image(upperRootfsPath, diskSizeMB); err != nil {
+	if err := createExt4ImageFn(upperRootfsPath, diskSizeMB); err != nil {
 		cleanupRootDisks()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateRootfs, err)
 	}
-	if err := prepareOverlayUpperRootfs(upperRootfsPath); err != nil {
+	if err := prepareOverlayUpperRootfsFn(upperRootfsPath); err != nil {
 		cleanupRootDisks()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -141,23 +313,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			stateMgr.Unregister(id)
-			return nil, err
-		}
-	}
 	if config.Resources == nil {
 		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
 	}
 	vcpus, ok := api.VCPUCount(config.Resources.CPUs)
 	if !ok {
-		stateMgr.Unregister(id)
 		return nil, errx.With(ErrCreateVM, ": cpus must be a finite number > 0")
 	}
 	hostCPUs := runtime.NumCPU()
 	if vcpus > hostCPUs {
-		stateMgr.Unregister(id)
 		return nil, errx.With(ErrCreateVM, ": cpus must be <= host cpus (%d)", hostCPUs)
 	}
 
@@ -169,12 +333,10 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
 			cleanupRootDisks()
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateCAPool, err)
 		}
 		if err := injectConfigFileIntoRootfs(upperRootfsPath, "/upper/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
 			cleanupRootDisks()
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInjectCACert, err)
 		}
 	}
@@ -196,7 +358,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		subnetInfo, err = subnetAlloc.Allocate(id)
 		if err != nil {
 			cleanupRootDisks()
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrAllocateSubnet, err)
 		}
 		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -206,35 +367,41 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 
-	backend := linux.NewLinuxBackend()
+	// The lease decides the guest's IPv4 AND IPv6 addressing for every consumer
+	// (backend config, proxy, DNS forwarder, ip6 table). Interception is the
+	// gate for the IPv6 half, so a plain NAT or --no-network sandbox is
+	// unchanged.
+	wiring := newInterceptionWiring(subnetInfo, needsProxy)
 
-	kernelPath, err := resolveKernelForConfig(ctx, config, opts, lifecycleStore)
+	backend := defaultVMBackend(backendKind)
+
+	kernelPath, err := resolveLinuxKernelForConfig(ctx, config, opts, lifecycleStore, backendKind)
 	if err != nil {
 		releaseSubnet()
 		cleanupRootDisks()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 
 	extraDisks, err := buildExtraDiskConfigs(config.ExtraDisks)
 	if err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, err
 	}
-	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks)); err != nil {
+	if config.Resources != nil && config.Resources.SwapMB > 0 {
+		swapPath = stateMgr.Dir(id) + "/swap.raw"
+	}
+	if err := validateOverlayDiskLayout(len(opts.RootfsPaths), len(extraDisks), swapPath != ""); err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, err
 	}
-
-	gatewayIP := ""
-	guestIP := ""
-	subnetCIDR := ""
-	if subnetInfo != nil {
-		gatewayIP = subnetInfo.GatewayIP
-		guestIP = subnetInfo.GuestIP
-		subnetCIDR = subnetInfo.GatewayIP + "/24"
+	if swapPath != "" {
+		swapDisk, err := provisionSwapDisk(swapPath, config.Resources.SwapMB)
+		if err != nil {
+			cleanupRootDisks()
+			releaseSubnet()
+			return nil, err
+		}
+		extraDisks = append(extraDisks, swapDisk)
 	}
 
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -266,10 +433,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		LogPath:             stateMgr.LogPath(id),
 		VsockCID:            3,
 		VsockPath:           stateMgr.Dir(id) + "/vsock.sock",
-		GatewayIP:           gatewayIP,
-		GuestIP:             guestIP,
-		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
+		ExactMounts:         exactFUSEMountpoints(config),
 		Privileged:          config.Privileged,
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),
@@ -278,7 +443,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		MTU:                 config.Network.GetMTU(),
 		NoNetwork:           noNetwork,
 	}
+	// Addressing comes from the wiring: IPv4 always (when networking is on),
+	// IPv6 only for an intercepted sandbox, and nothing at all for
+	// --no-network.
+	wiring.applyToVMConfig(vmConfig)
 
+	// Machine boundary: from here on a failure keeps the (stopped) record so
+	// reconcile/gc can still find the host resources the machine may hold.
+	rollback.commit()
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		cleanupRootDisks()
@@ -287,11 +459,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 
-	linuxMachine := machine.(*linux.LinuxMachine)
-	if tapName := linuxMachine.TapName(); tapName != "" {
+	// TapName is set only by the Firecracker backend; the QEMU backend never
+	// configures TAP networking (it is a --no-network fallback). A type
+	// assertion on *linux.LinuxMachine would panic for QEMU, so read it through
+	// a small interface that both machines satisfy (LinuxMachine and
+	// qemu.Machine implement TapName()).
+	var tapName string
+	if tm, ok := machine.(interface{ TapName() string }); ok {
+		tapName = tm.TapName()
+	}
+	if tapName != "" {
+		// Record the TAP and BOTH families' interception tables for this TAP,
+		// so an interrupted create leaves nothing for reconcile to hunt for.
+		wiring.tapName = tapName
 		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
 			r.TAPName = tapName
-			r.FirewallTable = "matchlock_" + tapName
+			r.FirewallTable = sandboxnet.FirewallTableName(tapName)
+			r.FirewallTableV6 = wiring.firewallTableV6()
 			r.NATTable = "matchlock_nat_" + tapName
 		})
 	}
@@ -316,42 +500,37 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var fwRules FirewallRules
 
 	if needsProxy {
-		if gatewayIP == "" {
+		if !wiring.interceptionEnabled() {
 			machine.Close(ctx)
 			releaseSubnet()
 			stateMgr.Unregister(id)
 			return nil, errx.With(ErrCreateProxy, ": missing gateway IP for proxy bind")
 		}
 
-		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
-			BindAddr:        gatewayIP,
-			HTTPPort:        0,
-			HTTPSPort:       0,
-			PassthroughPort: 0,
-			Policy:          policyEngine,
-			Events:          events,
-			CAPool:          caPool,
+		// One call builds the whole stack from the wiring: the proxy (IPv4 and
+		// IPv6 listeners), the dual-stack DNS forwarder and the per-TAP rules
+		// whose ip6 table redirects to those exact ports. A failure inside
+		// closes whatever was already opened, so only the VM, the subnet and
+		// the state entry are left for this path to release.
+		var nfRules *sandboxnet.NFTablesRules
+		proxy, dnsForwarder, nfRules, err = provisionInterception(defaultInterceptionDeps(), wiring, interceptionInputs{
+			policy:     policyEngine,
+			events:     events,
+			caPool:     caPool,
+			dnsServers: config.Network.GetDNSServers(),
+			// The DNS priority comes from the config ("ipv4" by default) and
+			// the allow_private matcher from the policy engine, always
+			// non-nil: an empty allow_private list yields a matcher that
+			// returns false.
+			dnsPriority:      config.Network.GetDNSPriority(),
+			allowPrivateName: policyEngine.MatchesAllowPrivateName,
 		})
 		if err != nil {
 			machine.Close(ctx)
 			releaseSubnet()
 			stateMgr.Unregister(id)
-			return nil, errx.Wrap(ErrCreateProxy, err)
+			return nil, err
 		}
-
-		proxy.Start()
-
-		dnsForwarder, err = sandboxnet.NewDNSForwarder(gatewayIP, config.Network.GetDNSServers())
-		if err != nil {
-			proxy.Close()
-			machine.Close(ctx)
-			releaseSubnet()
-			stateMgr.Unregister(id)
-			return nil, errx.Wrap(ErrCreateProxy, err)
-		}
-
-		nfRules := sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, proxy.HTTPPort(), proxy.HTTPSPort(), proxy.PassthroughPort(), config.Network.GetDNSServers())
-		nfRules.SetDNSForwarderPort(dnsForwarder.Port())
 		fwRules = nfRules
 		if err := fwRules.Setup(); err != nil {
 			dnsForwarder.Close()
@@ -366,7 +545,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Set up basic NAT for guest network access using nftables
 	var natRules *sandboxnet.NFTablesNAT
 	if !noNetwork {
-		natRules = sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+		natRules = sandboxnet.NewNFTablesNAT(tapName)
 		if err := natRules.Setup(); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
 			natRules = nil
@@ -413,12 +592,24 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		// Create VFS server for guest FUSE daemon connections
 		vfsServer = vfs.NewVFSServer(vfsRoot)
 
-		// Start VFS server on the vsock UDS path for VFS port
-		vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
-		vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
-		if err != nil {
-			cleanupVM()
-			return nil, errx.Wrap(ErrVFSServer, err)
+		// Start the VFS server. Firecracker/Darwin expose port 5001 as a UDS
+		// (vmConfig.VsockPath_5001). The QEMU backend instead serves a per-sandbox
+		// AF_VSOCK listener: guest-fused dials the kernel-assigned port passed via
+		// matchlock.vfs_port. Both paths are isolated per-sandbox.
+		if vfsListener, ok := machine.(interface{ VFSListener() (net.Listener, error) }); ok {
+			ln, lErr := vfsListener.VFSListener()
+			if lErr != nil {
+				cleanupVM()
+				return nil, errx.Wrap(ErrVFSServer, lErr)
+			}
+			vfsStopFunc = vfsServer.ServeListenerBackground(ln)
+		} else {
+			vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
+			vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
+			if err != nil {
+				cleanupVM()
+				return nil, errx.Wrap(ErrVFSServer, err)
+			}
 		}
 	}
 
@@ -437,13 +628,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		vfsStopFunc:      vfsStopFunc,
 		events:           events,
 		stateMgr:         stateMgr,
-		tapName:          linuxMachine.TapName(),
+		tapName:          tapName,
 		caPool:           caPool,
 		subnetInfo:       subnetInfo,
 		subnetAlloc:      subnetAlloc,
 		workspace:        workspace,
 		rootfsPath:       upperRootfsPath,
 		bootstrapPath:    bootstrapRootfsPath,
+		swapPath:         swapPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -617,6 +809,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("vfs_stop", nil)
 	}
+	if s.vfsRoot != nil {
+		if err := vfs.CloseProvider(s.vfsRoot); err != nil {
+			errs = append(errs, errx.Wrap(ErrVFSServer, err))
+			markCleanup("vfs_root_close", err)
+		} else {
+			markCleanup("vfs_root_close", nil)
+		}
+	} else {
+		markCleanup("vfs_root_close", nil)
+	}
 	if s.vfsHooks != nil {
 		s.vfsHooks.Close()
 		markCleanup("vfs_hooks", nil)
@@ -712,6 +914,17 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("bootstrap_remove", err)
 	} else {
 		markCleanup("bootstrap_remove", nil)
+	}
+	// Remove ephemeral swap image
+	if s.swapPath != "" {
+		if err := os.Remove(s.swapPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+			markCleanup("swap_remove", err)
+		} else {
+			markCleanup("swap_remove", nil)
+		}
+	} else {
+		markCleanup("swap_remove", nil)
 	}
 
 	if len(errs) > 0 {

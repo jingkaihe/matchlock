@@ -1,5 +1,3 @@
-//go:build darwin
-
 package darwin
 
 import "errors"
@@ -36,6 +34,11 @@ var (
 	ErrNATAttach        = errors.New("failed to create NAT network attachment")
 	ErrNetworkConfig    = errors.New("failed to create network config")
 	ErrMACAddress       = errors.New("failed to generate MAC address")
+	// ErrInvalidIPv6Link reports a VMConfig whose fully-set IPv6 triple is
+	// malformed. It mirrors the Linux backends' Create-time rejection: the
+	// host-side IPv6 state (and, on darwin, the gVisor NIC addressing) must
+	// never be provisioned for a link the guest can not actually install.
+	ErrInvalidIPv6Link = errors.New("invalid IPv6 link")
 )
 
 // Device errors
@@ -76,4 +79,12 @@ var (
 	ErrCloseVFSListener  = errors.New("close vfs listener")
 	ErrCloseSocketPair   = errors.New("close socket pair")
 	ErrCloseConsoleFiles = errors.New("close console files")
+)
+
+// Build errors
+var (
+	// ErrVZUnavailable reports that this build cannot link Apple's
+	// Virtualization.framework bindings (anything but darwin with cgo), so no
+	// VZ virtual machine can be created.
+	ErrVZUnavailable = errors.New("darwin VM backend requires cgo and the Virtualization.framework SDK (build on macOS with CGO_ENABLED=1)")
 )

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,3 +292,256 @@ func TestConfigureCPULimitWritesInitCgroupFirst(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "10000 100000", strings.TrimSpace(string(data)))
 }
+
+func TestParseBootConfigExactMounts(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.workspace=/workspace matchlock.exact.mounts=/opt/project,/home/u/wt,/root/.tamandua/worktrees/x"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"/opt/project", "/home/u/wt", "/root/.tamandua/worktrees/x"}, cfg.ExactMounts)
+}
+
+func TestParseBootConfigExactMountsRejectsUnsafePath(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	content := "matchlock.dns=1.1.1.1 matchlock.exact.mounts=/opt/../etc,/opt/project"
+	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.Error(t, err)
+	assert.Nil(t, cfg)
+	assert.ErrorIs(t, err, ErrInvalidExactMount)
+}
+
+func TestValidExactMountChar(t *testing.T) {
+	assert.True(t, validExactMountChar("/opt/project"))
+	assert.True(t, validExactMountChar("/home/u/.tamandua/worktrees/x"))
+	assert.True(t, validExactMountChar("/workspace/runs/1/progress.txt"))
+
+	assert.False(t, validExactMountChar("/opt/../etc"))
+	assert.False(t, validExactMountChar("/opt/project;rm -rf /"))
+	assert.False(t, validExactMountChar("/opt/project \"x\""))
+	assert.False(t, validExactMountChar("relative"))
+}
+
+func TestEnsureExactMountDirCreatesMissingParents(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+
+	fi, err := os.Stat(target)
+	require.NoError(t, err)
+	assert.True(t, fi.IsDir())
+}
+
+func TestEnsureExactMountDirRefusesSymlinkComponent(t *testing.T) {
+	base := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret")
+	require.NoError(t, os.MkdirAll(outside, 0755))
+	// Create a symlinked component in an existing path.
+	dir := filepath.Join(base, "opt")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "link")))
+
+	err := ensureExactMountDir(filepath.Join(dir, "link", "project"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExactMountPrep)
+}
+
+func TestEnsureExactMountDirRefusesNonEmptyLeaf(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "existing.txt"), []byte("x"), 0644))
+
+	err := ensureExactMountDir(target)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrExactMountPrep)
+}
+
+func TestEnsureExactMountDirAllowsEmptyLeaf(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+}
+
+func TestEnsureExactMountDirRefusesTrustedGuestRuntime(t *testing.T) {
+	// The trusted guest runtime (where guest-init/agent/fused are injected) must
+	// never be shadowed by an exact-destination host mount, including its
+	// subpaths. This is rejected purely on the path, before touching the fs, so
+	// it holds whether or not /opt/matchlock exists in the test environment.
+	for _, p := range []string{"/opt/matchlock", "/opt/matchlock/sub", "/opt/matchlock/guest-agent"} {
+		err := ensureExactMountDir(p)
+		require.Error(t, err, "expected %q to be rejected as the trusted guest runtime", p)
+		assert.ErrorIs(t, err, ErrExactMountPrep)
+	}
+}
+
+func TestEnsureExactMountDirAllowsTrustedRuntimeSiblings(t *testing.T) {
+	// /opt/matchlock is reserved but sibling /opt project dirs remain valid.
+	base := t.TempDir()
+	target := filepath.Join(base, "opt", "project")
+	require.NoError(t, os.MkdirAll(target, 0755))
+
+	err := ensureExactMountDir(target)
+	require.NoError(t, err)
+}
+
+func TestParseBootConfigSwapDevice(t *testing.T) {
+	for _, dev := range []string{"vdc", "vdaa"} {
+		t.Run(dev, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.swap=" + dev
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, dev, cfg.SwapDevice)
+		})
+	}
+}
+
+func TestParseBootConfigSwapDeviceDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	cmdline := filepath.Join(dir, "cmdline")
+	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=1.1.1.1"), 0644))
+
+	cfg, err := parseBootConfig(cmdline)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.SwapDevice)
+}
+
+func TestParseBootConfigRejectsInvalidSwapDevice(t *testing.T) {
+	// "vdC" (uppercase), "../etc" (path traversal), "vdc,foo" (no comma
+	// allowed), "" (empty) and a non-vd name must all be rejected before the
+	// device ever reaches swapon(2).
+	for _, tc := range []string{"vdC", "../etc", "vdc,foo", "", "sda", "vd/../etc"} {
+		t.Run("swap="+tc, func(t *testing.T) {
+			dir := t.TempDir()
+			cmdline := filepath.Join(dir, "cmdline")
+			content := "matchlock.dns=1.1.1.1 matchlock.swap=" + tc
+			require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
+
+			cfg, err := parseBootConfig(cmdline)
+			require.Error(t, err)
+			assert.Nil(t, cfg)
+			assert.ErrorIs(t, err, ErrInvalidSwap)
+		})
+	}
+}
+
+func TestIsBlockDevice(t *testing.T) {
+	assert.True(t, isBlockDevice(fakeFileInfo{mode: os.ModeDevice}))
+	// os.ModeDevice alone matches character devices too; the char bit must be
+	// excluded explicitly.
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: os.ModeDevice | os.ModeCharDevice}))
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: 0}))
+	assert.False(t, isBlockDevice(fakeFileInfo{mode: os.ModeDir}))
+}
+
+func TestValidateSwapDeviceRejectsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist")
+	err := validateSwapDevice(path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestValidateSwapDeviceRejectsRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "regular")
+	require.NoError(t, os.WriteFile(path, []byte("not swap"), 0600))
+
+	err := validateSwapDevice(path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestValidateSwapDeviceRejectsCharacterDevice(t *testing.T) {
+	if _, err := os.Stat("/dev/null"); err != nil {
+		t.Skipf("/dev/null unavailable: %v", err)
+	}
+	err := validateSwapDevice("/dev/null")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestEnableSwapRejectsMissingDeviceBeforeSyscall(t *testing.T) {
+	if _, err := os.Stat("/dev/vdzz"); err == nil {
+		t.Skip("/dev/vdzz unexpectedly exists")
+	}
+	err := enableSwap("vdzz")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidSwap)
+}
+
+func TestSwapDeviceModeIsRootOnly(t *testing.T) {
+	// A block device is DAC-governed, so the swap node must be readable only by
+	// root; 0640/0660 would leave it reachable by the group (e.g. disk) and
+	// anything the workload can chgrp to.
+	assert.Equal(t, os.FileMode(0o600), swapDeviceMode)
+}
+
+func TestRestrictDeviceNodeAppliesOwnerAndMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "swapnode")
+	require.NoError(t, os.WriteFile(path, []byte("swap"), 0o666))
+
+	uid := os.Geteuid()
+	gid := os.Getegid()
+	require.NoError(t, restrictDeviceNode(path, uid, gid, swapDeviceMode))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	st, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	assert.Equal(t, uint32(uid), st.Uid)
+	assert.Equal(t, uint32(gid), st.Gid)
+}
+
+func TestRestrictSwapDeviceRestrictsToRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("chown to root requires privilege; covered structurally by TestSwapDeviceModeIsRootOnly")
+	}
+	path := filepath.Join(t.TempDir(), "swapnode")
+	require.NoError(t, os.WriteFile(path, []byte("swap"), 0o666))
+	require.NoError(t, os.Chown(path, 1234, 1234))
+
+	require.NoError(t, restrictSwapDevice(path))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	st, ok := info.Sys().(*syscall.Stat_t)
+	require.True(t, ok)
+	assert.Equal(t, uint32(0), st.Uid)
+	assert.Equal(t, uint32(0), st.Gid)
+}
+
+func TestRestrictSwapDeviceWrapsError(t *testing.T) {
+	err := restrictSwapDevice(filepath.Join(t.TempDir(), "missing"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEnableSwap)
+}
+
+// fakeFileInfo lets the block-device predicate be exercised for modes that are
+// impractical to create in a test (a real block device node).
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }

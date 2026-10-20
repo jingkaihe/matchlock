@@ -19,7 +19,17 @@ var execCmd = &cobra.Command{
 	Short: "Execute a command in a running sandbox",
 	Long: `Execute a command in a running sandbox.
 
-The sandbox must have been started with --rm=false to remain running.`,
+The sandbox must have been started with --rm=false to remain running.
+
+Each exec (and run's initial command) runs in its own isolated session: a
+fresh PID and mount namespace with /proc remounted, plus dropped
+capabilities and a seccomp filter. Background processes started by an exec
+are killed when that exec ends, and PIDs are per session - the session's
+shell is PID 1 in its own PID namespace, so process IDs are not stable
+across execs. To keep a persistent session open, use one long-lived
+interactive shell:
+
+  matchlock exec -i <vm> -- sh`,
 	Example: `  matchlock exec vm-abc123 echo hello
   matchlock exec vm-abc123 -it sh`,
 	Args: cobra.MinimumNArgs(1),

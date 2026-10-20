@@ -13,14 +13,17 @@ const (
 	maxOverlayLowerLayers = 20
 )
 
-func validateOverlayDiskLayout(lowerCount, extraCount int) error {
+func validateOverlayDiskLayout(lowerCount, extraCount int, swap bool) error {
 	if lowerCount > maxOverlayLowerLayers {
 		return errx.With(ErrOverlayLayerLimit, ": lowers=%d max=%d", lowerCount, maxOverlayLowerLayers)
 	}
-	// root(vda) + lowers + upper + extra
+	// root(vda) + lowers + upper + extra + (optional swap)
 	total := 1 + lowerCount + 1 + extraCount
+	if swap {
+		total++
+	}
 	if total > maxOverlayBlockDevices {
-		return errx.With(ErrOverlayDiskLimit, ": total=%d max=%d (root+lowers+upper+extra)", total, maxOverlayBlockDevices)
+		return errx.With(ErrOverlayDiskLimit, ": total=%d max=%d (root+lowers+upper+extra+swap)", total, maxOverlayBlockDevices)
 	}
 	return nil
 }

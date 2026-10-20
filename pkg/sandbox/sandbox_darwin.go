@@ -41,6 +41,7 @@ type Sandbox struct {
 	workspace        string
 	rootfsPath       string // Writable overlay upper disk
 	bootstrapPath    string // Bootstrap root disk (vda)
+	swapPath         string // Ephemeral swap backing image ("" when swap is off)
 	overlaySnapshots []string
 	lifecycle        *lifecycle.Store
 }
@@ -51,6 +52,12 @@ type Options struct {
 	RootfsFSTypes []string // Optional fs type per lower image (defaults to erofs).
 }
 
+// newDarwinVMBackend builds the backend a create attempt uses. It is a seam:
+// unit tests substitute a stub so the create-failure rollback can be exercised
+// without reaching the hypervisor. Production always builds the
+// Virtualization.framework backend.
+var newDarwinVMBackend = func() vm.Backend { return darwin.NewDarwinBackend() }
+
 func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
 	if opts == nil {
 		opts = &Options{}
@@ -58,7 +65,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if len(opts.RootfsPaths) == 0 {
 		return nil, fmt.Errorf("RootfsPaths is required")
 	}
-	if err := config.ValidateVFS(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	vfsEnabled := config.HasVFSMounts()
@@ -68,11 +75,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
 
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			return nil, err
-		}
-	}
 	if config.Resources == nil {
 		config.Resources = &api.Resources{CPUs: api.DefaultCPUs, MemoryMB: api.DefaultMemoryMB}
 	}
@@ -89,9 +91,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if err := stateMgr.Register(id, config); err != nil {
 		return nil, errx.Wrap(ErrRegisterState, err)
 	}
+	// Any create failure before the backend machine exists must not leave a
+	// permanent VM record: the attempt never produced a bootable VM, so its
+	// registry row and state directory are removed. Commit the boundary just
+	// before backend.Create, after which the existing (stopped-row) recovery
+	// semantics for machine-related failures stay in force.
+	rollback := newCreateRollback(stateMgr, id)
+	defer func() { retErr = rollback.run(retErr) }()
 	lifecycleStore := lifecycle.NewStore(stateMgr.Dir(id))
 	if err := lifecycleStore.Init(id, "virtualization.framework", stateMgr.Dir(id)); err != nil {
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrLifecycleInit, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -119,7 +127,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		subnetAlloc = state.NewSubnetAllocator()
 		subnetInfo, err = subnetAlloc.Allocate(id)
 		if err != nil {
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrAllocateSubnet, err)
 		}
 		_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -129,21 +136,24 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		})
 	}
 
-	backend := darwin.NewDarwinBackend()
+	backend := newDarwinVMBackend()
 
 	kernelPath, err := resolveKernelForConfig(ctx, config, opts, lifecycleStore)
 	if err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateVM, err)
 	}
 	rootfsPaths := opts.RootfsPaths
 	rootfsFSTypes := normalizeOverlayLowerFSTypes(rootfsPaths, opts.RootfsFSTypes)
 	bootstrapRootfsPath := filepath.Join(stateMgr.Dir(id), "bootstrap.ext4")
 	upperRootfsPath := filepath.Join(stateMgr.Dir(id), "upper.ext4")
+	var swapPath string
 	cleanupRootDisks := func() {
 		_ = os.Remove(bootstrapRootfsPath)
 		_ = os.Remove(upperRootfsPath)
+		if swapPath != "" {
+			_ = os.Remove(swapPath)
+		}
 	}
 	defer func() {
 		if retErr != nil {
@@ -160,29 +170,25 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		caPool, err = sandboxnet.NewCAPool()
 		if err != nil {
 			releaseSubnet()
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrCreateCAPool, err)
 		}
 	}
 
 	// Prepare bootstrap root disk (vda) and writable upper disk for overlay root.
-	if err := createBootstrapRootfs(bootstrapRootfsPath); err != nil {
+	if err := createBootstrapRootfsFn(bootstrapRootfsPath); err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareBootstrapRoot, err)
 	}
 	var diskSizeMB int64 = api.DefaultDiskSizeMB
 	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
 	}
-	if err := createExt4Image(upperRootfsPath, diskSizeMB); err != nil {
+	if err := createExt4ImageFn(upperRootfsPath, diskSizeMB); err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCreateRootfs, err)
 	}
-	if err := prepareOverlayUpperRootfs(upperRootfsPath); err != nil {
+	if err := prepareOverlayUpperRootfsFn(upperRootfsPath); err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrPrepareRootfs, err)
 	}
 	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
@@ -193,7 +199,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	if caPool != nil {
 		if err := injectConfigFileIntoRootfs(upperRootfsPath, "/upper/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
 			releaseSubnet()
-			stateMgr.Unregister(id)
 			return nil, errx.Wrap(ErrInjectCACert, err)
 		}
 	}
@@ -201,23 +206,31 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	extraDisks, err := buildExtraDiskConfigs(config.ExtraDisks)
 	if err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, err
 	}
-	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks)); err != nil {
+	if config.Resources != nil && config.Resources.SwapMB > 0 {
+		swapPath = filepath.Join(stateMgr.Dir(id), "swap.raw")
+	}
+	if err := validateOverlayDiskLayout(len(rootfsPaths), len(extraDisks), swapPath != ""); err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, err
+	}
+	if swapPath != "" {
+		swapDisk, err := provisionSwapDisk(swapPath, config.Resources.SwapMB)
+		if err != nil {
+			cleanupRootDisks()
+			releaseSubnet()
+			return nil, err
+		}
+		extraDisks = append(extraDisks, swapDisk)
 	}
 
-	gatewayIP := ""
-	guestIP := ""
-	subnetCIDR := ""
-	if subnetInfo != nil {
-		gatewayIP = subnetInfo.GatewayIP
-		guestIP = subnetInfo.GuestIP
-		subnetCIDR = subnetInfo.GatewayIP + "/24"
-	}
+	// networkLink carries the per-VM addressing both network consumers need:
+	// the VMConfig (guest kernel arguments) and the interception stack's
+	// Config. IPv6 fields are populated only for intercepted sandboxes,
+	// mirroring the Linux interceptionWiring gate - a plain NAT guest keeps
+	// the IPv4-only shape, and --no-network has no lease at all.
+	networkLink := newSandboxNetLink(subnetInfo, needsInterception)
 
 	vmConfig := &vm.VMConfig{
 		ID:                  id,
@@ -231,10 +244,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		MemoryMB:            config.Resources.MemoryMB,
 		SocketPath:          stateMgr.SocketPath(id) + ".sock",
 		LogPath:             stateMgr.LogPath(id),
-		GatewayIP:           gatewayIP,
-		GuestIP:             guestIP,
-		SubnetCIDR:          subnetCIDR,
+		GatewayIP:           networkLink.GatewayIPv4,
+		GuestIP:             networkLink.GuestIPv4,
+		SubnetCIDR:          networkLink.SubnetCIDR,
+		GatewayIPv6:         networkLink.GatewayIPv6,
+		GuestIPv6:           networkLink.GuestIPv6,
+		Subnet6CIDR:         networkLink.Subnet6CIDR,
 		Workspace:           workspace,
+		ExactMounts:         exactFUSEMountpoints(config),
 		UseInterception:     needsInterception,
 		Privileged:          config.Privileged,
 		PrebuiltRootfs:      bootstrapRootfsPath,
@@ -255,10 +272,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
 	if err != nil {
 		releaseSubnet()
-		stateMgr.Unregister(id)
 		return nil, err
 	}
 
+	// Machine boundary: from here on a failure keeps the (stopped) record so
+	// reconcile/gc can still find the host resources the machine may hold.
+	rollback.commit()
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		releaseSubnet()
@@ -298,14 +317,24 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 
 		netStack, err = sandboxnet.NewNetworkStack(&sandboxnet.Config{
-			File:       networkFile,
-			GatewayIP:  gatewayIP,
-			GuestIP:    guestIP,
-			MTU:        uint32(config.Network.GetMTU()),
-			Policy:     policyEngine,
-			Events:     events,
-			CAPool:     caPool,
-			DNSServers: config.Network.GetDNSServers(),
+			File:        networkFile,
+			GatewayIP:   networkLink.GatewayIPv4,
+			GuestIP:     networkLink.GuestIPv4,
+			GatewayIPv6: networkLink.GatewayIPv6,
+			GuestIPv6:   networkLink.GuestIPv6,
+			Subnet6CIDR: networkLink.Subnet6CIDR,
+			MTU:         uint32(config.Network.GetMTU()),
+			Policy:      policyEngine,
+			Events:      events,
+			CAPool:      caPool,
+			DNSServers:  config.Network.GetDNSServers(),
+			// The DNS answer-mode contract (network.dns_priority) applies to
+			// the darwin userspace resolver exactly as it does to the Linux
+			// forwarder: "ipv4" (default) prefers IPv4, "ipv6" relays
+			// verbatim; allow_private names are always verbatim. A stack
+			// construction failure aborts sandbox creation (fail closed) -
+			// never a silent fallback to VZ NAT or an IPv4-only stack.
+			DNSPriority: config.Network.GetDNSPriority(),
 		})
 		if err != nil {
 			machine.Close(ctx)
@@ -393,6 +422,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		workspace:        workspace,
 		rootfsPath:       upperRootfsPath,
 		bootstrapPath:    bootstrapRootfsPath,
+		swapPath:         swapPath,
 		overlaySnapshots: overlaySnapshots,
 		lifecycle:        lifecycleStore,
 	}
@@ -552,6 +582,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 	} else {
 		markCleanup("vfs_stop", nil)
 	}
+	if s.vfsRoot != nil {
+		if err := vfs.CloseProvider(s.vfsRoot); err != nil {
+			errs = append(errs, errx.Wrap(ErrVFSServer, err))
+			markCleanup("vfs_root_close", err)
+		} else {
+			markCleanup("vfs_root_close", nil)
+		}
+	} else {
+		markCleanup("vfs_root_close", nil)
+	}
 	if s.vfsHooks != nil {
 		s.vfsHooks.Close()
 		markCleanup("vfs_hooks", nil)
@@ -619,6 +659,16 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("bootstrap_remove", err)
 	} else {
 		markCleanup("bootstrap_remove", nil)
+	}
+	if s.swapPath != "" {
+		if err := os.Remove(s.swapPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+			markCleanup("swap_remove", err)
+		} else {
+			markCleanup("swap_remove", nil)
+		}
+	} else {
+		markCleanup("swap_remove", nil)
 	}
 
 	if len(errs) > 0 {

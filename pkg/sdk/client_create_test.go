@@ -613,6 +613,66 @@ func TestCreateSendsFractionalCPUs(t *testing.T) {
 	assert.Equal(t, 0.5, capturedCPUs)
 }
 
+func TestCreateSendsSwapMB(t *testing.T) {
+	var capturedSwapMB float64
+	var capturedResources map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if resources, ok := params["resources"].(map[string]interface{}); ok {
+						capturedResources = resources
+						if swapMB, ok := resources["swap_mb"].(float64); ok {
+							capturedSwapMB = swapMB
+						}
+					}
+				}
+			}
+			return response{JSONRPC: "2.0", Result: json.RawMessage(`{"id":"vm-swap"}`), ID: &req.ID}
+		default:
+			return response{JSONRPC: "2.0", Error: &rpcError{Code: ErrCodeMethodNotFound, Message: "Method not found"}, ID: &req.ID}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{Image: "alpine:latest", SwapMB: 512})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-swap", vmID)
+	require.NotNil(t, capturedResources)
+	assert.Equal(t, 512.0, capturedSwapMB)
+}
+
+func TestCreateSendsSwapMBOffByDefault(t *testing.T) {
+	var capturedResources map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if resources, ok := params["resources"].(map[string]interface{}); ok {
+						capturedResources = resources
+					}
+				}
+			}
+			return response{JSONRPC: "2.0", Result: json.RawMessage(`{"id":"vm-noswap"}`), ID: &req.ID}
+		default:
+			return response{JSONRPC: "2.0", Error: &rpcError{Code: ErrCodeMethodNotFound, Message: "Method not found"}, ID: &req.ID}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{Image: "alpine:latest"})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-noswap", vmID)
+	require.NotNil(t, capturedResources)
+	// The key is always present so the RPC side sees an explicit 0 (off).
+	require.Contains(t, capturedResources, "swap_mb")
+	assert.Equal(t, 0.0, capturedResources["swap_mb"])
+}
+
 func TestCreateSendsNoNetwork(t *testing.T) {
 	var capturedNetwork map[string]interface{}
 
@@ -894,5 +954,125 @@ func TestCreateRejectsInvalidAddHost(t *testing.T) {
 		},
 	})
 	require.ErrorIs(t, err, ErrInvalidAddHost)
+	assert.Empty(t, vmID)
+}
+
+func TestWithAllowPrivateRecordsEntries(t *testing.T) {
+	builder := New("alpine:latest").
+		WithAllowPrivate("192.168.107.74:8888").
+		WithAllowPrivate("ai.internal", "10.0.0.0/8")
+
+	opts := builder.Options()
+	assert.Equal(t, []string{
+		"192.168.107.74:8888",
+		"ai.internal",
+		"10.0.0.0/8",
+	}, opts.AllowPrivate)
+	// WithAllowPrivate is an exception list on top of the private block; it is
+	// NOT the same as AllowPrivateIPs (which disables block_private_ips).
+	assert.False(t, opts.BlockPrivateIPsSet)
+	assert.False(t, opts.BlockPrivateIPs)
+}
+
+func TestWithAllowPrivateReplacesNothingWhenCalledWithoutEntries(t *testing.T) {
+	builder := New("alpine:latest").WithAllowPrivate()
+	assert.Empty(t, builder.Options().AllowPrivate)
+}
+
+func TestCreateSendsAllowPrivate(t *testing.T) {
+	var capturedNetwork map[string]interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						capturedNetwork = network
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-allow-private"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(New("alpine:latest").
+		WithBlockPrivateIPs(true).
+		WithAllowPrivate("192.168.107.74:8888", "ai.internal", "[200::1]:8888").
+		Options())
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-allow-private", vmID)
+	require.NotNil(t, capturedNetwork)
+	assert.Equal(t, []interface{}{"192.168.107.74:8888", "ai.internal", "[200::1]:8888"}, capturedNetwork["allow_private"])
+	assert.Equal(t, true, capturedNetwork["block_private_ips"])
+}
+
+func TestCreateSendsAllowPrivateWithoutOtherNetworkConfig(t *testing.T) {
+	var hasNetworkConfig bool
+	var capturedAllowPrivate []interface{}
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						hasNetworkConfig = true
+						capturedAllowPrivate, _ = network["allow_private"].([]interface{})
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-allow-private-only"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	// Only AllowPrivate is set: includeNetwork must still emit a network block.
+	vmID, err := client.Create(CreateOptions{
+		Image:        "alpine:latest",
+		AllowPrivate: []string{"10.0.0.5"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "vm-allow-private-only", vmID)
+	require.True(t, hasNetworkConfig)
+	assert.Equal(t, []interface{}{"10.0.0.5"}, capturedAllowPrivate)
+}
+
+func TestCreateRejectsNoNetworkWithAllowPrivate(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image:        "alpine:latest",
+		NoNetwork:    true,
+		AllowPrivate: []string{"192.168.1.1"},
+	})
+	require.ErrorIs(t, err, ErrNoNetworkConflict)
 	assert.Empty(t, vmID)
 }

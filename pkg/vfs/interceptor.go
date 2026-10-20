@@ -24,6 +24,11 @@ func NewInterceptProvider(inner Provider, hooks *HookEngine) Provider {
 	}
 }
 
+// withCaller records the requesting identity for hook evaluation and forwards
+// it to the wrapped provider so ownership reporting also reflects the caller
+// (e.g. an intercepting host_fs mount). Without the forward, the inner router
+// would keep serving the 0/0 default and a non-root caller would see a
+// root-owned view through the mount.
 func (p *interceptProvider) withCaller(uid, gid int) Provider {
 	if p == nil {
 		return nil
@@ -31,6 +36,11 @@ func (p *interceptProvider) withCaller(uid, gid int) Provider {
 	clone := *p
 	clone.defaultUID = uid
 	clone.defaultGID = gid
+	if inner, ok := p.inner.(interface {
+		withCaller(uid, gid int) Provider
+	}); ok {
+		clone.inner = inner.withCaller(uid, gid)
+	}
 	return &clone
 }
 

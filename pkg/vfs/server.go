@@ -194,6 +194,15 @@ func (s *VFSServer) HandleConnection(conn net.Conn) {
 	}
 }
 
+// wirePermMode translates a FUSE/Unix mode_t (which may carry file-type bits
+// such as S_IFREG or S_IFDIR in the upper bits) into the permission-only
+// os.FileMode that Provider methods and os.Root require. os.Root.OpenFile,
+// Mkdir and MkdirAll reject a mode with any bit outside 0o777, so the type bits
+// must be stripped before the request reaches the provider.
+func wirePermMode(mode uint32) os.FileMode {
+	return os.FileMode(mode) & os.ModePerm
+}
+
 func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 	provider := s.provider
 	if callerAware, ok := provider.(interface {
@@ -211,7 +220,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpSetattr:
-		if err := provider.Chmod(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Chmod(req.Path, wirePermMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		info, err := provider.Stat(req.Path)
@@ -221,7 +230,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpOpen:
-		h, err := provider.Open(req.Path, linuxOpenFlagsToHost(req.Flags), os.FileMode(req.Mode))
+		h, err := provider.Open(req.Path, linuxOpenFlagsToHost(req.Flags), wirePermMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -233,7 +242,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Handle: fh}
 
 	case OpCreate:
-		h, err := provider.Open(req.Path, linuxOpenFlagsToHostCreate(req.Flags), os.FileMode(req.Mode))
+		h, err := provider.Open(req.Path, linuxOpenFlagsToHostCreate(req.Flags), wirePermMode(req.Mode))
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
@@ -294,7 +303,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		return &VFSResponse{Entries: direntsFromEntries(req.Path, entries)}
 
 	case OpMkdir:
-		if err := provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
+		if err := provider.Mkdir(req.Path, wirePermMode(req.Mode)); err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		info, err := provider.Stat(req.Path)
@@ -318,6 +327,48 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
 		return &VFSResponse{}
+
+	case OpSymlink:
+		// The link path is the target destination (req.Path); the stored target
+		// string is req.Data (the textual object of the symlink).
+		if err := provider.Symlink(string(req.Data), req.Path); err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		info, err := provider.Stat(req.Path)
+		if err != nil {
+			return &VFSResponse{}
+		}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
+
+	case OpReadlink:
+		target, err := provider.Readlink(req.Path)
+		if err != nil {
+			return &VFSResponse{Err: errnoFromError(err)}
+		}
+		return &VFSResponse{Data: []byte(target)}
+
+	case OpLink:
+		// Hard link is optional; fall back to ENOSYS when the provider does not
+		// implement it (e.g. memory providers, which have no inode model for it).
+		if linker, ok := provider.(interface {
+			Link(oldName, newName string) error
+		}); ok {
+			if err := linker.Link(req.Path, req.NewPath); err != nil {
+				return &VFSResponse{Err: errnoFromError(err)}
+			}
+			// Return the stat of the new link so the guest FUSE layer can fill
+			// the LINK entry with the real size/mode/times. Hard links share the
+			// target inode, so advertising size 0 (the zero EntryOut default)
+			// would corrupt the kernel's cached attributes of the shared inode
+			// and turn subsequent reads into EOF. A stat failure after a
+			// successful link is best-effort (mirrors OpSymlink).
+			info, err := provider.Stat(req.NewPath)
+			if err != nil {
+				return &VFSResponse{}
+			}
+			return &VFSResponse{Stat: statFromInfo(req.NewPath, info)}
+		}
+		return &VFSResponse{Err: -int32(syscall.ENOSYS)}
 
 	case OpRmdir:
 		if err := provider.Remove(req.Path); err != nil {
@@ -484,9 +535,17 @@ func (s *VFSServer) ServeUDSBackground(socketPath string) (stop func(), err erro
 		return nil, err
 	}
 
+	return s.ServeListenerBackground(listener), nil
+}
+
+// ServeListenerBackground starts the VFS server on an arbitrary net.Listener
+// (e.g. an AF_VSOCK listener for the QEMU backend) in a goroutine and returns a
+// stop function that closes the listener. It is the shared entry point for both
+// the UDS path (Firecracker/Darwin) and the per-sandbox vsock path (QEMU).
+func (s *VFSServer) ServeListenerBackground(listener net.Listener) (stop func()) {
 	go s.Serve(listener)
 
 	return func() {
 		listener.Close()
-	}, nil
+	}
 }

@@ -17,4 +17,5 @@ var (
 	ErrMetadata       = errors.New("metadata")
 	ErrImageNotFound  = errors.New("image not found")
 	ErrLayerFS        = errors.New("invalid layer filesystem type")
+	ErrImageIdentity  = errors.New("image identity mismatch")
 )

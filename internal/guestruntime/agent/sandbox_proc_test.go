@@ -3,6 +3,9 @@
 package guestagent
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"runtime"
 	"testing"
 
@@ -85,4 +88,63 @@ func TestIsSandboxLauncher(t *testing.T) {
 
 	t.Setenv(sandboxLauncherEnvKey, "1")
 	assert.True(t, isSandboxLauncher(), "should be sandbox launcher when env var is set")
+}
+
+// TestRunSandboxLauncherPinsOSThread is a source-contract regression test for
+// the launcher-lock bug: runSandboxLauncher installs per-thread kernel security
+// state (capability-bounding drops, no_new_privs, seccomp) and then syscall.Exec
+// runs on whichever OS thread the goroutine occupies. Without a pin the Go
+// runtime may migrate the goroutine between those prctls and the exec, so the
+// child can silently lose enforcement (NNP=0/SEC=0/unrestricted CapBnd) or the
+// seccomp prctl can fail EACCES and the launcher aborts 127.
+//
+// runtime.LockOSThread cannot be observed directly in-process, so this parses
+// the production source and asserts the pin is the FIRST statement of
+// runSandboxLauncher (ahead of every per-thread prctl) and that no
+// UnlockOSThread is present. It fails if the pin is removed or moved later.
+// Limits: it checks source ordering only, not runtime behavior, and does not
+// execute the launcher.
+func TestRunSandboxLauncherPinsOSThread(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "sandbox_proc.go", nil, 0)
+	require.NoError(t, err, "parse sandbox_proc.go")
+
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if d, ok := decl.(*ast.FuncDecl); ok && d.Name.Name == "runSandboxLauncher" {
+			fn = d
+			break
+		}
+	}
+	require.NotNil(t, fn, "runSandboxLauncher FuncDecl")
+	require.NotNil(t, fn.Body, "runSandboxLauncher body")
+	require.NotEmpty(t, fn.Body.List, "runSandboxLauncher body must not be empty")
+
+	first, ok := fn.Body.List[0].(*ast.ExprStmt)
+	require.True(t, ok, "first statement must be an expression statement")
+	call, ok := first.X.(*ast.CallExpr)
+	require.True(t, ok, "first statement must be a call expression")
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	require.True(t, ok, "first statement must be a selector call")
+	pkg, ok := sel.X.(*ast.Ident)
+	require.True(t, ok, "first statement must be a package-qualified call")
+
+	assert.Equal(t, "runtime", pkg.Name, "pin must be runtime.LockOSThread")
+	assert.Equal(t, "LockOSThread", sel.Sel.Name, "pin must be runtime.LockOSThread")
+	assert.Empty(t, call.Args, "runtime.LockOSThread takes no arguments")
+
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		s, ok := c.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := s.X.(*ast.Ident); ok && id.Name == "runtime" && s.Sel.Name == "UnlockOSThread" {
+			assert.Fail(t, "runSandboxLauncher must not call runtime.UnlockOSThread")
+		}
+		return true
+	})
 }

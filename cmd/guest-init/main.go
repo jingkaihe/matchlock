@@ -8,11 +8,13 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +37,11 @@ const (
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
 
+	// trustedGuestRuntimeRoot is the guest path where the sandbox injects the
+	// guest-init/guest-agent/guest-fused binaries. An exact-destination mount
+	// must never be created over this root or any of its subpaths.
+	trustedGuestRuntimeRoot = "/opt/matchlock"
+
 	defaultPATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	networkInterface  = "eth0"
@@ -54,6 +61,12 @@ var cpuMaxPaths = []string{
 	"/sys/fs/cgroup/cpu.max",
 }
 
+// swapDevicePattern accepts one or more lowercase ASCII letters after the "vd"
+// prefix. Current backends emit single-letter names (vda..vdz), but the pattern
+// also tolerates a future multi-letter scheme (vdaa) so the guest never rejects
+// a name a backend legitimately generates.
+var swapDevicePattern = regexp.MustCompile(`^vd[a-z]+$`)
+
 type diskMount struct {
 	Device   string
 	Path     string
@@ -68,15 +81,21 @@ type hostIPMapping struct {
 }
 
 type bootConfig struct {
-	DNSServers []string
-	Hostname   string
-	AddHosts   []hostIPMapping
-	Workspace  string
-	CPUs       float64
-	MTU        int
-	NoNetwork  bool
-	Disks      []diskMount
-	Overlay    overlayBootConfig
+	DNSServers  []string
+	Hostname    string
+	AddHosts    []hostIPMapping
+	Workspace   string
+	ExactMounts []string
+	CPUs        float64
+	MTU         int
+	NoNetwork   bool
+	Disks       []diskMount
+	Overlay     overlayBootConfig
+	SwapDevice  string
+	Privileged  bool
+	// IPv6 is the guest side of the per-VM IPv6 link announced by the host, or
+	// nil when the boot has no IPv6 link (see activeIPv6Link).
+	IPv6 *ipv6Link
 }
 
 type overlayBootConfig struct {
@@ -122,6 +141,28 @@ func runInit() {
 	}
 	prepareBaseFilesystems()
 
+	// Swap must be enabled while guest-init still runs as PID 1 with full
+	// capabilities: the workload launcher later drops CAP_SYS_ADMIN from the
+	// bounding set (there is no CAP_SWAP), so an unprivileged workload can
+	// never swapon/swapoff. devtmpfs is mounted on /dev by
+	// prepareBaseFilesystems, so the swap block device node already exists.
+	if cfg.SwapDevice != "" {
+		if err := enableSwap(cfg.SwapDevice); err != nil {
+			fatal(err)
+		}
+		// enableSwap's root:root 0600 node blocks non-root workloads, and the
+		// cgroup v2 device policy below is what actually binds a uid-0
+		// workload (owner DAC bits and CAP_MKNOD would otherwise expose the
+		// VM-wide store). Attach it after swapon so PID 1 can open the device
+		// first; the kernel keeps the backing file open, so later denial does
+		// not disturb active swap.
+		if swapDevicePolicyRequired(cfg) {
+			if err := installSwapDevicePolicy(cfg.SwapDevice, cgroup2RootPath); err != nil {
+				fatal(err)
+			}
+		}
+	}
+
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
 	configureCPULimit(cfg.CPUs)
@@ -136,6 +177,21 @@ func runInit() {
 
 	if !cfg.NoNetwork {
 		bringUpNetwork(networkInterface, cfg.MTU)
+		// The guest side of the IPv6 link is installed here, while guest-init
+		// still runs as PID 1 and before the workload starts: the kernel's ip=
+		// boot argument configures IPv4 only, so the address and the default
+		// route come from netlink (see network_ipv6.go).
+		//
+		// A failure is reported, not fatal: without the guest address there is
+		// simply no IPv6 traffic, which is exactly the fail-closed state the ip6
+		// interception table enforces, and an otherwise usable IPv4 sandbox
+		// should still boot. bringUpNetwork treats MTU/link failures the same
+		// way.
+		if link := cfg.activeIPv6Link(); link != nil {
+			if err := configureGuestIPv6(networkInterface, *link); err != nil {
+				warnf("configure guest ipv6 %s: %v", link, err)
+			}
+		}
 	}
 	if err := mountExtraDisks(cfg.Disks); err != nil {
 		fatal(err)
@@ -148,6 +204,26 @@ func runInit() {
 
 		if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
 			fatal(err)
+		}
+	}
+
+	// Exact-destination mounts: attach a FUSE tree at each requested absolute
+	// guest path (for example /opt/project or a linked worktree) so the same
+	// absolute path is physically reachable in the guest. The host router serves
+	// each exact destination; guest-init only creates missing empty parents and
+	// starts a per-destination FUSE daemon before the unprivileged harness runs.
+	for _, mountpoint := range cfg.ExactMounts {
+		if filepath.Clean(mountpoint) == filepath.Clean(cfg.Workspace) {
+			continue
+		}
+		if err := ensureExactMountDir(mountpoint); err != nil {
+			fatal(err)
+		}
+		if err := startGuestFused(guestFusedPath, mountpoint); err != nil {
+			fatal(err)
+		}
+		if err := waitForWorkspaceMount(procMountsPath, mountpoint, workspaceWaitMax); err != nil {
+			fatal(errx.With(ErrWorkspaceMountWait, " exact mount %s: %w", mountpoint, err))
 		}
 	}
 
@@ -198,6 +274,33 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				cfg.Workspace = v
 			}
 
+		case strings.HasPrefix(field, "matchlock.exact.mounts="):
+			v := strings.TrimPrefix(field, "matchlock.exact.mounts=")
+			if v != "" {
+				for _, p := range strings.Split(v, ",") {
+					p = strings.TrimSpace(p)
+					if p != "" {
+						if !strings.HasPrefix(p, "/") || !validExactMountChar(p) {
+							return nil, errx.With(ErrInvalidExactMount, ": %q", p)
+						}
+						cfg.ExactMounts = append(cfg.ExactMounts, p)
+					}
+				}
+			}
+
+		case strings.HasPrefix(field, ipv6FieldPrefix):
+			v := strings.TrimPrefix(field, ipv6FieldPrefix)
+			if v == "" {
+				// An empty field means "no IPv6 link": an IPv4-only boot must
+				// behave exactly as before, so nothing is configured for it.
+				continue
+			}
+			link, parseErr := parseIPv6LinkField(v)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			cfg.IPv6 = &link
+
 		case strings.HasPrefix(field, "matchlock.mtu="):
 			v := strings.TrimPrefix(field, "matchlock.mtu=")
 			mtu, convErr := strconv.Atoi(v)
@@ -217,6 +320,17 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 		case strings.HasPrefix(field, "matchlock.no_network="):
 			v := strings.TrimPrefix(field, "matchlock.no_network=")
 			cfg.NoNetwork = v == "1" || strings.EqualFold(v, "true")
+
+		case strings.HasPrefix(field, "matchlock.privileged="):
+			v := strings.TrimPrefix(field, "matchlock.privileged=")
+			cfg.Privileged = v == "1" || strings.EqualFold(v, "true")
+
+		case strings.HasPrefix(field, "matchlock.swap="):
+			dev := strings.TrimSpace(strings.TrimPrefix(field, "matchlock.swap="))
+			if !swapDevicePattern.MatchString(dev) {
+				return nil, errx.With(ErrInvalidSwap, ": %q", dev)
+			}
+			cfg.SwapDevice = dev
 
 		case strings.HasPrefix(field, "matchlock.disk."):
 			spec := strings.TrimPrefix(field, "matchlock.disk.")
@@ -288,6 +402,90 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+// swapDeviceMode is the mode applied to the swap block device node after
+// swapon. Access to a block device is governed by ordinary DAC (device-node
+// permissions), NOT by CAP_SYS_ADMIN, so dropping CAP_SYS_ADMIN from the
+// workload bounding set does not by itself stop a non-root workload from
+// reading the VM-wide swap backing store. Narrowing the node to root-only 0600
+// closes that path for every non-root workload (the common --user case).
+//
+// This is defense-in-depth, not the boundary. A uid-0 workload is the node
+// *owner*, so the 0600 owner bits (0400/0200) grant it access; CAP_DAC_OVERRIDE
+// is irrelevant for an owner and dropping it would not help. A uid-0 workload
+// also holds CAP_MKNOD and can recreate a node from the major:minor exposed by
+// /sys/block/<dev>/dev. The actual root-binding control is the cgroup v2
+// device-controller BPF policy in swap_bpf.go, attached to the cgroup2 root and
+// evaluated before and independently of file ownership for both open and
+// mknod. Do not remove the node: swapon(2) has already opened the backing
+// device (removal does not stop swap), and a present 0600 node yields a clear
+// EACCES for non-root instead of an ambiguous ENOENT.
+const swapDeviceMode os.FileMode = 0o600
+
+// enableSwap turns the guest swap device on. It runs from guest-init (PID 1)
+// while full capabilities are still held; the launcher drops CAP_SYS_ADMIN from
+// the workload's bounding set afterwards, so the workload cannot manage swap.
+// The block device is validated first so a wrong or mis-ordered device yields a
+// clear error instead of an opaque swapon errno. After swapon succeeds the node
+// is restricted to root:root 0600 so non-root workloads cannot read it.
+func enableSwap(dev string) error {
+	path := filepath.Join("/dev", dev)
+	if err := validateSwapDevice(path); err != nil {
+		return err
+	}
+	pathPtr, err := unix.BytePtrFromString(path)
+	if err != nil {
+		return errx.With(ErrEnableSwap, " %s: %w", path, err)
+	}
+	if _, _, errno := unix.RawSyscall(unix.SYS_SWAPON, uintptr(unsafe.Pointer(pathPtr)), 0, 0); errno != 0 {
+		return errx.With(ErrEnableSwap, " %s: %w", path, errno)
+	}
+	// Restrict after a successful swapon: the kernel already holds the device
+	// open, so tightening the node cannot break the active swap area.
+	if err := restrictSwapDevice(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+// restrictSwapDevice applies the swap-device access policy (root:root, 0600) to
+// the given device node.
+func restrictSwapDevice(path string) error {
+	return restrictDeviceNode(path, 0, 0, swapDeviceMode)
+}
+
+// restrictDeviceNode chowns path to uid:gid and chmods it to mode. It is the
+// testable seam: production passes the root owner (0:0) and swapDeviceMode,
+// while a unit test can pass the current euid/egid so the chown is permitted
+// without privileges. Errors wrap ErrEnableSwap because the only caller is the
+// swap boot path.
+func restrictDeviceNode(path string, uid, gid int, mode os.FileMode) error {
+	if err := os.Chown(path, uid, gid); err != nil {
+		return errx.With(ErrEnableSwap, " chown %s to %d:%d: %w", path, uid, gid, err)
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return errx.With(ErrEnableSwap, " chmod %s to %#o: %w", path, mode, err)
+	}
+	return nil
+}
+
+// validateSwapDevice requires path to exist and be a block device. os.ModeDevice
+// matches both block and character devices, so the character bit is excluded
+// explicitly; a regular file or missing node is rejected before swapon(2).
+func validateSwapDevice(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return errx.With(ErrInvalidSwap, " %s: %w", path, err)
+	}
+	if !isBlockDevice(info) {
+		return errx.With(ErrInvalidSwap, " %s: not a block device (%s)", path, info.Mode())
+	}
+	return nil
+}
+
+func isBlockDevice(info os.FileInfo) bool {
+	return info.Mode()&os.ModeDevice != 0 && info.Mode()&os.ModeCharDevice == 0
 }
 
 func prepareEarlyFilesystems() {
@@ -755,8 +953,11 @@ func chownDiskMountRoot(d diskMount) error {
 	return nil
 }
 
-func startGuestFused(path string) error {
+func startGuestFused(path string, mountpoint ...string) error {
 	cmd := exec.Command(path)
+	if len(mountpoint) > 0 && mountpoint[0] != "" {
+		cmd = exec.Command(path, mountpoint[0])
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -819,6 +1020,98 @@ func workspaceIsFUSE(workspace string) (bool, error) {
 		return false, errx.Wrap(ErrWorkspaceMount, err)
 	}
 	return uint64(st.Type) == fuseSuperMagic, nil
+}
+
+// validExactMountChar reports whether p is a safe absolute guest path for an
+// exact-destination mount. It mirrors the host API guest-mount path validator
+// (only alphanumeric, '/', '_', '.', '-' and no '..', so a path cannot escape or
+// smuggle a shell/argv separator).
+func validExactMountChar(p string) bool {
+	if !strings.HasPrefix(p, "/") {
+		return false
+	}
+	if strings.Contains(p, "..") {
+		return false
+	}
+	for _, r := range p {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '/' || r == '_' || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// ensureExactMountDir validates and creates (only the missing, empty) guest
+// parent directories for an exact-destination FUSE mount. It refuses an exact
+// mount through a symlinked component, over a non-empty final directory (which
+// would silently shadow guest content), and over the trusted guest runtime root
+// /opt/matchlock or any of its subpaths (where guest-init/agent/fused are
+// injected). Only missing components are created as empty directories; existing
+// guest OS directories (for example /opt or /home) are left untouched.
+func ensureExactMountDir(path string) error {
+	path = filepath.Clean(path)
+	if !strings.HasPrefix(path, "/") {
+		return errx.With(ErrExactMountPrep, " %q is not absolute", path)
+	}
+	// The trusted guest runtime must never be shadowed by a host mount. Mounting
+	// over /opt/matchlock or a subpath would hide the injected guest-init/agent/
+	// fused binaries (or a future runtime file) and corrupt the sandbox.
+	if path == trustedGuestRuntimeRoot || strings.HasPrefix(path, trustedGuestRuntimeRoot+"/") {
+		return errx.With(ErrExactMountPrep, " %q shadows the trusted guest runtime %s", path, trustedGuestRuntimeRoot)
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	current := ""
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		current += "/" + part
+		fi, err := os.Lstat(current)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.Mkdir(current, 0755); err != nil && !os.IsExist(err) {
+					return errx.With(ErrExactMountPrep, " mkdir %s: %w", current, err)
+				}
+				continue
+			}
+			return errx.With(ErrExactMountPrep, " lstat %s: %w", current, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return errx.With(ErrExactMountPrep, " %s is a symlink; refusing an exact mount through a link", current)
+		}
+		if !fi.IsDir() {
+			return errx.With(ErrExactMountPrep, " %s is not a directory", current)
+		}
+		// Only the final (leaf) directory matters for the "do not shadow guest
+		// content" rule: a non-empty leaf would be hidden by the FUSE mount.
+		if filepath.Clean(current) == path {
+			empty, err := isDirEmpty(current)
+			if err != nil {
+				return errx.With(ErrExactMountPrep, " %s: %w", current, err)
+			}
+			if !empty {
+				return errx.With(ErrExactMountPrep, " %s already exists and is not empty; refusing to shadow guest content", current)
+			}
+		}
+	}
+	return nil
+}
+
+func isDirEmpty(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil // at least one entry
 }
 
 func mountIgnore(source, target, fstype string, flags uintptr, data string) {

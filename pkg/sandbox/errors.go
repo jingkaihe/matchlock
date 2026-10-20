@@ -52,6 +52,7 @@ var (
 	ErrNetworkFile            = errors.New("get network file")
 	ErrReleaseSubnet          = errors.New("release subnet")
 	ErrUnregisterState        = errors.New("unregister VM state")
+	ErrRemoveFailedCreate     = errors.New("remove failed VM create record")
 	ErrRemoveRootfs           = errors.New("remove rootfs copy")
 	ErrProxyClose             = errors.New("proxy close")
 	ErrLifecycleInit          = errors.New("initialize lifecycle record")

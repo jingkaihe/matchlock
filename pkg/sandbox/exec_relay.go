@@ -87,6 +87,23 @@ func NewExecRelay(sb *Sandbox) *ExecRelay {
 	return &ExecRelay{sb: sb}
 }
 
+// StartExecRelay builds an exec relay for the sandbox and starts listening on
+// socketPath. It returns the running relay so the owner can stop it later.
+//
+// This is the shared entry point for every process that owns a sandbox: the
+// `run` command starts it for foreground sandboxes, and the JSON-RPC handler
+// starts it for RPC-created VMs so a separate `matchlock exec` process can
+// connect to a VM started by another process. The caller is responsible for
+// creating the socket's parent directory (the sandbox state directory already
+// exists by the time the VM is running).
+func (s *Sandbox) StartExecRelay(socketPath string) (*ExecRelay, error) {
+	relay := NewExecRelay(s)
+	if err := relay.Start(socketPath); err != nil {
+		return nil, err
+	}
+	return relay, nil
+}
+
 func (r *ExecRelay) Start(socketPath string) error {
 	os.Remove(socketPath)
 	listener, err := net.Listen("unix", socketPath)

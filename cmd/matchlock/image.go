@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -50,11 +51,27 @@ var imageGCCmd = &cobra.Command{
 	RunE:  runImageGC,
 }
 
+var imageResolveCmd = &cobra.Command{
+	Use:     "resolve <tag>",
+	Aliases: []string{"inspect"},
+	Short:   "Resolve a local image to its stable content + config identity",
+	Long: `Resolve a stored image to a stable content identity and relevant OCI
+configuration identity WITHOUT booting a VM, pulling from a registry, or
+changing the selected local tag. The output is the same identity that the
+RPC create "image_identity" field expects.
+
+Unknown or missing images fail clearly and do not modify the store.`,
+	Example: `  matchlock image resolve igorhvr/bedlam-ubuntu`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runImageResolve,
+}
+
 func init() {
 	imageCmd.AddCommand(imageLsCmd)
 	imageCmd.AddCommand(imageRmCmd)
 	imageCmd.AddCommand(imageImportCmd)
 	imageCmd.AddCommand(imageGCCmd)
+	imageCmd.AddCommand(imageResolveCmd)
 	rootCmd.AddCommand(imageCmd)
 }
 
@@ -139,5 +156,21 @@ func runImageGC(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Removed %d unreferenced blobs\n", removed)
+	return nil
+}
+
+func runImageResolve(cmd *cobra.Command, args []string) error {
+	tag := args[0]
+
+	identity, err := image.Resolve(tag)
+	if err != nil {
+		return err
+	}
+
+	output, err := json.MarshalIndent(identity, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
 	return nil
 }

@@ -43,6 +43,32 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
+// Len returns the number of bytes currently buffered. Take a snapshot with it
+// before triggering new output, then read only StringFrom(snapshot) so output
+// that predates the trigger cannot satisfy a wait.
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+// StringFrom returns the buffered output from byte offset onward. Callers take
+// the offset from Len before triggering new output, so only output appended
+// after that point is inspected. bytes.Buffer only grows, so an offset from Len
+// is always in range; a non-positive offset returns the whole buffer.
+func (b *lockedBuffer) StringFrom(offset int) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	full := b.buf.String()
+	if offset <= 0 {
+		return full
+	}
+	if offset >= len(full) {
+		return ""
+	}
+	return full[offset:]
+}
+
 func startPersistentRun(t *testing.T, bin string) (*exec.Cmd, <-chan error, *lockedBuffer) {
 	t.Helper()
 	args := withAcceptanceRunCPUs([]string{

@@ -56,5 +56,21 @@ CREATE TABLE IF NOT EXISTS subnet_allocations (
 CREATE INDEX IF NOT EXISTS idx_subnet_allocations_octet ON subnet_allocations(octet);
 `,
 		},
+		{
+			// Per-VM IPv6 unique-local addressing (see ipv6ForOctet in
+			// subnet.go). The columns are derivable from octet, so a legacy row
+			// left with the '' default keeps working: Get() derives the values
+			// instead of erroring. ALTER TABLE ... ADD COLUMN is not available
+			// with an IF NOT EXISTS guard in SQLite, so the statements must only
+			// ever run once per database — which is exactly what the versioned
+			// migration ledger above guarantees (a second Open skips version 3).
+			Version: 3,
+			Name:    "add_subnet_allocations_ipv6",
+			SQL: `
+ALTER TABLE subnet_allocations ADD COLUMN gateway_ip6 TEXT NOT NULL DEFAULT '';
+ALTER TABLE subnet_allocations ADD COLUMN guest_ip6 TEXT NOT NULL DEFAULT '';
+ALTER TABLE subnet_allocations ADD COLUMN subnet6 TEXT NOT NULL DEFAULT '';
+`,
+		},
 	}
 }

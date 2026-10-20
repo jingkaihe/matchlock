@@ -16,6 +16,9 @@ func TestReconcileVMStopped(t *testing.T) {
 	stateMgr := state.NewManagerWithDir(vmDir)
 	subnetAlloc := state.NewSubnetAllocatorWithDir(subnetDir)
 	reconciler := NewReconcilerWithManagers(stateMgr, subnetAlloc)
+	// Stub the nftables seam so the reconciler's DOCKER-USER sweep does not
+	// depend on a real netlink connection in this environment.
+	injectReconcileSeams(t)
 
 	vmID := "vm-reconcile1"
 	require.NoError(t, stateMgr.Register(vmID, map[string]string{"image": "alpine:latest"}))

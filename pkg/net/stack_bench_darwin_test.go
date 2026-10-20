@@ -270,7 +270,7 @@ func BenchmarkConnPool(b *testing.B) {
 	})
 }
 
-// ---------- Benchmark: copyWithCancel relay ----------
+// ---------- Benchmark: relayHalfClose relay ----------
 
 func BenchmarkCopyRelay(b *testing.B) {
 	for _, size := range []int{1024, 32 * 1024, 128 * 1024} {
@@ -284,10 +284,11 @@ func benchCopyRelay(b *testing.B, chunkSize int) {
 	clientR, clientW := net.Pipe()
 	serverR, serverW := net.Pipe()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go copyWithCancel(ctx, serverW, clientR)
+	relayDone := make(chan struct{})
+	go func() {
+		relayHalfClose(serverW, clientR)
+		close(relayDone)
+	}()
 
 	payload := make([]byte, chunkSize)
 	readBuf := make([]byte, chunkSize)
@@ -306,9 +307,9 @@ func benchCopyRelay(b *testing.B, chunkSize int) {
 		wg.Wait()
 	}
 
-	cancel()
 	clientR.Close()
 	clientW.Close()
 	serverR.Close()
 	serverW.Close()
+	<-relayDone
 }

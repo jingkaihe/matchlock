@@ -58,7 +58,11 @@ type Resources struct {
 	VsockPath     string `json:"vsock_path,omitempty"`
 	TAPName       string `json:"tap_name,omitempty"`
 	FirewallTable string `json:"firewall_table,omitempty"`
-	NATTable      string `json:"nat_table,omitempty"`
+	// FirewallTableV6 is the per-TAP IPv6 interception table
+	// (matchlock6_<tap>). It is only set when the IPv6 interception path was
+	// wired; reconcile deletes it for a dead TAP like the IPv4 one.
+	FirewallTableV6 string `json:"firewall_table_v6,omitempty"`
+	NATTable        string `json:"nat_table,omitempty"`
 }
 
 type Record struct {

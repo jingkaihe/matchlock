@@ -39,11 +39,24 @@ func configureRootLogging(cmd *cobra.Command, args []string) error {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		var exitErr interface{ ExitCode() int }
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
-		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
+}
+
+// exitCodeForError returns the exit code for a command error. It recognizes
+// ONLY the intentional exit-code carrier (*exitCodeError) and falls back to 1
+// for every other error, printing it to stderr first. Anything else that merely
+// exposes ExitCode() (e.g. an *exec.ExitError from a wrapped subprocess
+// failure) must be PRINTED, not silently swallowed — otherwise a failing
+// image-prep subprocess exits with no diagnostics at all.
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exitCodeError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	fmt.Fprintln(os.Stderr, err)
+	return 1
 }

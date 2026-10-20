@@ -1,15 +1,12 @@
-//go:build darwin
+//go:build darwin && cgo
 
 package darwin
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -17,28 +14,33 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
-const (
-	VsockPortExec  = 5000
-	VsockPortVFS   = 5001
-	VsockPortReady = 5002
-)
-
-type DarwinBackend struct{}
-
+// consoleFiles owns the host-side ends of the guest's serial console. It is
+// only meaningful on the VZ (cgo) path.
 type consoleFiles struct {
 	stdinNull *os.File
 	logFile   *os.File
 }
 
-func NewDarwinBackend() *DarwinBackend {
-	return &DarwinBackend{}
-}
-
-func (b *DarwinBackend) Name() string {
-	return "virtualization.framework"
-}
-
 func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
+	// Custom kernel args are used verbatim and bypass every generated
+	// matchlock.* argument (including matchlock.swap= and matchlock.ipv6=), so
+	// reject a swap disk combined with them before doing any work; otherwise the
+	// swap device would be attached but never enabled.
+	if err := vm.ValidateSwapDisks(config); err != nil {
+		return nil, err
+	}
+
+	// The same IPv6 link validation the Linux backends perform before any host
+	// resource exists, but only for configs that actually use the IPv6 link:
+	// the fields are populated for interception sandboxes only (mirroring the
+	// sandbox's needsInterception gate). A plain-NAT or --no-network config
+	// keeps booting exactly as before even if it carries stale IPv6 fields.
+	if config.UseInterception && !config.NoNetwork {
+		if _, _, err := vm.ParseIPv6Link(config); err != nil {
+			return nil, errx.Wrap(ErrInvalidIPv6Link, err)
+		}
+	}
+
 	vcpus, ok := api.VCPUCount(config.CPUs)
 	if !ok {
 		return nil, errx.With(ErrInvalidCPUCount, ": cpus must be a finite number > 0")
@@ -188,114 +190,6 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 	}, nil
 }
 
-func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
-	if config.KernelArgs != "" {
-		return config.KernelArgs
-	}
-
-	workspace := config.Workspace
-	workspaceArg := ""
-	if workspace != "" {
-		workspaceArg = " matchlock.workspace=" + workspace
-	}
-
-	hostname := config.Hostname
-	if hostname == "" {
-		hostname = config.ID
-	}
-
-	mtu := effectiveMTU(config.MTU)
-
-	// Root device is /dev/vda (first virtio block device)
-	privilegedArg := ""
-	if config.Privileged {
-		privilegedArg = " matchlock.privileged=1"
-	}
-
-	diskArgs := ""
-	devLetter := 'b' // vda is rootfs
-	if config.OverlayEnabled {
-		lowerDevs := make([]string, 0, len(config.OverlayLowerPaths))
-		lowerFS := make([]string, 0, len(config.OverlayLowerPaths))
-		for i := range config.OverlayLowerPaths {
-			lowerDevs = append(lowerDevs, fmt.Sprintf("vd%c", devLetter))
-			fsType := "erofs"
-			if i < len(config.OverlayLowerFSTypes) && config.OverlayLowerFSTypes[i] != "" {
-				fsType = config.OverlayLowerFSTypes[i]
-			}
-			lowerFS = append(lowerFS, fsType)
-			devLetter++
-		}
-		upperDev := fmt.Sprintf("vd%c", devLetter)
-		devLetter++
-		diskArgs += fmt.Sprintf(
-			" matchlock.overlay=1 matchlock.overlay.lower=%s matchlock.overlay.lowerfs=%s matchlock.overlay.upper=%s",
-			strings.Join(lowerDevs, ","),
-			strings.Join(lowerFS, ","),
-			upperDev,
-		)
-	}
-	for _, disk := range config.ExtraDisks {
-		dev := fmt.Sprintf("vd%c", devLetter)
-		devLetter++
-		diskMount := diskKernelArg(disk)
-		diskArgs += fmt.Sprintf(" matchlock.disk.%s=%s", dev, diskMount)
-	}
-
-	addHostArgs := ""
-	for i, mapping := range config.AddHosts {
-		addHostArgs += fmt.Sprintf(" matchlock.add_host.%d=%s,%s", i, mapping.Host, mapping.IP)
-	}
-
-	if config.NoNetwork {
-		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=off hostname=%s%s matchlock.dns=%s matchlock.no_network=1%s%s matchlock.cpus=%g",
-			hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), privilegedArg, diskArgs+addHostArgs, config.CPUs,
-		)
-	}
-
-	if config.UseInterception {
-		guestIP := config.GuestIP
-		if guestIP == "" {
-			guestIP = "192.168.100.2"
-		}
-		gatewayIP := config.GatewayIP
-		if gatewayIP == "" {
-			gatewayIP = "192.168.100.1"
-		}
-		return fmt.Sprintf(
-			"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off%s hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
-			guestIP, gatewayIP, vm.KernelIPDNSSuffix(config.DNSServers), hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
-		)
-	}
-
-	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp hostname=%s%s matchlock.dns=%s matchlock.mtu=%d%s%s%s matchlock.cpus=%g",
-		hostname, workspaceArg, vm.KernelDNSParam(config.DNSServers), mtu, privilegedArg, diskArgs, addHostArgs, config.CPUs,
-	)
-}
-
-func diskKernelArg(disk vm.DiskConfig) string {
-	parts := []string{disk.GuestMount}
-	if disk.ReadOnly {
-		parts = append(parts, "ro")
-	}
-	if disk.OwnerUID != nil {
-		parts = append(parts, fmt.Sprintf("uid=%d", *disk.OwnerUID))
-	}
-	if disk.OwnerGID != nil {
-		parts = append(parts, fmt.Sprintf("gid=%d", *disk.OwnerGID))
-	}
-	return strings.Join(parts, ",")
-}
-
-func effectiveMTU(mtu int) int {
-	if mtu > 0 {
-		return mtu
-	}
-	return api.DefaultNetworkMTU
-}
-
 func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {
 	diskAttachment, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(
 		config.RootfsPath,
@@ -369,41 +263,6 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 
 	vzConfig.SetStorageDevicesVirtualMachineConfiguration(devices)
 	return nil
-}
-
-// CopyRootfsToTemp copies the rootfs image to a temp file so each VM gets a clean copy
-func CopyRootfsToTemp(srcPath string) (string, error) {
-	src, err := os.Open(srcPath)
-	if err != nil {
-		return "", err
-	}
-	defer src.Close()
-
-	// Create temp file in same directory to ensure same filesystem (for efficient copy)
-	dir := filepath.Dir(srcPath)
-	dst, err := os.CreateTemp(dir, "matchlock-rootfs-*.ext4")
-	if err != nil {
-		// Fall back to system temp if same dir fails
-		dst, err = os.CreateTemp("", "matchlock-rootfs-*.ext4")
-		if err != nil {
-			return "", err
-		}
-	}
-	dstPath := dst.Name()
-
-	_, err = io.Copy(dst, src)
-	if err != nil {
-		dst.Close()
-		os.Remove(dstPath)
-		return "", err
-	}
-
-	if err := dst.Close(); err != nil {
-		os.Remove(dstPath)
-		return "", err
-	}
-
-	return dstPath, nil
 }
 
 func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguration, socketPair *SocketPair, useInterception bool, noNetwork bool) error {

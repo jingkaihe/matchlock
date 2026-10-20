@@ -1,5 +1,3 @@
-//go:build darwin
-
 package net
 
 import (

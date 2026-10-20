@@ -2,12 +2,17 @@
 
 package linux
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/jingkaihe/matchlock/pkg/vm"
+)
 
 // TAP / network interface errors
 var (
 	ErrTAPCreate         = errors.New("create TAP device")
 	ErrTAPConfigure      = errors.New("configure TAP interface")
+	ErrTAPConfigureIPv6  = errors.New("configure TAP IPv6 address")
 	ErrTAPSetMTU         = errors.New("set MTU")
 	ErrTAPDelete         = errors.New("delete interface")
 	ErrTUNOpen           = errors.New("open TUN device")
@@ -15,12 +20,30 @@ var (
 	ErrTUNSETPERSIST     = errors.New("TUNSETPERSIST")
 	ErrTUNSETPERSISTOff  = errors.New("TUNSETPERSIST(0)")
 	ErrInterfaceNotFound = errors.New("interface not found")
-	ErrInvalidCIDR       = errors.New("invalid CIDR")
-	ErrCreateSocket      = errors.New("create socket")
-	ErrSIOCSIFADDR       = errors.New("SIOCSIFADDR")
-	ErrSIOCSIFNETMASK    = errors.New("SIOCSIFNETMASK")
-	ErrSIOCGIFFLAGS      = errors.New("SIOCGIFFLAGS")
-	ErrSIOCSIFFLAGS      = errors.New("SIOCSIFFLAGS")
+	// ErrInvalidCIDR is aliased to the shared pkg/vm sentinel: the IPv6 link
+	// derivation moved to pkg/vm (see pkg/vm/ipv6.go), and the TAP configure
+	// path keeps checking the same value, so errors.Is identity is preserved.
+	ErrInvalidCIDR    = vm.ErrInvalidCIDR
+	ErrCreateSocket   = errors.New("create socket")
+	ErrSIOCSIFADDR    = errors.New("SIOCSIFADDR")
+	ErrSIOCSIFNETMASK = errors.New("SIOCSIFNETMASK")
+	ErrSIOCGIFFLAGS   = errors.New("SIOCGIFFLAGS")
+	ErrSIOCSIFFLAGS   = errors.New("SIOCSIFFLAGS")
+)
+
+// IPv6 rtnetlink errors (the SIOCSIFADDR ioctl used for IPv4 cannot carry a
+// 128-bit address, so IPv6 addresses go through RTM_NEWADDR instead)
+var (
+	ErrInvalidInterfaceIndex = errors.New("invalid interface index")
+	// ErrInvalidIPv6Address is aliased to the shared pkg/vm sentinel (the IPv6
+	// link derivation moved to pkg/vm/ipv6.go); see ErrInvalidCIDR above.
+	ErrInvalidIPv6Address      = vm.ErrInvalidIPv6Address
+	ErrInvalidIPv6PrefixLength = errors.New("invalid IPv6 prefix length")
+	ErrNetlinkSocket           = errors.New("create netlink socket")
+	ErrNetlinkBind             = errors.New("bind netlink socket")
+	ErrNetlinkSend             = errors.New("send netlink message")
+	ErrNetlinkRecv             = errors.New("receive netlink response")
+	ErrNetlinkAddrAdd          = errors.New("netlink RTM_NEWADDR")
 )
 
 // Firecracker lifecycle errors

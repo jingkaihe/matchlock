@@ -3,12 +3,7 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -18,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	fcassets "github.com/jingkaihe/matchlock/internal/assets/firecracker"
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/firecracker"
 )
@@ -34,6 +30,9 @@ var setupLinuxCmd = &cobra.Command{
   1. Installing or locating Firecracker
   2. Configuring the host for Matchlock
   3. Adding the current user to kvm/netdev groups
+
+Firecracker is installed from the version vendored into this binary, so
+this step works without network access.
 
 This command requires root privileges.`,
 	RunE: runSetupLinux,
@@ -55,7 +54,7 @@ changes to take effect.`,
 func init() {
 	setupLinuxCmd.Flags().String("user", "", "Username to configure (default: current user or SUDO_USER)")
 	setupLinuxCmd.Flags().String("binary", "", "Path to matchlock binary (default: auto-detect)")
-	setupLinuxCmd.Flags().String("install-dir", "/usr/local/bin", "Directory to install Firecracker")
+	setupLinuxCmd.Flags().String("install-dir", "/usr/libexec/matchlock", "Directory to install Firecracker and jailer")
 	setupLinuxCmd.Flags().Bool("best-effort", false, "Continue setup after non-fatal errors")
 	setupLinuxCmd.Flags().Bool("skip-firecracker", false, "Skip Firecracker installation")
 	setupLinuxCmd.Flags().Bool("skip-permissions", false, "Skip machine permission setup")
@@ -180,103 +179,48 @@ func resolveSetupUser(cmd *cobra.Command) (string, error) {
 	return u.Username, nil
 }
 
+// installFirecracker extracts the Firecracker and jailer binaries for the
+// current architecture from the version vendored into this binary. It never
+// contacts the network.
+//
+// The destination directory comes from --install-dir (default /usr/libexec/matchlock).
+// NOTE: the runtime resolver (pkg/firecracker.ResolveFirecrackerPath) consults
+// MATCHLOCK_FIRECRACKER / MATCHLOCK_JAILER env overrides first, then the FIXED
+// /usr/libexec/matchlock, then PATH. A custom --install-dir therefore requires
+// PATH or an explicit env override for the runtime to find it. We verify the
+// exact file we wrote, not the resolver's result, so a PATH or env install is
+// never misreported as ours.
+//
+// On success the installed firecracker is executed to confirm the vendored
+// version is actually runnable; failure to execute is treated as an error
+// rather than a silent success.
 func installFirecracker(installDir string) error {
-	fmt.Println("=== Installing Firecracker ===")
+	fmt.Println("=== Installing Firecracker (from vendored assets) ===")
 
-	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "x86_64"
-	} else if arch == "arm64" {
-		arch = "aarch64"
-	}
-
-	installedVersion := getFirecrackerVersion()
-	if installedVersion != "" {
-		fmt.Printf("✓ Firecracker %s already available\n", installedVersion)
-		return nil
-	}
-
-	version, err := getLatestFirecrackerVersion()
+	arch, err := fcassets.ResolveArch(runtime.GOARCH)
 	if err != nil {
-		version = "v1.10.1"
-		fmt.Printf("Could not fetch latest version, using %s\n", version)
+		return err
+	}
+
+	version := fcassets.PinnedVersion()
+	commit := fcassets.ReleaseCommit()
+	fmt.Printf("Vendored Firecracker %s (upstream release commit %s)\n", version, commit)
+	fmt.Printf("Extracting firecracker + jailer to %s ...\n", installDir)
+
+	if err := fcassets.InstallBoth(arch, installDir); err != nil {
+		return errx.Wrap(ErrSetupLinux, err)
+	}
+
+	fcPath := filepath.Join(installDir, "firecracker")
+	ver, err := exec.Command(fcPath, "--version").Output()
+	if err != nil {
+		return errx.With(ErrSetupLinux, ": installed firecracker does not execute: %w", err)
+	}
+	fields := strings.Fields(string(ver))
+	if len(fields) >= 2 {
+		fmt.Printf("✓ Installed firecracker %s to %s\n", fields[1], fcPath)
 	} else {
-		fmt.Printf("Latest version: %s\n", version)
-	}
-
-	url := fmt.Sprintf("https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-%s.tgz",
-		version, version, arch)
-
-	fmt.Printf("Downloading from %s...\n", url)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return errx.Wrap(ErrDownloadFailed, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
-	}
-
-	gr, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		return errx.Wrap(ErrGzipReader, err)
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-
-	firecrackerBin := fmt.Sprintf("firecracker-%s-%s", version, arch)
-	jailerBin := fmt.Sprintf("jailer-%s-%s", version, arch)
-
-	installed := map[string]bool{
-		"firecracker": false,
-		"jailer":      false,
-	}
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return errx.Wrap(ErrTarReader, err)
-		}
-
-		baseName := filepath.Base(hdr.Name)
-		var destName string
-		if baseName == firecrackerBin {
-			destName = "firecracker"
-		} else if baseName == jailerBin {
-			destName = "jailer"
-		} else {
-			continue
-		}
-
-		destPath := filepath.Join(installDir, destName)
-		f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-		if err != nil {
-			return errx.With(ErrCreateFile, " %s: %w", destPath, err)
-		}
-
-		_, err = io.Copy(f, tr)
-		f.Close()
-		if err != nil {
-			return errx.With(ErrWriteFile, " %s: %w", destPath, err)
-		}
-		installed[destName] = true
-		fmt.Printf("✓ Installed %s\n", destPath)
-	}
-
-	for binary, ok := range installed {
-		if !ok {
-			return errx.With(ErrDownloadFailed, ": %s not found in Firecracker archive", binary)
-		}
-	}
-
-	if newVersion := getFirecrackerVersion(); newVersion != "" {
-		fmt.Printf("✓ Firecracker %s installed successfully\n", newVersion)
+		fmt.Printf("✓ Installed firecracker to %s (%s)\n", fcPath, strings.TrimSpace(string(ver)))
 	}
 
 	checkKVM()
@@ -293,33 +237,6 @@ func getFirecrackerVersion() string {
 		return parts[1]
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func getLatestFirecrackerVersion() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status: HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var payload struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", err
-	}
-	if payload.TagName == "" {
-		return "", fmt.Errorf("could not parse version")
-	}
-	return payload.TagName, nil
 }
 
 func checkKVM() {

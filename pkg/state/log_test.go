@@ -5,12 +5,34 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// lockedBuffer is a bytes.Buffer whose Write and String are mutex-guarded: the
+// race detector flagged the snapshot read performed by require.Eventually's
+// goroutine against CopyLogFile's concurrent write. The lock exists so this
+// test's own polling is race-clean; no product code changes.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
 
 func TestReadLogFileMissingReturnsEmpty(t *testing.T) {
 	t.Parallel()
@@ -30,11 +52,21 @@ func TestCopyLogFileFollow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var out bytes.Buffer
+	var out lockedBuffer
 	done := make(chan error, 1)
+	finished := make(chan struct{})
 	go func() {
+		defer close(finished)
 		done <- CopyLogFile(ctx, path, &out, true)
 	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("CopyLogFile did not return after cancellation")
+		}
+	})
 
 	require.Eventually(t, func() bool {
 		return out.String() == "first\n"

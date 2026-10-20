@@ -35,7 +35,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.NetworkMTU < 0 {
 		return "", ErrInvalidNetworkMTU
 	}
-	if opts.NoNetwork && (len(opts.AllowedHosts) > 0 || len(opts.Secrets) > 0 || opts.ForceInterception || opts.NetworkInterception != nil) {
+	if opts.NoNetwork && (len(opts.AllowedHosts) > 0 || len(opts.AllowPrivate) > 0 || len(opts.Secrets) > 0 || opts.ForceInterception || opts.NetworkInterception != nil) {
 		return "", ErrNoNetworkConflict
 	}
 	for _, mapping := range opts.AddHosts {
@@ -79,6 +79,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 			"cpus":            opts.CPUs,
 			"memory_mb":       opts.MemoryMB,
 			"disk_size_mb":    opts.DiskSizeMB,
+			"swap_mb":         opts.SwapMB,
 			"timeout_seconds": opts.TimeoutSeconds,
 		},
 	}
@@ -150,6 +151,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 
 func buildCreateNetworkParams(opts CreateOptions, wireInterception *api.NetworkInterceptionConfig) map[string]interface{} {
 	hasAllowedHosts := len(opts.AllowedHosts) > 0
+	hasAllowPrivate := len(opts.AllowPrivate) > 0
 	hasAddHosts := len(opts.AddHosts) > 0
 	hasSecrets := len(opts.Secrets) > 0
 	hasDNSServers := len(opts.DNSServers) > 0
@@ -160,7 +162,7 @@ func buildCreateNetworkParams(opts CreateOptions, wireInterception *api.NetworkI
 	hasNetworkInterception := wireInterception != nil
 	blockPrivateIPs, hasBlockPrivateIPsOverride := resolveCreateBlockPrivateIPs(opts)
 
-	includeNetwork := hasAllowedHosts || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasNoNetwork || hasBlockPrivateIPsOverride || hasForceInterception || hasNetworkInterception
+	includeNetwork := hasAllowedHosts || hasAllowPrivate || hasAddHosts || hasSecrets || hasDNSServers || hasHostname || hasMTU || hasNoNetwork || hasBlockPrivateIPsOverride || hasForceInterception || hasNetworkInterception
 	if !includeNetwork {
 		return nil
 	}
@@ -193,6 +195,9 @@ func buildCreateNetworkParams(opts CreateOptions, wireInterception *api.NetworkI
 	}
 	if hasForceInterception || hasNetworkInterception {
 		network["intercept"] = true
+	}
+	if hasAllowPrivate {
+		network["allow_private"] = opts.AllowPrivate
 	}
 	if hasNetworkInterception {
 		network["interception"] = wireInterception

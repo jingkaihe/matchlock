@@ -98,7 +98,15 @@ func TestSDKNetworkInterceptionMutatesSSEDataLines(t *testing.T) {
 		}),
 	)
 
-	result, err := client.Exec(context.Background(), `sh -c 'wget -q -O - "http://httpbingo.org/sse?count=2" 2>&1'`)
+	// -S (print the response status line and headers) is deliberate: on the rare
+	// occasion this upstream dependency answers 403, the observed output must say
+	// WHO answered. A 403 from the upstream carries its own Server/Date headers,
+	// while one from the interception proxy carries only Content-Length and
+	// Connection plus the body "Blocked by policy", so the failure text of the
+	// assertions below is self-diagnosing instead of being an unexplained status
+	// line. It also removes -q, which was suppressing exactly that evidence. The
+	// assertions are unchanged.
+	result, err := client.Exec(context.Background(), `sh -c 'wget -S -O - "http://httpbingo.org/sse?count=2" 2>&1'`)
 	require.NoError(t, err, "Exec")
 
 	combined := result.Stdout + result.Stderr

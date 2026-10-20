@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/image"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
 )
@@ -71,6 +73,14 @@ type portForwardVM interface {
 	StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error)
 }
 
+// execRelayVM is implemented by VM backends whose sandboxes can serve
+// `matchlock exec` over a Unix socket. Concrete sandboxes (*sandbox.Sandbox)
+// satisfy it; mocks and backends that do not simply skip the relay, preserving
+// their previous behaviour.
+type execRelayVM interface {
+	StartExecRelay(socketPath string) (*sandbox.ExecRelay, error)
+}
+
 type interactiveExecVM interface {
 	ExecInteractive(ctx context.Context, command string, opts *api.ExecOptions, rows, cols uint16, stdin io.Reader, stdout io.Writer, resizeCh <-chan [2]uint16) (int, error)
 }
@@ -103,8 +113,14 @@ func (r *execInputReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// ImageResolver resolves a stored image tag to its stable identity. It is
+// used by the "resolve_image" RPC method. When nil, that method returns an
+// error indicating the resolver is not configured.
+type ImageResolver func(ctx context.Context, tag string) (*image.Identity, error)
+
 type Handler struct {
 	factory   VMFactory
+	imageRes  ImageResolver
 	vm        VM
 	lastVMID  string
 	pfManager *sandbox.PortForwardManager
@@ -126,6 +142,17 @@ type Handler struct {
 	// entryCancel stops a launch-started image ENTRYPOINT/CMD exec when VM closes.
 	entryCancel  context.CancelFunc
 	logPathForVM func(string) string
+	// execRelay serves `matchlock exec` for the current VM. It is nil for VMs
+	// whose backend does not implement execRelayVM and is guarded by vmMu.
+	execRelay *sandbox.ExecRelay
+}
+
+// HandlerOption configures a Handler.
+type HandlerOption func(*Handler)
+
+// WithImageResolver sets the resolver used by the "resolve_image" RPC method.
+func WithImageResolver(r ImageResolver) HandlerOption {
+	return func(h *Handler) { h.imageRes = r }
 }
 
 type execTTYSession struct {
@@ -133,8 +160,8 @@ type execTTYSession struct {
 	resize chan [2]uint16
 }
 
-func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
-	return &Handler{
+func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer, opts ...HandlerOption) *Handler {
+	h := &Handler{
 		factory:   factory,
 		events:    make(chan api.Event, 100),
 		stdin:     stdin,
@@ -146,6 +173,10 @@ func NewHandler(factory VMFactory, stdin io.Reader, stdout io.Writer) *Handler {
 			return state.NewManager().LogPath(vmID)
 		},
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) Run(ctx context.Context) error {
@@ -264,6 +295,8 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 	switch req.Method {
 	case "create":
 		return h.handleCreate(ctx, req)
+	case "resolve_image":
+		return h.handleResolveImage(ctx, req)
 	case "exec":
 		return h.handleExec(ctx, req)
 	case "exec_stream":
@@ -351,17 +384,20 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
-	config := api.DefaultConfig().Merge(&params)
-	if config.Network != nil {
-		if err := config.Network.Validate(); err != nil {
-			return &Response{
-				JSONRPC: "2.0",
-				Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
-				ID:      req.ID,
-			}
+	// Validate the raw, unmerged params at the boundary. Merge only overrides
+	// non-zero fields, so a malformed request (for example swap_mb: -1) must be
+	// rejected here rather than relying solely on post-merge validation, which
+	// would otherwise normalize the bad value against the defaults first.
+	if err := params.Validate(); err != nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+			ID:      req.ID,
 		}
 	}
-	if err := config.ValidateVFS(); err != nil {
+
+	config := api.DefaultConfig().Merge(&params)
+	if err := config.Validate(); err != nil {
 		return &Response{
 			JSONRPC: "2.0",
 			Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
@@ -398,7 +434,26 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
+	// Expose the same exec socket a `run`-created VM gets so a separate
+	// `matchlock exec` process can inspect an RPC-created VM. Fail closed:
+	// without the socket the VM is unreachable from the CLI.
+	relay, err := h.startVMExecRelay(vm)
+	if err != nil {
+		if entryCancel != nil {
+			entryCancel()
+		}
+		vm.Close(ctx)
+		state.NewManager().Remove(vm.ID())
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeVMFailed, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
 	h.vmMu.Lock()
+	oldRelay := h.execRelay
+	h.execRelay = relay
 	if h.pfManager != nil {
 		_ = h.pfManager.Close()
 		h.pfManager = nil
@@ -411,6 +466,12 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	h.vm = vm
 	h.lastVMID = vm.ID()
 	h.vmMu.Unlock()
+
+	// Stop the replaced VM's relay outside the lock; its VM record is left to
+	// the caller (the pre-existing create-replacement behaviour).
+	if oldRelay != nil {
+		oldRelay.Stop()
+	}
 
 	go func() {
 		for event := range vm.Events() {
@@ -425,6 +486,73 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 	return &Response{
 		JSONRPC: "2.0",
 		Result:  result,
+		ID:      req.ID,
+	}
+}
+
+// startVMExecRelay starts the exec relay for a VM whose backend implements
+// execRelayVM, listening at the state manager's per-VM exec socket path. It
+// returns (nil, nil) for backends without relay support (for example mocks and
+// non-sandbox implementations), preserving their previous behaviour.
+func (h *Handler) startVMExecRelay(vm VM) (*sandbox.ExecRelay, error) {
+	relayVM, ok := vm.(execRelayVM)
+	if !ok {
+		return nil, nil
+	}
+
+	socketPath := state.NewManager().ExecSocketPath(vm.ID())
+	relay, err := relayVM.StartExecRelay(socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("start exec relay at %s: %s", socketPath, err)
+	}
+	return relay, nil
+}
+
+func (h *Handler) handleResolveImage(ctx context.Context, req *Request) *Response {
+	if h.imageRes == nil {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidRequest, Message: "resolve_image is not supported by this RPC server"},
+			ID:      req.ID,
+		}
+	}
+
+	var params struct {
+		Tag string `json:"tag"`
+	}
+	if req.Params != nil {
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return &Response{
+				JSONRPC: "2.0",
+				Error:   &Error{Code: ErrCodeInvalidParams, Message: err.Error()},
+				ID:      req.ID,
+			}
+		}
+	}
+	if params.Tag == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "tag is required (e.g., igorhvr/bedlam-ubuntu)"},
+			ID:      req.ID,
+		}
+	}
+
+	identity, err := h.imageRes(ctx, params.Tag)
+	if err != nil {
+		code := ErrCodeInternal
+		if errors.Is(err, image.ErrImageNotFound) || image.IsIdentityMismatch(err) {
+			code = ErrCodeInvalidParams
+		}
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: code, Message: err.Error()},
+			ID:      req.ID,
+		}
+	}
+
+	return &Response{
+		JSONRPC: "2.0",
+		Result:  identity,
 		ID:      req.ID,
 	}
 }
@@ -1305,9 +1433,16 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.pfManager = nil
 	entryCancel := h.entryCancel
 	h.entryCancel = nil
+	relay := h.execRelay
+	h.execRelay = nil
 	h.vmMu.Unlock()
 	if entryCancel != nil {
 		entryCancel()
+	}
+	// Stop accepting exec connections before tearing the VM down so a
+	// concurrent `matchlock exec` fails fast instead of racing machine.Close.
+	if relay != nil {
+		relay.Stop()
 	}
 
 	if pfManager != nil {
@@ -1507,7 +1642,7 @@ func (h *Handler) stopRun() {
 	}
 }
 
-func RunRPC(ctx context.Context, factory VMFactory) error {
-	handler := NewHandler(factory, os.Stdin, os.Stdout)
+func RunRPC(ctx context.Context, factory VMFactory, opts ...HandlerOption) error {
+	handler := NewHandler(factory, os.Stdin, os.Stdout, opts...)
 	return handler.Run(ctx)
 }

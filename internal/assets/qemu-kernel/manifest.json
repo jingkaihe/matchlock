@@ -1,0 +1,18 @@
+{
+  "version": "6.19.8",
+  "kernel": "kernel-qemu-bzImage-6.19.8.gz",
+  "sha256": "7245efaaf5ffd6f160270f755d6a9bd5a631da4d7e5e162f47245fcf171dab60",
+  "compressed_sha256": "4cefea4fe557ee13a4e94b59054f423c6bd734cad8ed94ef047dd941b54713cb",
+  "config": "qemu-x86_64.config",
+  "config_sha256": "7711ace2b67f515c5a46a6b866f47080d3612d93b907da9ee12df4b3fbcfb4d0",
+  "resolved_config": "resolved-config.txt",
+  "resolved_config_sha256": "b3e76cfb7bbb2b8c8c821aa795d266628073dc5766974fd7e1da845cd4b65829",
+  "source": {
+    "name": "linux-6.19.8",
+    "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.19.8.tar.xz",
+    "tar_sha256": "aada4722db8bcfa0b9732851856d405082b6a4fa2e3ab067be8db17cdd115b38"
+  },
+  "license": "GPL-2.0 WITH Linux-syscall-note (see COPYING; corresponding source = linux-6.19.8 tarball referenced above)",
+  "recipe": "cp qemu-x86_64.config .config && make olddefconfig && make -j$(nproc) bzImage",
+  "notes": "Built for the QEMU amd64 pc machine. CONFIG_ACPI=y (QEMU pc requires ACPI for PCI IRQ routing; Firecracker sets it off). Uses make bzImage (compressed x86 kernel that QEMU -kernel loads directly) instead of the Firecracker vmlinux, which QEMU rejects without a PVH ELF note. Not hermetic: built on Ubuntu 22.04 x86_64 with distro toolchain; the vendored blob is the authoritative artifact."
+}

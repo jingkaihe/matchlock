@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"net"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jingkaihe/matchlock/internal/testutil"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/stretchr/testify/assert"
@@ -123,6 +123,35 @@ func (m *fakeInteractiveMachine) Close(ctx context.Context) error {
 	return nil
 }
 func (m *fakeInteractiveMachine) RootfsPath() string { return "" }
+
+func TestSandboxStartExecRelay(t *testing.T) {
+	machine := newFakeMachine()
+	sb := &Sandbox{config: &api.Config{}, machine: machine}
+
+	// Use a short path — macOS limits Unix socket paths to 104 bytes.
+	dir := testutil.ShortTempDir(t)
+	socketPath := dir + "/exec.sock"
+
+	relay, err := sb.StartExecRelay(socketPath)
+	require.NoError(t, err, "start exec relay")
+	require.NotNil(t, relay)
+	t.Cleanup(relay.Stop)
+
+	// A running relay accepts connections at the socket path.
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err, "dial running relay")
+	require.NoError(t, conn.Close())
+
+	relay.Stop()
+
+	// Once stopped the listener is closed; the socket file may remain, but a
+	// new connection must be refused.
+	conn, err = net.Dial("unix", socketPath)
+	if err == nil {
+		conn.Close()
+		t.Fatal("relay still accepting connections after Stop")
+	}
+}
 
 func TestExecRelayPipeStdinEOFDoesNotCancel(t *testing.T) {
 	machine := newFakeMachine()
@@ -300,9 +329,7 @@ func TestExecInteractiveViaRelayForwardsResize(t *testing.T) {
 	relay := NewExecRelay(sb)
 
 	// Use a short path — macOS limits Unix socket paths to 104 bytes.
-	dir, err := os.MkdirTemp("", "relay")
-	require.NoError(t, err)
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := testutil.ShortTempDir(t)
 	socketPath := dir + "/s.sock"
 	require.NoError(t, relay.Start(socketPath), "start relay")
 	defer relay.Stop()

@@ -11,7 +11,7 @@ This is the fastest path to a usable Linux package story because the repo alread
 - `matchlock`
 - `guest-init`
 
-Those are currently produced by the cross-build tasks in `/home/jingkaihe/workspace/matchlock/mise.toml` and uploaded as GitHub release artifacts.
+Those are currently produced by the cross-build tasks in `mise.toml` and uploaded as GitHub release artifacts.
 
 ## Why this approach
 
@@ -71,6 +71,17 @@ Current direct dependencies from the codebase include:
 - `procps`
 
 Firecracker and jailer are bundled into the package under `/usr/libexec/matchlock/`, and the Linux runtime prefers those packaged paths before falling back to `PATH`.
+
+### QEMU TCG fallback
+
+When `/dev/kvm` is absent or unusable, Matchlock falls back to the **QEMU TCG** backend (software CPU emulation) rather than failing outright. QEMU-TCG:
+
+- needs **no KVM** — it emulates the CPU (`-accel tcg`), so it works on hosts without virtualization support (e.g. many containers/VMs);
+- still needs `/dev/vhost-vsock` accessible to the calling user (it is `root:kvm`, so `kvm` group membership and a re-login are required);
+- requires a `qemu-system-<arch>` binary on `PATH` (`qemu-system-x86_64` or `qemu-system-aarch64`);
+- uses the standard guest kernel for the host arch on arm64, and a vendored amd64 kernel on x86_64 (see `pkg/vm/qemu` and `internal/assets/qemu-kernel`).
+
+The backend is chosen automatically (Firecracker first, QEMU on missing/unusable KVM) and can be forced with `MATCHLOCK_BACKEND=firecracker|qemu`.
 
 ## Distro dependency mapping
 

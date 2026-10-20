@@ -28,7 +28,6 @@ func TestExecSimpleCommand(t *testing.T) {
 
 func TestExecNonZeroExit(t *testing.T) {
 	t.Parallel()
-	t.Skip("known bug: guest agent does not propagate non-zero exit codes")
 
 	client := launchAlpine(t)
 

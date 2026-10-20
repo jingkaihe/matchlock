@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jingkaihe/matchlock/internal/assets/qemu-kernel"
 	"github.com/jingkaihe/matchlock/pkg/kernel"
 	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
@@ -20,8 +22,22 @@ import (
 func copyCurrentKernelToTemp(t *testing.T) string {
 	t.Helper()
 
-	src, err := kernel.ResolveKernelPath(context.Background())
-	require.NoError(t, err)
+	// On the amd64 QEMU backend, a kernel file-ref must be a QEMU-bootable
+	// bzImage. The generic `kernel.ResolveKernelPath` resolves the ELF vmlinux
+	// (25MB, Firecracker/generic), which QEMU's -kernel cannot boot -> it exits
+	// with status 1. When the QEMU backend is active (MATCHLOCK_BACKEND=qemu,
+	// amd64), resolve the vendored QEMU bzImage (kernel-qemu) instead so the
+	// file-ref actually boots.
+	var src string
+	if os.Getenv("MATCHLOCK_BACKEND") == "qemu" && runtime.GOARCH == "amd64" {
+		p, err := qemukernel.Ensure()
+		require.NoError(t, err, "qemukernel.Ensure")
+		src = p
+	} else {
+		var err error
+		src, err = kernel.ResolveKernelPath(context.Background())
+		require.NoError(t, err)
+	}
 
 	data, err := os.ReadFile(src)
 	require.NoErrorf(t, err, "read kernel from %s", src)

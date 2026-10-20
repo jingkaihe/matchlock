@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/nftables"
 	"golang.org/x/sys/unix"
+
+	"github.com/jingkaihe/matchlock/pkg/kvm"
 )
 
 func Run() Result {
@@ -44,14 +46,30 @@ func checkKVMDeviceExists() Check {
 }
 
 func checkKVMAcceleration() Check {
-	data, err := os.ReadFile("/proc/cpuinfo")
-	if err != nil {
-		return Warn("cpu-virtualization", fmt.Sprintf("read /proc/cpuinfo: %v", err), "Verify your CPU exposes vmx (Intel) or svm (AMD) flags.")
+	// Prefer the real probe: it opens /dev/kvm, verifies the KVM API version,
+	// and creates a throwaway VM descriptor. That is far more reliable than the
+	// x86-only vmx/svm /proc/cpuinfo heuristic, which is meaningless on arm64.
+	return kvmAccelerationCheck(kvm.Check())
+}
+
+// kvmAccelerationCheck converts a KVM probe Result into a diagnostic. Factored
+// out so every Status maps deterministically and is table-testable.
+func kvmAccelerationCheck(res kvm.Result) Check {
+	switch res.Status {
+	case kvm.StatusAvailable:
+		return Pass("cpu-virtualization", res.String())
+	case kvm.StatusNotPresent:
+		return Fail("cpu-virtualization", res.String(), "Enable CPU virtualization in BIOS/UEFI and load the kvm kernel modules.")
+	case kvm.StatusPermissionDenied:
+		return Fail("cpu-virtualization", res.String(), "Ensure your user is in the kvm group (run `sudo matchlock setup user <name>`), then log out and back in.")
+	case kvm.StatusIncompatible, kvm.StatusUnusable:
+		return Fail("cpu-virtualization", res.String(), "KVM present but not usable; check nested virtualization support on this host.")
+	default:
+		// Unexpected: the probe itself failed in a way we did not classify.
+		// Never fall back to CPU flags here — a real probe failure must surface
+		// as a probe diagnostic, not be overridden by an x86-only heuristic.
+		return Warn("cpu-virtualization", res.String(), "KVM probe failed unexpectedly; inspect dmesg/`kvm-ok` and host kernel support.")
 	}
-	if hasCPUVirtualizationFlag(data) {
-		return Pass("cpu-virtualization", "CPU virtualization flags are present.")
-	}
-	return Fail("cpu-virtualization", "CPU virtualization flags (vmx/svm) were not found.", "Enable virtualization in BIOS/UEFI or use a host with hardware virtualization support.")
 }
 
 func checkKVMAccessible() Check {

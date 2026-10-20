@@ -3,13 +3,16 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
@@ -220,7 +223,7 @@ func TestWaitDetachedVMIDFindsRunningState(t *testing.T) {
 		_ = mgr.Remove(vmID)
 	})
 
-	got, err := waitDetachedVMID(os.Getpid())
+	got, err := waitDetachedVMID(os.Getpid(), nil, time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, vmID, got)
 }
@@ -229,9 +232,96 @@ func TestWaitDetachedVMIDReturnsErrorWhenProcessIsNotRunning(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	_, err := waitDetachedVMID(0)
+	_, err := waitDetachedVMID(0, nil, time.Second)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrFindDetachedVM)
+}
+
+func TestWaitDetachedVMIDReturnsErrorWhenChildExitsEarly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	exitErr := exec.Command("/bin/sh", "-c", "exit 7").Run()
+	require.Error(t, exitErr)
+
+	childExited := make(chan detachedResult, 1)
+	childExited <- detachedResult{exitErr: exitErr, stderr: "boom: detached child failed"}
+
+	start := time.Now()
+	_, err := waitDetachedVMID(os.Getpid(), childExited, 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "boom: detached child failed")
+	assert.Contains(t, err.Error(), "exit status 7")
+	assert.Less(t, elapsed, 5*time.Second, "early child exit must fail fast, not hang")
+}
+
+func TestWaitDetachedVMIDReturnsErrorWhenChildExitsCleanWithoutRegistering(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	childExited := make(chan detachedResult, 1)
+	childExited <- detachedResult{stderr: "pull access denied for nope"}
+
+	start := time.Now()
+	_, err := waitDetachedVMID(os.Getpid(), childExited, 30*time.Second)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "pull access denied for nope")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+func TestWaitDetachedVMIDTimesOut(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Use a real, separate process so the timeout path's best-effort kill does
+	// not terminate the test binary.
+	child := exec.Command("/bin/sh", "-c", "sleep 30")
+	require.NoError(t, child.Start())
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+
+	start := time.Now()
+	_, err := waitDetachedVMID(child.Process.Pid, nil, 200*time.Millisecond)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedStartupTimeout)
+	assert.Less(t, time.Since(start), 5*time.Second, "bounded wait must not hang")
+}
+
+func TestStartDetachedChildSurfacesEarlyExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	start := time.Now()
+	err := startDetachedChild("/bin/sh", []string{"-c", "echo 'stub boom' >&2; exit 7"}, 30*time.Second)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrDetachedRunExited)
+	assert.Contains(t, err.Error(), "stub boom")
+	assert.Contains(t, err.Error(), "exit status 7")
+	assert.Less(t, elapsed, 5*time.Second, "detached startup must fail fast when the child dies early")
+}
+
+func TestReadFileTailKeepsLastBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "tail-*")
+	require.NoError(t, err)
+	defer f.Close()
+
+	_, err = f.WriteString("abcdefghij")
+	require.NoError(t, err)
+
+	assert.Equal(t, "fghij", readFileTail(f, 5))
+	assert.Equal(t, "abcdefghij", readFileTail(f, 100))
+	assert.Equal(t, "", readFileTail(f, 0))
+	assert.Equal(t, "", readFileTail(nil, 5))
 }
 
 func TestParseRunSecretsWithPlaceholderOverride(t *testing.T) {
@@ -364,4 +454,133 @@ func TestLoadSecretsFileTrimsHosts(t *testing.T) {
 	require.Contains(t, secrets, "GH_TOKEN")
 	assert.Equal(t, "gho_sandbox_placeholder", secrets["GH_TOKEN"].Placeholder)
 	assert.Equal(t, []string{"github.com", "api.github.com"}, secrets["GH_TOKEN"].Hosts)
+}
+
+func TestRunSwapFlagRegistered(t *testing.T) {
+	flag := runCmd.Flags().Lookup("swap")
+	require.NotNil(t, flag, "--swap must be registered on the run command")
+	assert.Equal(t, "0", flag.DefValue, "--swap must default to 0 (off)")
+	assert.Equal(t, "int", flag.Value.Type())
+}
+
+func TestBuildRunResourcesCarriesSwapMB(t *testing.T) {
+	res := buildRunResources(1.5, 512, 5120, 300, 256)
+	require.NotNil(t, res)
+	assert.Equal(t, 1.5, res.CPUs)
+	assert.Equal(t, 512, res.MemoryMB)
+	assert.Equal(t, 5120, res.DiskSizeMB)
+	assert.Equal(t, 300, res.TimeoutSeconds)
+	assert.Equal(t, 256, res.SwapMB)
+}
+
+func TestRunSwapValidatesThroughSharedConfigPath(t *testing.T) {
+	require.NoError(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 0)}).Validate())
+	require.NoError(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 65536)}).Validate())
+	require.ErrorIs(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, -1)}).Validate(), api.ErrInvalidConfig)
+	require.ErrorIs(t, (&api.Config{Resources: buildRunResources(1, 512, 5120, 300, 65537)}).Validate(), api.ErrInvalidConfig)
+}
+
+func TestRunAllowPrivateFlagRegistered(t *testing.T) {
+	flag := runCmd.Flags().Lookup("allow-private")
+	require.NotNil(t, flag, "--allow-private must be registered on the run command")
+	assert.Equal(t, "stringArray", flag.Value.Type(), "--allow-private must be a repeatable string array")
+	assert.Equal(t, "[]", flag.DefValue, "--allow-private must default to empty")
+	assert.Contains(t, flag.Usage, ":port", "--allow-private usage must document the optional :port suffix")
+}
+
+func TestAllowPrivateFlagIsRepeatable(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination")
+
+	err := cmd.ParseFlags([]string{
+		"--allow-private", "192.168.107.74:8888",
+		"--allow-private", "200:1234::1",
+		"--allow-private", "[fd00::1]:443",
+	})
+	require.NoError(t, err)
+
+	got, err := cmd.Flags().GetStringArray("allow-private")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"192.168.107.74:8888", "200:1234::1", "[fd00::1]:443"}, got)
+}
+
+func TestBuildRunNetworkConfigCarriesAllowPrivate(t *testing.T) {
+	cfg := buildRunNetworkConfig(
+		[]string{"api.openai.com"},
+		nil,
+		[]string{"192.168.107.74:8888", "200:1234::1"},
+		false,
+		true,
+		nil,
+		[]string{"8.8.8.8"},
+		"demo",
+		1400,
+		false,
+		false,
+	)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"192.168.107.74:8888", "200:1234::1"}, cfg.AllowPrivate)
+	// The CLI always keeps the private block on; --allow-private is the only
+	// escape hatch and must never turn the block off.
+	assert.True(t, cfg.BlockPrivateIPs)
+	assert.Equal(t, []string{"api.openai.com"}, cfg.AllowedHosts)
+	assert.True(t, cfg.Intercept)
+	assert.Equal(t, 1400, cfg.MTU)
+	// Neither DNS priority flag given: the config carries the explicit
+	// default, never the empty string.
+	assert.Equal(t, api.DNSPriorityIPv4, cfg.DNSPriority)
+}
+
+// TestBuildRunNetworkConfigDNSPriorityFlags covers the DNS priority
+// pass-through: explicit ipv4, explicit ipv6, and the both-given precedence
+// (ipv6 wins).
+func TestBuildRunNetworkConfigDNSPriorityFlags(t *testing.T) {
+	build := func(prioritizeIPv4, prioritizeIPv6 bool) *api.NetworkConfig {
+		return buildRunNetworkConfig(nil, nil, nil, false, false, nil, nil, "", 1500, prioritizeIPv4, prioritizeIPv6)
+	}
+
+	assert.Equal(t, api.DNSPriorityIPv4, build(false, false).DNSPriority, "default must be ipv4")
+	assert.Equal(t, api.DNSPriorityIPv4, build(true, false).DNSPriority, "--prioritize-ipv4-dns-resolution must select ipv4")
+	assert.Equal(t, api.DNSPriorityIPv6, build(false, true).DNSPriority, "--prioritize-ipv6-dns-resolution must select ipv6")
+	assert.Equal(t, api.DNSPriorityIPv6, build(true, true).DNSPriority, "with both flags given ipv6 must win")
+
+	// Every produced value must pass the shared config validation.
+	require.NoError(t, (&api.Config{Network: build(true, true)}).Validate())
+}
+
+func TestRunDNSPriorityFlagsRegistered(t *testing.T) {
+	ipv4 := runCmd.Flags().Lookup("prioritize-ipv4-dns-resolution")
+	require.NotNil(t, ipv4, "--prioritize-ipv4-dns-resolution must be registered on the run command")
+	assert.Equal(t, "bool", ipv4.Value.Type())
+	assert.Equal(t, "false", ipv4.DefValue)
+
+	ipv6 := runCmd.Flags().Lookup("prioritize-ipv6-dns-resolution")
+	require.NotNil(t, ipv6, "--prioritize-ipv6-dns-resolution must be registered on the run command")
+	assert.Equal(t, "bool", ipv6.Value.Type())
+	assert.Equal(t, "false", ipv6.DefValue)
+	assert.Contains(t, ipv6.Usage, "verbatim", "the ipv6 flag must document that it is a verbatim relay")
+}
+
+func TestRunNoNetworkRejectsAllowPrivate(t *testing.T) {
+	cmd := &cobra.Command{RunE: runRun}
+	cmd.Flags().Float64("cpus", 1, "Number of CPUs")
+	cmd.Flags().Int("mtu", api.DefaultNetworkMTU, "Network MTU for guest interface")
+	cmd.Flags().Bool("no-network", false, "Create sandbox with no network interfaces")
+	cmd.Flags().StringArray("allow-private", nil, "Allow an otherwise-blocked private destination")
+
+	require.NoError(t, cmd.ParseFlags([]string{
+		"--no-network",
+		"--allow-private", "192.168.107.74:8888",
+	}))
+
+	err := runRun(cmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--no-network cannot be combined with --allow-private")
+}
+
+func TestRunHelpMentionsAllowPrivate(t *testing.T) {
+	assert.Contains(t, runCmd.Long, "--allow-private")
+	assert.Contains(t, runCmd.Long, ":port")
+	// Cobra renders registered flags into the help/usage output.
+	assert.Contains(t, runCmd.UsageString(), "--allow-private")
 }
