@@ -70,7 +70,7 @@ jobs:
           echo "/opt/homebrew/opt/e2fsprogs/bin" >> $GITHUB_PATH
           echo "/opt/homebrew/opt/e2fsprogs/sbin" >> $GITHUB_PATH
 
-      - name: Build
+      - name: Build and ad-hoc sign macOS CLI
         run: mise run cross-build:darwin
 
       - name: Fmt

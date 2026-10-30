@@ -371,7 +371,7 @@ echo "Built: matchlock-linux-amd64, matchlock-linux-arm64"
 """
 
 [tasks."cross-build:darwin"]
-description = "Build matchlock for macOS arm64 (requires Apple Silicon host for CGO)"
+description = "Build and ad-hoc sign matchlock for macOS arm64 (requires Apple Silicon host for CGO)"
 run = """
 #!/usr/bin/env bash
 set -e
@@ -384,6 +384,12 @@ fi
 mkdir -p bin
 LDFLAGS="-s -w -X '$VERSION_PKG.Version=$VERSION' -X '$VERSION_PKG.GitCommit=$GIT_COMMIT' -X '$VERSION_PKG.BuildTime=$BUILD_TIME'"
 go build -ldflags="$LDFLAGS" -o ./bin/matchlock-darwin-arm64 ./cmd/matchlock/
+
+# Embed the Virtualization.framework entitlement before publishing the binary.
+codesign --entitlements matchlock.entitlements -f -s - ./bin/matchlock-darwin-arm64
+codesign --verify --strict --verbose=2 ./bin/matchlock-darwin-arm64
+codesign --display --entitlements :- ./bin/matchlock-darwin-arm64
+
 echo "Built: matchlock-darwin-arm64"
 """
 
