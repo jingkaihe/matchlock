@@ -2,7 +2,7 @@
 
 ## 0.3.0
 
-* **Breaking change:** Removed VFS mounts and filesystem hooks, including `--workspace`, `--volume`/`-v`, and related SDK APIs. Use explicit file transfers or `--disk` block volumes instead.
+* **Breaking change:** Removed VFS mounts and filesystem hooks, including `--workspace`, `--volume`/`-v`, and related SDK APIs. Use explicit file transfers or `--disk` block volumes instead; see the [migration guide](docs/vfs-mounts-removal.md).
 * Commands now default to the image's `WORKDIR`, otherwise `/`; create `/workspace` explicitly if needed.
 * Reworked builds to stream context into the guest and images back to the host, honouring ignore files. Fixed external/symlinked Dockerfiles, skipped Unix sockets, and improved transfer errors. Size `--build-disk` for the uploaded context.
 * Fixed execution-stream buffering, I/O error propagation, and concurrent stdout/stderr frame corruption on Linux and macOS. Output sent to writers is no longer retained in `ExecResult`.

@@ -374,6 +374,7 @@ More examples in the [`examples/`](examples/) directory:
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
 - [Network Interception](docs/network-interception.md)
+- [VFS Mounts Removal and Migration Guide](docs/vfs-mounts-removal.md)
 - [Developer Reference](AGENTS.md)
 
 ## License
