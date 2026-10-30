@@ -3,7 +3,7 @@
 # Run tasks with: mise run <task>
 
 [tools]
-go = "1.25"
+go = "1.27.3"
 golangci-lint = "latest"
 uv = "latest"
 goreleaser = "latest"
