@@ -103,13 +103,19 @@ matchlock exec -w /workspace "$VM" -- make test
 
 The Go, Python, and TypeScript SDKs follow the same rules. Relative host paths are resolved against the current directory.
 
+Go:
+
 ```go
 err := client.CopyIn(ctx, "./src/.", "/workspace", nil)
 ```
 
+Python:
+
 ```python
 client.copy_in("./src/.", "/workspace")
 ```
+
+TypeScript:
 
 ```ts
 await client.copyIn("./src/.", "/workspace");
@@ -139,13 +145,19 @@ matchlock cp "$VM":/workspace - > workspace.tar
 
 ### SDKs
 
+Go:
+
 ```go
 err := client.CopyOut(ctx, "/workspace/dist", "./out", nil)
 ```
 
+Python:
+
 ```python
 client.copy_out("/workspace/dist", "./out")
 ```
+
+TypeScript:
 
 ```ts
 await client.copyOut("/workspace/dist", "./out");
