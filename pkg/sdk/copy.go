@@ -30,12 +30,12 @@ type CopyOutOptions struct {
 	FollowLink bool
 	// Exclude holds .dockerignore-style patterns relative to a directory src.
 	Exclude []string
-	// MaxSize limits the bytes written to the host. Zero uses the default
-	// (10 GiB) and a negative value disables the limit.
-	MaxSize int64
-	// MaxFiles limits the entries written to the host. Zero uses the default
-	// (1,000,000) and a negative value disables the limit.
-	MaxFiles int64
+	// MaxSize limits the bytes written to the host. Nil uses the default
+	// (10 GiB) and 0 means no limit.
+	MaxSize *int64
+	// MaxFiles limits the entries written to the host. Nil uses the default
+	// (1,000,000) and 0 means no limit.
+	MaxFiles *int64
 }
 
 // CopyIn copies the host file or directory src to the absolute sandbox path
@@ -87,13 +87,11 @@ func (c *Client) CopyOut(ctx context.Context, src, dest string, opts *CopyOutOpt
 	}
 	params := map[string]interface{}{"src": src, "dest": hostPath}
 	addCopyParams(params, opts.FollowLink, opts.Exclude)
-	for key, limit := range map[string]int64{"max_size": opts.MaxSize, "max_files": opts.MaxFiles} {
-		switch {
-		case limit > 0:
-			params[key] = limit
-		case limit < 0:
-			params[key] = 0
-		}
+	if opts.MaxSize != nil {
+		params["max_size"] = *opts.MaxSize
+	}
+	if opts.MaxFiles != nil {
+		params["max_files"] = *opts.MaxFiles
 	}
 	_, err = c.sendRequestCtx(ctx, "copy_out", params, nil)
 	return err

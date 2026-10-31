@@ -26,7 +26,8 @@ func TestCopyParams(t *testing.T) {
 	require.NoError(t, client.CopyIn(ctx, "src/.", "/workspace", nil))
 	require.NoError(t, client.CopyIn(ctx, "/abs/file", "/workspace/", &CopyInOptions{Owner: "app", FollowLink: true, Exclude: []string{"*.log"}}))
 	require.NoError(t, client.CopyOut(ctx, "/workspace/dist", "out/", nil))
-	require.NoError(t, client.CopyOut(ctx, "/workspace/dist", "/abs/out", &CopyOutOptions{MaxSize: -1, MaxFiles: 10}))
+	noLimit, maxFiles := int64(0), int64(10)
+	require.NoError(t, client.CopyOut(ctx, "/workspace/dist", "/abs/out", &CopyOutOptions{MaxSize: &noLimit, MaxFiles: &maxFiles}))
 
 	assert.Equal(t, []map[string]interface{}{
 		{"method": "copy_in", "src": wd + "/src/.", "dest": "/workspace"},
