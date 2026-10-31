@@ -95,7 +95,7 @@ func FromGuest(ctx context.Context, g Guest, src, dest string, opts FromGuestOpt
 	if err != nil {
 		return err
 	}
-	reported, archive, err := g.CopyOut(ctx, CopyOutRequest{Path: src, FollowLink: opts.FollowLink, Exclude: opts.Exclude})
+	reported, archive, err := g.CopyOut(ctx, CopyOutRequest{Path: src, FollowLink: opts.FollowLink, Exclude: opts.Exclude, OnSkip: opts.OnSkip})
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func TarFromGuest(ctx context.Context, g Guest, src string, w io.Writer, opts Fr
 	if err := requireGuestPath(src); err != nil {
 		return err
 	}
-	_, archive, err := g.CopyOut(ctx, CopyOutRequest{Path: src, FollowLink: opts.FollowLink, Exclude: opts.Exclude})
+	_, archive, err := g.CopyOut(ctx, CopyOutRequest{Path: src, FollowLink: opts.FollowLink, Exclude: opts.Exclude, OnSkip: opts.OnSkip})
 	if err != nil {
 		return err
 	}

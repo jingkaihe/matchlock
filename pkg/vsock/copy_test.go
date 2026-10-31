@@ -3,6 +3,7 @@ package vsock
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"testing"
 
@@ -11,6 +12,32 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/copyarchive"
 )
+
+func TestCopyOutReportsGuestSkips(t *testing.T) {
+	host, guest := net.Pipe()
+	defer guest.Close()
+	go func() {
+		header := make([]byte, 5)
+		_, _ = ReadFull(guest, header)
+		_, _ = ReadFull(guest, make([]byte, binary.BigEndian.Uint32(header[1:])))
+		_ = SendMessage(guest, MsgTypeCopyInfo, []byte(`{"name":"w","is_dir":true}`))
+		_ = SendMessage(guest, MsgTypeStderr, copyarchive.EncodeSkip("w/fifo", "unsupported file type"))
+		_ = SendMessage(guest, MsgTypeStdout, []byte("archive"))
+		_ = SendMessage(guest, MsgTypeFileResult, []byte(`{}`))
+	}()
+
+	var skipped []string
+	_, archive, err := CopyOut(context.Background(), host, copyarchive.CopyOutRequest{
+		Path:   "/w",
+		OnSkip: func(name, _ string) { skipped = append(skipped, name) },
+	})
+	require.NoError(t, err)
+	defer archive.Close()
+	data, err := io.ReadAll(archive)
+	require.NoError(t, err)
+	assert.Equal(t, "archive", string(data))
+	assert.Equal(t, []string{"w/fifo"}, skipped)
+}
 
 // TestCopyOutRejectsMaliciousGuest checks that guest replies cannot name an
 // unsafe archive root or make the host allocate an oversized frame.

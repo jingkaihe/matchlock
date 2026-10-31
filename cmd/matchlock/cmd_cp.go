@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -255,6 +256,13 @@ func copyOutExit(copyErr error, exitCode int) error {
 	return commandExit(exitCode)
 }
 
+// warnCopySkip prints a skipped entry. Names and reasons can come from the
+// sandbox, so control characters are not passed to the terminal.
 func warnCopySkip(name, reason string) {
-	fmt.Fprintf(os.Stderr, "Warning: skipped %s: %s\n", name, reason)
+	fmt.Fprintf(os.Stderr, "Warning: skipped %q: %s\n", name, strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, reason))
 }

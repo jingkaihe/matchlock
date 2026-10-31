@@ -147,15 +147,16 @@ func CopyOut(ctx context.Context, conn net.Conn, req copyarchive.CopyOutRequest)
 	if err := copyarchive.ValidateSource(source); err != nil {
 		return fail(err)
 	}
-	return source, &copyOutReader{ctx: ctx, conn: conn, stop: stop}, nil
+	return source, &copyOutReader{ctx: ctx, conn: conn, stop: stop, onSkip: req.OnSkip}, nil
 }
 
 type copyOutReader struct {
-	ctx  context.Context
-	conn net.Conn
-	stop func() bool
-	buf  []byte
-	err  error
+	ctx    context.Context
+	conn   net.Conn
+	stop   func() bool
+	onSkip func(name, reason string)
+	buf    []byte
+	err    error
 }
 
 func (r *copyOutReader) Read(p []byte) (int, error) {
@@ -169,6 +170,8 @@ func (r *copyOutReader) Read(p []byte) (int, error) {
 			r.err = ctxErr(r.ctx, err)
 		case msgType == MsgTypeStdout:
 			r.buf = payload
+		case msgType == MsgTypeStderr:
+			copyarchive.ReportSkip(r.onSkip, payload)
 		case msgType == MsgTypeFileResult:
 			r.err = fileResultError(payload)
 			if r.err == nil {

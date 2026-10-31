@@ -51,14 +51,15 @@ func TestCLICopy(t *testing.T) {
 	_, stderr, exitCode = runCLI(t, "cp", src+"/.", vmID+":/workspace")
 	require.Equalf(t, 0, exitCode, "cp in: %s", stderr)
 	assert.Equal(t, "1000\nhello\n", exec("stat -c %u /workspace/a.txt && cat /workspace/link"))
-	exec("mkdir /workspace/dist && echo built > /workspace/dist/out.txt && ln -s /etc/passwd /workspace/escape")
+	exec("mkdir /workspace/dist && echo built > /workspace/dist/out.txt && ln -s /etc/passwd /workspace/escape && mkfifo /workspace/pipe")
 
-	// Copying out writes the tree to a new host directory and skips the
-	// symlink that points outside it.
+	// Copying out writes the tree to a new host directory, skipping the
+	// symlink that points outside it and the FIFO the sandbox cannot archive.
 	out := filepath.Join(t.TempDir(), "out")
 	_, stderr, exitCode = runCLI(t, "cp", vmID+":/workspace", out)
 	require.Equalf(t, 0, exitCode, "cp out: %s", stderr)
-	assert.Contains(t, stderr, "skipped workspace/escape")
+	assert.Contains(t, stderr, `skipped "workspace/escape"`)
+	assert.Contains(t, stderr, `skipped "workspace/pipe"`)
 	got, err := os.ReadFile(filepath.Join(out, "blob.bin"))
 	require.NoError(t, err)
 	assert.True(t, string(got) == string(blob), "blob corrupted in round trip")

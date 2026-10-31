@@ -57,7 +57,8 @@ func (r *ExecRelay) handleCopyIn(conn net.Conn, data []byte) {
 }
 
 // handleCopyOut replies with relayMsgCopyInfo, the archive as relayMsgStdout
-// frames, and a final relayMsgCopyResult. A client disconnect cancels the copy.
+// frames, skip notices as relayMsgStderr frames, and a final
+// relayMsgCopyResult. A client disconnect cancels the copy.
 func (r *ExecRelay) handleCopyOut(conn net.Conn, data []byte) {
 	var req copyarchive.CopyOutRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -73,6 +74,10 @@ func (r *ExecRelay) handleCopyOut(conn net.Conn, data []byte) {
 		cancel()
 	}()
 
+	sender := newRelaySender(conn)
+	req.OnSkip = func(name, reason string) {
+		_ = sender.Send(relayMsgStderr, copyarchive.EncodeSkip(name, reason))
+	}
 	source, archive, err := r.sb.CopyOut(ctx, req)
 	if err != nil {
 		sendRelayCopyResult(conn, err)
@@ -87,7 +92,7 @@ func (r *ExecRelay) handleCopyOut(conn net.Conn, data []byte) {
 	if err := sendRelayMsg(conn, relayMsgCopyInfo, info); err != nil {
 		return
 	}
-	stdout := &relayWriter{sender: newRelaySender(conn), msgType: relayMsgStdout}
+	stdout := &relayWriter{sender: sender, msgType: relayMsgStdout}
 	_, err = io.CopyBuffer(stdout, archive, make([]byte, relayCopyChunkSize))
 	sendRelayCopyResult(conn, err)
 }
@@ -230,15 +235,16 @@ func (g RelayGuest) CopyOut(ctx context.Context, req copyarchive.CopyOutRequest)
 	if err := json.Unmarshal(data, &source); err != nil {
 		return fail(errx.Wrap(ErrRelayDecode, err))
 	}
-	return source, &relayCopyReader{ctx: ctx, conn: conn, stop: stop}, nil
+	return source, &relayCopyReader{ctx: ctx, conn: conn, stop: stop, onSkip: req.OnSkip}, nil
 }
 
 type relayCopyReader struct {
-	ctx  context.Context
-	conn net.Conn
-	stop func() bool
-	buf  []byte
-	err  error
+	ctx    context.Context
+	conn   net.Conn
+	stop   func() bool
+	onSkip func(name, reason string)
+	buf    []byte
+	err    error
 }
 
 func (r *relayCopyReader) Read(p []byte) (int, error) {
@@ -252,6 +258,8 @@ func (r *relayCopyReader) Read(p []byte) (int, error) {
 			r.err = relayCtxErr(r.ctx, errx.Wrap(ErrRelayRead, err))
 		case msgType == relayMsgStdout:
 			r.buf = data
+		case msgType == relayMsgStderr:
+			copyarchive.ReportSkip(r.onSkip, data)
 		case msgType == relayMsgCopyResult:
 			if r.err = decodeRelayCopyResult(data); r.err == nil {
 				r.err = io.EOF

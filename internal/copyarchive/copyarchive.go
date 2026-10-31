@@ -9,6 +9,7 @@ package copyarchive
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 )
 
@@ -52,6 +53,29 @@ type CopyOutRequest struct {
 	Path       string   `json:"path"`
 	FollowLink bool     `json:"follow_link,omitempty"`
 	Exclude    []string `json:"exclude,omitempty"`
+	// OnSkip is called on the host for entries the guest leaves out of the
+	// archive. It is not sent to the guest.
+	OnSkip func(name, reason string) `json:"-"`
+}
+
+// skipNotice reports an entry left out of a copy archive.
+type skipNotice struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
+// EncodeSkip encodes a skip notice sent alongside a copy archive.
+func EncodeSkip(name, reason string) []byte {
+	data, _ := json.Marshal(skipNotice{Name: name, Reason: reason})
+	return data
+}
+
+// ReportSkip passes an encoded skip notice to onSkip, ignoring malformed ones.
+func ReportSkip(onSkip func(name, reason string), data []byte) {
+	var notice skipNotice
+	if onSkip != nil && json.Unmarshal(data, &notice) == nil {
+		onSkip(notice.Name, notice.Reason)
+	}
 }
 
 // Guest is implemented by transports that copy archives into and out of a

@@ -69,7 +69,8 @@ func handleCopyIn(fd int, data []byte) {
 
 // handleCopyOut streams a copy archive of the requested path to the host:
 // MsgTypeCopyInfo with the source description, MsgTypeStdout frames with the
-// archive, and a final MsgTypeFileResult. A host disconnect stops the walk.
+// archive, MsgTypeStderr frames for skipped entries, and a final
+// MsgTypeFileResult. A host disconnect stops the walk.
 func handleCopyOut(fd int, data []byte) {
 	var req copyarchive.CopyOutRequest
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -92,7 +93,12 @@ func handleCopyOut(fd int, data []byte) {
 	defer cancel()
 	frames := &stdoutFrameWriter{fd: fd, onError: cancel}
 	bw := bufio.NewWriterSize(frames, copyFrameSize)
-	err = copyarchive.WriteArchive(ctx, bw, readPath, source, copyarchive.WriteOptions{Exclude: req.Exclude})
+	err = copyarchive.WriteArchive(ctx, bw, readPath, source, copyarchive.WriteOptions{
+		Exclude: req.Exclude,
+		OnSkip: func(name, reason string) {
+			_ = sendFrame(fd, MsgTypeStderr, copyarchive.EncodeSkip(name, reason))
+		},
+	})
 	if err == nil {
 		err = bw.Flush()
 	}
