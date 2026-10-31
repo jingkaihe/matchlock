@@ -6,6 +6,6 @@
     "start": "tsx main.ts"
   },
   "devDependencies": {
-    "tsx": "^4.19.3"
+    "tsx": "^4.23.15"
   }
 }
