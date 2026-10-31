@@ -65,25 +65,22 @@ func runCp(cmd *cobra.Command, args []string) error {
 	maxFiles, _ := cmd.Flags().GetInt64("max-files")
 
 	src, dest := parseCopyArg(args[0]), parseCopyArg(args[1])
-	toGuest := dest.vmID != ""
-	switch {
-	case src.vmID != "" && toGuest:
-		return errx.With(ErrInvalidCopy, ": copying between sandboxes is not supported")
-	case src.vmID == "" && !toGuest:
-		return errx.With(ErrInvalidCopy, ": SRC or DEST must be VM:PATH")
-	case !toGuest && (owner != "" || archive):
-		return errx.With(ErrInvalidCopy, ": --owner and --archive only apply when copying into a sandbox")
-	case owner != "" && archive:
-		return errx.With(ErrInvalidCopy, ": --owner cannot be combined with --archive")
-	case maxSizeMB < 0 || maxFiles < 0:
-		return errx.With(ErrInvalidCopy, ": --max-size and --max-files must not be negative")
+	err := validateCp(src, dest, cpFlags{
+		owner:      owner,
+		archive:    archive,
+		followLink: followLink,
+		exclude:    exclude,
+		limitsSet:  cmd.Flags().Changed("max-size") || cmd.Flags().Changed("max-files"),
+		maxSizeMB:  maxSizeMB,
+		maxFiles:   maxFiles,
+	})
+	if err != nil {
+		return err
 	}
+	toGuest := dest.vmID != ""
 	remote := src
 	if toGuest {
 		remote = dest
-	}
-	if !path.IsAbs(remote.path) {
-		return errx.With(ErrInvalidCopy, ": sandbox path %q must be absolute", remote.path)
 	}
 
 	socketPath, err := execSocketPath(remote.vmID)
@@ -106,6 +103,47 @@ func runCp(cmd *cobra.Command, args []string) error {
 		return copyarchive.TarFromGuest(ctx, guest, src.path, os.Stdout, opts)
 	}
 	return copyarchive.FromGuest(ctx, guest, src.path, dest.path, opts)
+}
+
+type cpFlags struct {
+	owner      string
+	archive    bool
+	followLink bool
+	exclude    []string
+	// limitsSet reports that --max-size or --max-files was given explicitly.
+	limitsSet bool
+	maxSizeMB int64
+	maxFiles  int64
+}
+
+// validateCp rejects invalid copies and flags that would otherwise be
+// silently ignored.
+func validateCp(src, dest copyArg, f cpFlags) error {
+	toGuest := dest.vmID != ""
+	switch {
+	case src.vmID != "" && toGuest:
+		return errx.With(ErrInvalidCopy, ": copying between sandboxes is not supported")
+	case src.vmID == "" && !toGuest:
+		return errx.With(ErrInvalidCopy, ": SRC or DEST must be VM:PATH")
+	case !toGuest && (f.owner != "" || f.archive):
+		return errx.With(ErrInvalidCopy, ": --owner and --archive only apply when copying into a sandbox")
+	case f.owner != "" && f.archive:
+		return errx.With(ErrInvalidCopy, ": --owner cannot be combined with --archive")
+	case src.path == "-" && (len(f.exclude) > 0 || f.followLink):
+		return errx.With(ErrInvalidCopy, ": --exclude and --follow-link do not apply to a tar archive read from stdin")
+	case f.limitsSet && (toGuest || dest.path == "-"):
+		return errx.With(ErrInvalidCopy, ": --max-size and --max-files only apply when copying out to a host path")
+	case f.maxSizeMB < 0 || f.maxFiles < 0:
+		return errx.With(ErrInvalidCopy, ": --max-size and --max-files must not be negative")
+	}
+	remote := src
+	if toGuest {
+		remote = dest
+	}
+	if !path.IsAbs(remote.path) {
+		return errx.With(ErrInvalidCopy, ": sandbox path %q must be absolute", remote.path)
+	}
+	return nil
 }
 
 type copyArg struct {
