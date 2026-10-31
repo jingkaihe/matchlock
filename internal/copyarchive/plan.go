@@ -34,8 +34,8 @@ type Plan struct {
 	Source *Source
 }
 
-// PlanDestination applies docker cp rules to dest for an archive described by
-// src:
+// PlanDestination applies the copy path rules to dest for an archive described
+// by src:
 //
 //   - An existing directory receives the source inside it, or the source's
 //     contents when the source path ended in "/.".

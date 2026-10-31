@@ -39,7 +39,7 @@ type CopyOutOptions struct {
 }
 
 // CopyIn copies the host file or directory src to the absolute sandbox path
-// dest, following docker cp rules: a src ending in "/." copies a directory's
+// dest: a src ending in "/." copies a directory's
 // contents, and a dest ending in "/" must be an existing directory.
 func (c *Client) CopyIn(ctx context.Context, src, dest string, opts *CopyInOptions) error {
 	if opts == nil {

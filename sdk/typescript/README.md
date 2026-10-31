@@ -120,7 +120,7 @@ try {
 
 ## Copying Files and Directories
 
-`copyIn` copies a host file or directory into the guest, and `copyOut` copies a guest file or directory to the host. Paths follow `docker cp` semantics: a source ending in `/.` copies the directory's contents, and a destination ending in `/` must be an existing directory. Relative host paths are joined to `process.cwd()` without normalisation, so these suffixes are kept.
+`copyIn` copies a host file or directory into the guest, and `copyOut` copies a guest file or directory to the host. A source ending in `/.` copies the directory's contents, and a destination ending in `/` must be an existing directory. Relative host paths are joined to `process.cwd()` without normalisation, so these suffixes are kept.
 
 ```ts
 // After client.create(...) or client.launch(...):
@@ -212,7 +212,7 @@ matchlock run --image alpine:latest --disk @sdk-data:/data -- sh -c 'echo persis
 | `client.writeFileMode(path, content, mode, options?)` | Write content with explicit guest permissions |
 | `client.readFile(path, options?)` | Read a guest file — returns `Buffer` |
 | `client.listFiles(path, options?)` | List a guest directory — returns `FileInfo[]` |
-| `client.copyIn(src, dest, options?)` | Copy a host file or directory into the guest (`docker cp` path semantics) |
+| `client.copyIn(src, dest, options?)` | Copy a host file or directory into the guest |
 | `client.copyOut(src, dest, options?)` | Copy a guest file or directory to the host; unavailable with `useSudo` |
 | `client.volumeCreate(name, sizeMb = 10240)` | Create a named ext4 block volume — returns `VolumeInfo` |
 | `client.volumeList()` | List managed block volumes — returns `VolumeInfo[]` |

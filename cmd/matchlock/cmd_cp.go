@@ -25,7 +25,7 @@ var cpCmd = &cobra.Command{
 
 One of SRC and DEST is VM:PATH, where PATH is an absolute path in the sandbox.
 The other is a host path, or "-" to read or write a tar archive on stdin or
-stdout. Paths follow docker cp rules:
+stdout. Paths follow these rules:
 
   SRC/.   copies the contents of the directory, not the directory itself
   DEST/   must be an existing directory
@@ -34,9 +34,9 @@ stdout. Paths follow docker cp rules:
 
 Files copied into the sandbox are owned by its user (image USER or --user)
 unless --owner or --archive is given. When copying out, the sandbox is not
-trusted: setuid and setgid bits are dropped, devices and symlinks that point
+trusted: setuid and setgid bits are dropped, devices and symlinks that resolve
 outside the destination are skipped, and --max-size and --max-files limit what
-is written to the host.
+is written to a host path.
 
 The sandbox must have been started with --rm=false or --detach.`,
 	Example: `  matchlock cp ./src/. vm-abc123:/workspace
@@ -52,8 +52,8 @@ func init() {
 	cpCmd.Flags().String("owner", "", "Owner of copied files: uid, uid:gid, user, or user:group (copying in only)")
 	cpCmd.Flags().BoolP("follow-link", "L", false, "Copy the target of SRC if it is a symlink")
 	cpCmd.Flags().StringArray("exclude", nil, "Skip paths matching a .dockerignore-style pattern (repeatable)")
-	cpCmd.Flags().Int64("max-size", copyarchive.DefaultMaxBytes>>20, "Maximum MB written to the host when copying out (0 for no limit)")
-	cpCmd.Flags().Int64("max-files", copyarchive.DefaultMaxEntries, "Maximum entries written to the host when copying out (0 for no limit)")
+	cpCmd.Flags().Int64("max-size", copyarchive.DefaultMaxBytes>>20, "Maximum MB written when copying out to a host path (0 for no limit)")
+	cpCmd.Flags().Int64("max-files", copyarchive.DefaultMaxEntries, "Maximum entries written when copying out to a host path (0 for no limit)")
 	rootCmd.AddCommand(cpCmd)
 }
 
@@ -152,7 +152,7 @@ type copyArg struct {
 	path string
 }
 
-// parseCopyArg splits VM:PATH. As with docker cp, an argument that is "-",
+// parseCopyArg splits VM:PATH. An argument that is "-",
 // absolute, or starts with "." is a host path, so a host path containing a
 // colon can be written as ./name:with:colons.
 func parseCopyArg(arg string) copyArg {

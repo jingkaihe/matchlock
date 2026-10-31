@@ -3,8 +3,8 @@
 //
 // A copy archive is a tar stream rooted at the source's base name: a file
 // source is a single entry, and a directory source is the directory entry
-// followed by its contents. The destination side decides where entries land,
-// following docker cp rules (see PlanDestination).
+// followed by its contents. The destination side decides where entries land
+// (see PlanDestination).
 package copyarchive
 
 import (

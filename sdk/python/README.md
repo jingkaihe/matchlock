@@ -124,7 +124,7 @@ with Client() as client:
 
 #### Copying Files and Directories
 
-`copy_in` copies a host file or directory into the guest and `copy_out` copies one back to the host, using `docker cp` path rules: a source ending in `/.` copies the directory's contents, and a destination ending in `/` must be an existing directory. Relative host paths are resolved against the current directory; pass them as `str`, because `pathlib.Path` drops a trailing `/` or `/.`.
+`copy_in` copies a host file or directory into the guest and `copy_out` copies one back to the host. A source ending in `/.` copies the directory's contents, and a destination ending in `/` must be an existing directory. Relative host paths are resolved against the current directory; pass them as `str`, because `pathlib.Path` drops a trailing `/` or `/.`.
 
 ```python
 client.copy_in("./src/.", "/workspace")  # contents of ./src into /workspace
@@ -402,8 +402,8 @@ JSON-RPC client for interacting with Matchlock sandboxes. All public methods are
 | `.write_file(path, content, mode=0o644)` | Write a file into the sandbox |
 | `.read_file(path)` | Read a file (up to 16 MiB) from the sandbox — returns `bytes` |
 | `.list_files(path)` | List directory contents — returns `list[FileInfo]` |
-| `.copy_in(src, dest, *, owner="", archive=False, follow_link=False, exclude=None, timeout=None)` | Copy a host file or directory into the sandbox (`docker cp` path semantics) |
-| `.copy_out(src, dest, *, follow_link=False, exclude=None, max_size=None, max_files=None, timeout=None)` | Copy a sandbox file or directory to the host (`docker cp` path semantics); not available with `use_sudo` |
+| `.copy_in(src, dest, *, owner="", archive=False, follow_link=False, exclude=None, timeout=None)` | Copy a host file or directory into the sandbox |
+| `.copy_out(src, dest, *, follow_link=False, exclude=None, max_size=None, max_files=None, timeout=None)` | Copy a sandbox file or directory to the host; not available with `use_sudo` |
 | `.volume_create(name, size_mb=10240)` | Create a named ext4 block volume — returns `VolumeInfo` |
 | `.volume_list()` | List managed block volumes — returns `list[VolumeInfo]` |
 | `.volume_remove(name)` | Delete a managed block volume that is no longer in use |

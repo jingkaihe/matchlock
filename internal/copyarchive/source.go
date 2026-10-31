@@ -30,7 +30,7 @@ type WriteOptions struct {
 	OnSkip func(name, reason string)
 }
 
-// StatSource resolves p as a copy source using docker cp rules: a trailing
+// StatSource resolves p as a copy source: a trailing
 // "/." copies a directory's contents, a trailing "/" requires a directory, and
 // a symlink is copied as a link unless followLink is set. It returns the source
 // description and the path to read from.

@@ -5,8 +5,8 @@ import type { JSONObject } from "./wire";
 
 /**
  * Makes a host path absolute with a plain string join rather than
- * path.resolve, which would drop docker cp suffixes such as "/." and a
- * trailing "/".
+ * path.resolve, which would drop the "/." and trailing "/" suffixes that
+ * change what is copied.
  */
 export function toAbsoluteHostPath(path: string): string {
   if (isAbsolute(path)) {

@@ -1407,7 +1407,7 @@ class Client:
     ) -> None:
         """Copy a host file or directory into the sandbox.
 
-        Paths follow ``docker cp`` semantics: a ``src`` ending in ``/.`` copies
+        A ``src`` ending in ``/.`` copies
         the directory's contents rather than the directory itself, a ``src``
         ending in ``/`` must be a directory, and a ``dest`` ending in ``/`` must
         be an existing guest directory. A relative ``src`` is joined to the
@@ -1467,7 +1467,7 @@ class Client:
     ) -> None:
         """Copy a file or directory from the sandbox to the host.
 
-        Paths follow the same ``docker cp`` semantics as :meth:`copy_in`. A
+        Paths follow the same rules as :meth:`copy_in`. A
         relative ``dest`` is joined to the current working directory without
         normalising it, so a trailing ``/`` is kept.
 

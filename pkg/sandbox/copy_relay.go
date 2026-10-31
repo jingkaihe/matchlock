@@ -19,7 +19,7 @@ type relayCopyResult struct {
 
 // handleCopyIn forwards an archive streamed as relayMsgStdin frames (ending
 // with an empty frame) to the guest and replies with relayMsgCopyResult. A
-// client disconnect cancels the copy, which removes the partial result.
+// client disconnect cancels the copy.
 func (r *ExecRelay) handleCopyIn(conn net.Conn, data []byte) {
 	var req copyarchive.CopyInRequest
 	if err := json.Unmarshal(data, &req); err != nil {

@@ -331,8 +331,8 @@ export class Client {
   }
 
   /**
-   * Copies a host file or directory into the guest with docker cp path
-   * semantics. Relative host paths are joined to the current directory.
+   * Copies a host file or directory into the guest. Relative host paths are
+   * joined to the current directory.
    */
   async copyIn(
     src: string,
@@ -347,8 +347,8 @@ export class Client {
   }
 
   /**
-   * Copies a guest file or directory to the host with docker cp path
-   * semantics. Relative host paths are joined to the current directory.
+   * Copies a guest file or directory to the host. Relative host paths are
+   * joined to the current directory.
    */
   async copyOut(
     src: string,

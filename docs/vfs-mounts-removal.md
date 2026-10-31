@@ -74,7 +74,7 @@ The replacements keep the interface between the host and the guest small and exp
 
 Copied files go into the guest's root filesystem, which is writable and is discarded with the sandbox. This matches how the default overlay mount behaved, where the guest worked on its own copy of the files.
 
-Paths follow the same rules as `docker cp`:
+Paths follow these rules:
 
 - A source ending in `/.` copies the contents of the directory rather than the directory itself.
 - If the destination is an existing directory, the source is copied inside it. Otherwise the source is copied to the destination path, replacing an existing file.
@@ -170,10 +170,10 @@ The SDKs refuse to copy out when they run matchlock with sudo, because the copie
 Matchlock treats files coming out of the sandbox as untrusted:
 
 - setuid and setgid bits are removed, and your umask applies.
-- Device files, FIFOs, and symlinks that point outside the destination are skipped, with a warning.
-- Files are never written through an existing symlink or hard link at the destination.
+- Device files, FIFOs, and symlinks that resolve outside the destination are skipped, with a warning.
+- Files are never written through a symlink or hard link. Existing links at the destination are replaced, and a copy that would write through a symlink fails.
 - By default, at most 10 GiB and 1,000,000 files are written. You can change this with `--max-size` and `--max-files`, or the matching SDK options, where 0 means no limit.
-- A new destination directory or file only appears once the copy has finished, so a failed or cancelled copy leaves nothing behind.
+- A single copied file is never left half-written. An interrupted directory copy may leave partial results, as with `cp` or `rsync`.
 
 We recommend copying results into a separate directory rather than straight into your working tree, and reviewing them first. You can diff them, or have the guest create a patch with `git diff --binary` and check it on the host with `git apply --check` before applying it. Take particular care with hooks, scripts, and build or CI configuration produced by an agent.
 

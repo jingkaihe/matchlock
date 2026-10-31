@@ -22,8 +22,9 @@ const (
 // CopyIn streams a copy archive to the guest agent and waits until it has been
 // extracted. The guest validates the destination before any data is sent.
 // The caller supplies an already-dialed conn; CopyIn takes ownership and
-// closes it. Cancelling ctx closes the connection, which makes the guest abort
-// and remove a partial copy.
+// closes it. Cancelling ctx closes the connection, which makes the guest stop
+// the copy. A single copied file is never left half-written, but an
+// interrupted directory copy may leave partial results.
 func CopyIn(ctx context.Context, conn net.Conn, req copyarchive.CopyInRequest, archive io.Reader) error {
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })

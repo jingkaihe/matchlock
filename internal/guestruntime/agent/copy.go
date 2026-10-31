@@ -20,7 +20,8 @@ const copyFrameSize = 256 * 1024
 // frames, ending with an empty frame. It validates the destination and
 // acknowledges with MsgTypeReady before reading the archive, and always reads
 // up to the end of the stream before replying so the host is never left
-// blocked on a write. If the host disconnects, the partial copy is removed.
+// blocked on a write. If the host disconnects, the copy stops; a single file is
+// never left half-written, but a directory copy may be partial.
 func handleCopyIn(fd int, data []byte) {
 	var req copyarchive.CopyInRequest
 	if err := json.Unmarshal(data, &req); err != nil {

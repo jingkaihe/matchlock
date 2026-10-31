@@ -97,7 +97,7 @@ func umask() os.FileMode {
 	return os.FileMode(mask)
 }
 
-// TestCopyPathRules covers the docker cp rules for sources and destinations.
+// TestCopyPathRules covers the path rules for sources and destinations.
 func TestCopyPathRules(t *testing.T) {
 	tests := []struct {
 		name    string
