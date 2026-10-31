@@ -143,33 +143,54 @@ func (g RelayGuest) CopyIn(ctx context.Context, req copyarchive.CopyInRequest, a
 		return relayCtxErr(ctx, errx.Wrap(ErrRelaySend, err))
 	}
 
-	buf := make([]byte, relayCopyChunkSize)
+	// Watch for the result while sending, so that an early rejection or
+	// cancellation is seen even while waiting for input such as stdin.
+	result := make(chan error, 1)
+	go func() {
+		msgType, data, err := readRelayMsg(conn)
+		switch {
+		case err != nil:
+			result <- relayCtxErr(ctx, errx.Wrap(ErrRelayRead, err))
+		case msgType != relayMsgCopyResult:
+			result <- errx.With(ErrRelayUnexpected, ": %d", msgType)
+		default:
+			result <- decodeRelayCopyResult(data)
+		}
+	}()
+
+	done := make(chan struct{})
+	defer close(done)
+	chunks := copyarchive.ReadChunks(archive, relayCopyChunkSize, done)
+	sentEOF := false
 	for {
-		n, readErr := archive.Read(buf)
-		if n > 0 {
-			if err := sendRelayMsg(conn, relayMsgStdin, buf[:n]); err != nil {
-				// The relay stopped reading; its result says why.
-				break
+		select {
+		case err := <-result:
+			if err == nil && !sentEOF {
+				err = errx.With(ErrRelayUnexpected, ": copy finished before the archive ended")
+			}
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		case chunk := <-chunks:
+			if len(chunk.Data) > 0 {
+				if err := sendRelayMsg(conn, relayMsgStdin, chunk.Data); err != nil {
+					// The relay stopped reading; its result says why.
+					chunks = nil
+					continue
+				}
+			}
+			switch {
+			case chunk.Err == nil:
+			case errors.Is(chunk.Err, io.EOF):
+				_ = sendRelayMsg(conn, relayMsgStdin, nil)
+				sentEOF = true
+				chunks = nil
+			default:
+				// Returning closes the connection, which aborts the guest copy.
+				return relayCtxErr(ctx, chunk.Err)
 			}
 		}
-		if errors.Is(readErr, io.EOF) {
-			_ = sendRelayMsg(conn, relayMsgStdin, nil)
-			break
-		}
-		if readErr != nil {
-			// Returning closes the connection, which aborts the guest copy.
-			return relayCtxErr(ctx, readErr)
-		}
 	}
-
-	msgType, data, err := readRelayMsg(conn)
-	if err != nil {
-		return relayCtxErr(ctx, errx.Wrap(ErrRelayRead, err))
-	}
-	if msgType != relayMsgCopyResult {
-		return errx.With(ErrRelayUnexpected, ": %d", msgType)
-	}
-	return decodeRelayCopyResult(data)
 }
 
 // CopyOut implements copyarchive.Guest.

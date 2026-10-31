@@ -65,7 +65,9 @@ func CopyIn(ctx context.Context, conn net.Conn, req copyarchive.CopyInRequest, a
 		}
 	}()
 
-	buf := make([]byte, copyChunkSize)
+	done := make(chan struct{})
+	defer close(done)
+	chunks := copyarchive.ReadChunks(archive, copyChunkSize, done)
 	for {
 		select {
 		case err := <-result:
@@ -76,29 +78,29 @@ func CopyIn(ctx context.Context, conn net.Conn, req copyarchive.CopyInRequest, a
 				err = errx.With(ErrUnexpectedCopyMsg, ": guest finished before the archive ended")
 			}
 			return err
-		default:
-		}
-
-		n, readErr := archive.Read(buf)
-		if n > 0 {
-			if err := SendMessage(conn, MsgTypeStdin, buf[:n]); err != nil {
-				// The guest's result explains a failed write, if it sent one.
-				return firstErr(<-result, ctxErr(ctx, errx.Wrap(ErrWriteRequest, err)))
+		case <-ctx.Done():
+			return ctx.Err()
+		case chunk := <-chunks:
+			if len(chunk.Data) > 0 {
+				if err := SendMessage(conn, MsgTypeStdin, chunk.Data); err != nil {
+					// The guest's result explains a failed write, if it sent one.
+					return firstErr(<-result, ctxErr(ctx, errx.Wrap(ErrWriteRequest, err)))
+				}
+			}
+			switch {
+			case chunk.Err == nil:
+			case errors.Is(chunk.Err, io.EOF):
+				if err := SendMessage(conn, MsgTypeStdin, nil); err != nil {
+					return firstErr(<-result, ctxErr(ctx, errx.Wrap(ErrWriteRequest, err)))
+				}
+				return <-result
+			default:
+				// Abort the guest so it stops the copy.
+				conn.Close()
+				<-result
+				return ctxErr(ctx, errx.Wrap(ErrReadCopyArchive, chunk.Err))
 			}
 		}
-		if readErr == nil {
-			continue
-		}
-		if !errors.Is(readErr, io.EOF) {
-			// Abort the guest so it discards the partial copy.
-			conn.Close()
-			<-result
-			return ctxErr(ctx, errx.Wrap(ErrReadCopyArchive, readErr))
-		}
-		if err := SendMessage(conn, MsgTypeStdin, nil); err != nil {
-			return firstErr(<-result, ctxErr(ctx, errx.Wrap(ErrWriteRequest, err)))
-		}
-		return <-result
 	}
 }
 

@@ -124,6 +124,35 @@ func FromGuest(ctx context.Context, g Guest, src, dest string, opts FromGuestOpt
 	return nil
 }
 
+// Chunk is a piece of an archive read by ReadChunks.
+type Chunk struct {
+	Data []byte
+	// Err is set on the last chunk, and is io.EOF at the end of the archive.
+	Err error
+}
+
+// ReadChunks reads r in a separate goroutine, so that a sender can wait for
+// the next chunk, the receiver's result, or cancellation, whichever comes
+// first. Reading stops after a chunk with an error, or once done is closed.
+func ReadChunks(r io.Reader, size int, done <-chan struct{}) <-chan Chunk {
+	chunks := make(chan Chunk)
+	go func() {
+		for {
+			buf := make([]byte, size)
+			n, err := r.Read(buf)
+			select {
+			case chunks <- Chunk{Data: buf[:n], Err: err}:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return chunks
+}
+
 // maxTrailingBytes bounds the padding read after a guest archive ends.
 const maxTrailingBytes = 1 << 20
 
