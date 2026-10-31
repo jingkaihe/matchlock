@@ -77,7 +77,7 @@ const sandbox = new Sandbox("alpine:latest").withNetworkInterception({
 - Fluent sandbox builder (`Sandbox`) with network, secrets, env, and image config
 - Typed network interception rules and local callback hooks via `withNetworkInterception(...)`
 - Supports fully offline mode via `.withNoNetwork()` (no guest NIC / no egress)
-- JSON-RPC `create`, `exec`, `exec_stream`, `exec_pipe`, `exec_tty`, `log`, `log_stream`, `write_file`, `read_file`, `list_files`, `port_forward`, `cancel`, `close`
+- JSON-RPC `create`, `exec`, `exec_stream`, `exec_pipe`, `exec_tty`, `log`, `log_stream`, `write_file`, `read_file`, `list_files`, `copy_in`, `copy_out`, `port_forward`, `cancel`, `close`
 - Streaming stdout/stderr via `execStream`, bidirectional stdin/stdout/stderr via `execPipe`, and per-command working directory and user selection for pipe and interactive PTY execution
 - Guest-native filesystems with explicit file read/write/list and stream transfers
 - Managed ext4 block volume creation, listing, and removal
@@ -117,6 +117,18 @@ try {
   await client.close();
 }
 ```
+
+## Copying Files and Directories
+
+`copyIn` copies a host file or directory into the guest, and `copyOut` copies a guest file or directory to the host. Paths follow `docker cp` semantics: a source ending in `/.` copies the directory's contents, and a destination ending in `/` must be an existing directory. Relative host paths are joined to `process.cwd()` without normalisation, so these suffixes are kept.
+
+```ts
+// After client.create(...) or client.launch(...):
+await client.copyIn("./src/.", "/workspace");
+await client.copyOut("/workspace/dist", "./out");
+```
+
+`copyIn` accepts `owner` (defaults to the sandbox user) or `archive: true` to keep the source uid/gid. Both methods accept `followLink`, `exclude` (`.dockerignore`-style patterns), `signal`, and `timeoutMs`; `copyOut` also accepts `maxSize` and `maxFiles` (server defaults 10 GiB and 1,000,000 entries; `0` means unlimited). `copyOut` is unavailable with `useSudo` because a root `matchlock rpc` process would create root-owned host files.
 
 ## Stdin/Stdout File Transfers
 
@@ -200,6 +212,8 @@ matchlock run --image alpine:latest --disk @sdk-data:/data -- sh -c 'echo persis
 | `client.writeFileMode(path, content, mode, options?)` | Write content with explicit guest permissions |
 | `client.readFile(path, options?)` | Read a guest file — returns `Buffer` |
 | `client.listFiles(path, options?)` | List a guest directory — returns `FileInfo[]` |
+| `client.copyIn(src, dest, options?)` | Copy a host file or directory into the guest (`docker cp` path semantics) |
+| `client.copyOut(src, dest, options?)` | Copy a guest file or directory to the host; unavailable with `useSudo` |
 | `client.volumeCreate(name, sizeMb = 10240)` | Create a named ext4 block volume — returns `VolumeInfo` |
 | `client.volumeList()` | List managed block volumes — returns `VolumeInfo[]` |
 | `client.volumeRemove(name)` | Delete a managed block volume that is no longer in use |

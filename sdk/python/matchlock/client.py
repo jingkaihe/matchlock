@@ -58,6 +58,20 @@ def _is_binary_writer(writer: object) -> bool:
     return isinstance(mode, str) and "b" in mode
 
 
+def _absolute_host_path(path: str) -> str:
+    """Make a host path absolute without normalising it.
+
+    Unlike :func:`os.path.abspath`, this keeps a trailing ``/`` or ``/.``,
+    which change the meaning of a copy source or destination.
+    """
+    if os.path.isabs(path):
+        return path
+    cwd = os.getcwd()
+    if cwd.endswith(os.sep):
+        return cwd + path
+    return cwd + os.sep + path
+
+
 class _PendingRequest:
     __slots__ = ("event", "result", "error", "on_notification")
 
@@ -1379,3 +1393,122 @@ class Client:
             )
             for f in result.get("files", [])
         ]
+
+    def copy_in(
+        self,
+        src: str | os.PathLike[str],
+        dest: str,
+        *,
+        owner: str = "",
+        archive: bool = False,
+        follow_link: bool = False,
+        exclude: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Copy a host file or directory into the sandbox.
+
+        Paths follow ``docker cp`` semantics: a ``src`` ending in ``/.`` copies
+        the directory's contents rather than the directory itself, a ``src``
+        ending in ``/`` must be a directory, and a ``dest`` ending in ``/`` must
+        be an existing guest directory. A relative ``src`` is joined to the
+        current working directory without normalising it, so these suffixes
+        are kept. ``pathlib.Path`` removes them; pass a ``str`` to use them.
+
+        Args:
+            src: Host path to copy from.
+            dest: Guest path to copy to.
+            owner: Optional owner of the copied files in the guest (uid,
+                uid:gid, user, or user:group). Defaults to the sandbox's
+                configured user, falling back to root.
+            archive: Preserve the source's numeric uid/gid instead. Cannot be
+                combined with ``owner``.
+            follow_link: If ``src`` is a symlink, copy its target instead of
+                the link.
+            exclude: Optional ``.dockerignore``-style patterns, relative to
+                the source directory, for paths to skip.
+            timeout: Optional timeout in seconds. If the copy doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort it and :class:`TimeoutError` is raised.
+        """
+        src_path = os.fspath(src)
+        if not src_path:
+            raise MatchlockError("copy_in source path is required")
+        if not dest:
+            raise MatchlockError("copy_in destination path is required")
+        if owner and archive:
+            raise MatchlockError("copy_in owner cannot be combined with archive")
+
+        params: dict[str, Any] = {
+            "src": _absolute_host_path(src_path),
+            "dest": dest,
+        }
+        if owner:
+            params["owner"] = owner
+        if archive:
+            params["archive"] = True
+        if follow_link:
+            params["follow_link"] = True
+        if exclude:
+            params["exclude"] = list(exclude)
+        self._send_request("copy_in", params, timeout=timeout)
+
+    def copy_out(
+        self,
+        src: str,
+        dest: str | os.PathLike[str],
+        *,
+        follow_link: bool = False,
+        exclude: list[str] | None = None,
+        max_size: int | None = None,
+        max_files: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Copy a file or directory from the sandbox to the host.
+
+        Paths follow the same ``docker cp`` semantics as :meth:`copy_in`. A
+        relative ``dest`` is joined to the current working directory without
+        normalising it, so a trailing ``/`` is kept.
+
+        Not available when the client runs matchlock with ``use_sudo``, because
+        the files would be written by a root process and owned by root.
+
+        Args:
+            src: Guest path to copy from.
+            dest: Host path to copy to.
+            follow_link: If ``src`` is a symlink, copy its target instead of
+                the link.
+            exclude: Optional ``.dockerignore``-style patterns, relative to
+                the source directory, for paths to skip.
+            max_size: Optional maximum total bytes of file content written to
+                the host. ``None`` uses the server default (10 GiB); ``0``
+                means unlimited.
+            max_files: Optional maximum number of archive entries. ``None``
+                uses the server default (1,000,000); ``0`` means unlimited.
+            timeout: Optional timeout in seconds. If the copy doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort it and :class:`TimeoutError` is raised.
+        """
+        dest_path = os.fspath(dest)
+        if not src:
+            raise MatchlockError("copy_out source path is required")
+        if not dest_path:
+            raise MatchlockError("copy_out destination path is required")
+        if self._config.use_sudo:
+            raise MatchlockError(
+                "copy_out is not supported with use_sudo: files would be "
+                "written by a root matchlock process and owned by root"
+            )
+
+        params: dict[str, Any] = {
+            "src": src,
+            "dest": _absolute_host_path(dest_path),
+        }
+        if follow_link:
+            params["follow_link"] = True
+        if exclude:
+            params["exclude"] = list(exclude)
+        if max_size is not None:
+            params["max_size"] = max_size
+        if max_files is not None:
+            params["max_files"] = max_files
+        self._send_request("copy_out", params, timeout=timeout)

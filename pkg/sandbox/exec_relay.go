@@ -30,6 +30,10 @@ const (
 	relayMsgAllowListDelete uint8 = 11
 	relayMsgAllowListResult uint8 = 12
 	relayMsgResize          uint8 = 13
+	relayMsgCopyIn          uint8 = 14
+	relayMsgCopyOut         uint8 = 15
+	relayMsgCopyInfo        uint8 = 16
+	relayMsgCopyResult      uint8 = 17
 )
 
 type relayExecRequest struct {
@@ -144,6 +148,10 @@ func (r *ExecRelay) handleConn(conn net.Conn) {
 		r.handleAllowListAdd(conn, data)
 	case relayMsgAllowListDelete:
 		r.handleAllowListDelete(conn, data)
+	case relayMsgCopyIn:
+		r.handleCopyIn(conn, data)
+	case relayMsgCopyOut:
+		r.handleCopyOut(conn, data)
 	}
 }
 

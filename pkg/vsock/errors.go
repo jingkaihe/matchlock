@@ -36,4 +36,9 @@ var (
 
 	ErrEncodeFileRequest = errors.New("encode file request")
 	ErrFileRemote        = errors.New("guest file operation")
+
+	ErrEncodeCopyRequest = errors.New("encode copy request")
+	ErrReadCopyArchive   = errors.New("read copy archive")
+	ErrUnexpectedCopyMsg = errors.New("unexpected copy message")
+	ErrCopyFrameTooLarge = errors.New("copy frame too large")
 )

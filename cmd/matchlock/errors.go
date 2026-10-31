@@ -36,6 +36,13 @@ var (
 	ErrReadVMLog       = errors.New("read VM log")
 )
 
+// Copy errors
+var (
+	ErrInvalidCopy = errors.New("invalid copy")
+	ErrCopyIn      = errors.New("copy into sandbox")
+	ErrCopyOut     = errors.New("copy out of sandbox")
+)
+
 // Pull errors
 var (
 	ErrSaveTag = errors.New("saving tag")

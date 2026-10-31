@@ -3,6 +3,8 @@ import { MatchlockError } from "./errors";
 import {
   type BinaryLike,
   type Config,
+  type CopyInOptions,
+  type CopyOutOptions,
   type CreateOptions,
   type ExecInteractiveOptions,
   type ExecInteractiveResult,
@@ -21,6 +23,7 @@ import {
   type StreamWriter,
   type VolumeInfo,
 } from "./types";
+import { buildCopyInParams, buildCopyOutParams } from "./client/copy";
 import { buildCreateParams, validateCreateOptions } from "./client/create";
 import { ExecAPI } from "./client/exec";
 import { NetworkHooks } from "./client/network-hooks";
@@ -325,6 +328,43 @@ export class Client {
         isDir: Boolean(file.is_dir),
       };
     });
+  }
+
+  /**
+   * Copies a host file or directory into the guest with docker cp path
+   * semantics. Relative host paths are joined to the current directory.
+   */
+  async copyIn(
+    src: string,
+    dest: string,
+    options: CopyInOptions = {},
+  ): Promise<void> {
+    await this.sendRequest(
+      "copy_in",
+      buildCopyInParams(src, dest, options),
+      options,
+    );
+  }
+
+  /**
+   * Copies a guest file or directory to the host with docker cp path
+   * semantics. Relative host paths are joined to the current directory.
+   */
+  async copyOut(
+    src: string,
+    dest: string,
+    options: CopyOutOptions = {},
+  ): Promise<void> {
+    if (this.config.useSudo) {
+      throw new MatchlockError(
+        "copyOut is not supported with useSudo: files written by the root matchlock process would be owned by root on the host",
+      );
+    }
+    await this.sendRequest(
+      "copy_out",
+      buildCopyOutParams(src, dest, options),
+      options,
+    );
   }
 
   async portForward(...specs: string[]): Promise<PortForwardBinding[]> {

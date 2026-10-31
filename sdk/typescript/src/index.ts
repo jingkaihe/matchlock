@@ -13,6 +13,8 @@ export {
 export type {
   BinaryLike,
   Config,
+  CopyInOptions,
+  CopyOutOptions,
   CreateOptions,
   ExecInteractiveOptions,
   ExecInteractiveResult,

@@ -218,3 +218,25 @@ export interface ExecInteractiveOptions extends ExecOptions {
 export interface LogStreamOptions extends RequestOptions {
   stdout?: StreamWriter;
 }
+
+export interface CopyInOptions extends RequestOptions {
+  /** Owner of the copied guest files: uid, uid:gid, user, or user:group. Defaults to the sandbox user. */
+  owner?: string;
+  /** Preserve the source's numeric uid/gid. Cannot be combined with owner. */
+  archive?: boolean;
+  /** If src itself is a symlink, copy its target instead of the link. */
+  followLink?: boolean;
+  /** .dockerignore-style patterns, relative to the source directory. */
+  exclude?: string[];
+}
+
+export interface CopyOutOptions extends RequestOptions {
+  /** If src itself is a symlink, copy its target instead of the link. */
+  followLink?: boolean;
+  /** .dockerignore-style patterns, relative to the source directory. */
+  exclude?: string[];
+  /** Maximum total bytes of file content written to the host. Omit for the server default; 0 means unlimited. */
+  maxSize?: number;
+  /** Maximum number of archive entries. Omit for the server default; 0 means unlimited. */
+  maxFiles?: number;
+}

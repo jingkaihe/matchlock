@@ -5,11 +5,15 @@ package acceptance
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jingkaihe/matchlock/pkg/sdk"
 )
 
 func TestWriteAndReadFile(t *testing.T) {
@@ -98,4 +102,24 @@ func TestChmodPreservesAfterStat(t *testing.T) {
 	result, err := client.Exec(context.Background(), "stat -c '%a' /workspace/check.sh")
 	require.NoError(t, err, "stat")
 	assert.Equal(t, "755", strings.TrimSpace(result.Stdout))
+}
+
+func TestSDKCopyInAndOut(t *testing.T) {
+	t.Parallel()
+	client := launchAlpine(t)
+	ctx := context.Background()
+	src, blob := writeCopySource(t)
+
+	require.NoError(t, client.CopyIn(ctx, src+"/.", "/workspace", nil), "CopyIn")
+	result, err := client.Exec(ctx, "cat /workspace/sub/b.txt && echo built > /workspace/out.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "world\n", result.Stdout)
+
+	out := filepath.Join(t.TempDir(), "out")
+	require.NoError(t, client.CopyOut(ctx, "/workspace", out, &sdk.CopyOutOptions{Exclude: []string{"sub"}}), "CopyOut")
+	got, err := os.ReadFile(filepath.Join(out, "blob.bin"))
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(blob, got), "blob corrupted in round trip")
+	assert.FileExists(t, filepath.Join(out, "out.txt"))
+	assert.NoDirExists(t, filepath.Join(out, "sub"))
 }

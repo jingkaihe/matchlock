@@ -856,6 +856,136 @@ describe("Client", () => {
     await client.close();
   });
 
+  it("sends copy params with only the options that are set", async () => {
+    const fake = installFakeProcess();
+    fake.on("request", (request: { id: number }) => {
+      fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: {} });
+    });
+    const client = new Client();
+    const cwd = process.cwd();
+
+    const cases: {
+      call: () => Promise<void>;
+      method: string;
+      params: Record<string, unknown>;
+    }[] = [
+      // Unset, false, and empty options are omitted; request options are not params.
+      {
+        call: () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "",
+            archive: false,
+            followLink: false,
+            exclude: [],
+            timeoutMs: 5000,
+          }),
+        method: "copy_in",
+        params: { src: "/host/src", dest: "/workspace" },
+      },
+      {
+        call: () => client.copyOut("/workspace/dist", "/host/out"),
+        method: "copy_out",
+        params: { src: "/workspace/dist", dest: "/host/out" },
+      },
+      {
+        call: () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "1000:1000",
+            followLink: true,
+            exclude: ["*.log"],
+          }),
+        method: "copy_in",
+        params: {
+          src: "/host/src",
+          dest: "/workspace",
+          owner: "1000:1000",
+          follow_link: true,
+          exclude: ["*.log"],
+        },
+      },
+      {
+        call: () => client.copyIn("/host/src", "/workspace", { archive: true }),
+        method: "copy_in",
+        params: { src: "/host/src", dest: "/workspace", archive: true },
+      },
+      {
+        call: () =>
+          client.copyOut("/workspace/dist", "/host/out", {
+            followLink: true,
+            exclude: ["*.tmp"],
+            maxSize: 0,
+            maxFiles: 0,
+          }),
+        method: "copy_out",
+        params: {
+          src: "/workspace/dist",
+          dest: "/host/out",
+          follow_link: true,
+          exclude: ["*.tmp"],
+          max_size: 0,
+          max_files: 0,
+        },
+      },
+      // Relative host paths are joined to cwd verbatim; guest paths are sent as given.
+      {
+        call: () => client.copyIn("./src/.", "/workspace/"),
+        method: "copy_in",
+        params: { src: `${cwd}/./src/.`, dest: "/workspace/" },
+      },
+      {
+        call: () => client.copyOut("dist/", "out/"),
+        method: "copy_out",
+        params: { src: "dist/", dest: `${cwd}/out/` },
+      },
+    ];
+
+    for (const { call } of cases) {
+      await withTimeout(call());
+    }
+    expect(fake.requests.map((r) => [r.method, r.params])).toEqual(
+      cases.map(({ method, params }) => [method, params]),
+    );
+
+    fake.close();
+    await client.close();
+  });
+
+  it("rejects invalid copy calls before starting rpc", async () => {
+    const client = new Client();
+    const sudoClient = new Client({ useSudo: true });
+
+    const cases: [() => Promise<void>, string][] = [
+      [() => client.copyIn("", "/workspace"), "copy source path is required"],
+      [
+        () => client.copyOut("/workspace/dist", ""),
+        "copy destination path is required",
+      ],
+      [
+        () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "1000",
+            archive: true,
+          }),
+        "copy owner cannot be combined with archive",
+      ],
+      [
+        () => client.copyOut("/workspace/dist", "/host/out", { maxSize: -1 }),
+        "copy maxSize must be a non-negative integer",
+      ],
+      [
+        () => sudoClient.copyOut("/workspace/dist", "/host/out"),
+        "copyOut is not supported with useSudo",
+      ],
+    ];
+
+    for (const [call, message] of cases) {
+      const error = await call().catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(MatchlockError);
+      expect((error as Error).message).toContain(message);
+    }
+    expect(mockedSpawn).not.toHaveBeenCalled();
+  });
+
   it("sends cancel rpc when aborted", async () => {
     const fake = installFakeProcess();
     const client = new Client();

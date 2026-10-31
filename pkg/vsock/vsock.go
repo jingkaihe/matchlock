@@ -242,6 +242,9 @@ const (
 	MsgTypeReadFile    uint8 = 15 // Read a file from the guest filesystem
 	MsgTypeListFiles   uint8 = 16 // List files in a guest directory
 	MsgTypeFileResult  uint8 = 17 // Response for file operations
+	MsgTypeCopyIn      uint8 = 18 // Extract a copy archive streamed as MsgTypeStdin frames
+	MsgTypeCopyOut     uint8 = 19 // Stream a copy archive as MsgTypeStdout frames
+	MsgTypeCopyInfo    uint8 = 20 // Copy-out source description sent before the archive
 )
 
 // ExecRequest is sent from host to guest to execute a command

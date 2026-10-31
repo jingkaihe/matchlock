@@ -31,6 +31,12 @@ var (
 	ErrParsePortBindings  = errors.New("parse port-forward result")
 )
 
+// Copy errors
+var (
+	ErrInvalidCopy     = errors.New("invalid copy")
+	ErrCopyOutWithSudo = errors.New("copy out is not supported when matchlock runs with sudo, because copied files would be owned by root")
+)
+
 // Exec errors
 var (
 	ErrParseExecResult       = errors.New("parse exec result")

@@ -40,6 +40,7 @@ import (
 type Client struct {
 	cmd        *exec.Cmd
 	binaryPath string
+	useSudo    bool
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
 	stderr     io.ReadCloser
@@ -114,6 +115,7 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{
 		cmd:        cmd,
 		binaryPath: cfg.BinaryPath,
+		useSudo:    cfg.UseSudo,
 		stdin:      stdin,
 		stdout:     bufio.NewReader(stdout),
 		stderr:     stderr,

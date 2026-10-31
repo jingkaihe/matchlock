@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 
 const (
 	detachedVMPollInterval = 100 * time.Millisecond
+	detachedReadyTimeout   = 30 * time.Second
 )
 
 var runCmd = &cobra.Command{
@@ -68,6 +70,12 @@ Raw Disk Mounts (--disk):
   @pgdata:/var/lib/postgresql:uid=999,gid=999
   Ownership options chown the mount root only and require a writable disk.
 
+Copying Files (--copy-in, --copy-out):
+  Copy files in before the command runs and out after it exits, using the same
+  rules as matchlock cp. Sandbox paths must be absolute.
+  --copy-in ./src/.:/workspace        Copy the contents of ./src into /workspace
+  --copy-out /workspace/dist:./out    Copy /workspace/dist to ./out
+
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
   *.example.com          Allow all subdomains (api.example.com, a.b.example.com)
@@ -101,6 +109,8 @@ func init() {
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
 	runCmd.Flags().StringArray("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:option[,option...]] or @volume_name:guest_mount[:option[,option...]])")
+	runCmd.Flags().StringArray("copy-in", nil, "Copy a host path into the sandbox before the command runs (HOST_PATH:SANDBOX_PATH, can be repeated)")
+	runCmd.Flags().StringArray("copy-out", nil, "Copy a sandbox path to the host after the command exits (SANDBOX_PATH:HOST_PATH, can be repeated)")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringArray("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
@@ -134,6 +144,8 @@ func init() {
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
 	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
+	viper.BindPFlag("run.copy-in", runCmd.Flags().Lookup("copy-in"))
+	viper.BindPFlag("run.copy-out", runCmd.Flags().Lookup("copy-out"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
@@ -178,6 +190,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 	interactiveMode := tty && interactive
 	if err := validateDetachFlags(detach, tty, interactive); err != nil {
 		return err
+	}
+	copyInValues, _ := cmd.Flags().GetStringArray("copy-in")
+	copyOutValues, _ := cmd.Flags().GetStringArray("copy-out")
+	copyIns, err := parseCopySpecs("copy-in", copyInValues, false)
+	if err != nil {
+		return err
+	}
+	copyOuts, err := parseCopySpecs("copy-out", copyOutValues, true)
+	if err != nil {
+		return err
+	}
+	if detach && len(copyIns)+len(copyOuts) > 0 {
+		return errx.With(ErrInvalidCopy, ": --copy-in and --copy-out cannot be combined with --detach; use matchlock cp")
 	}
 	if detach {
 		rm = false
@@ -305,6 +330,9 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if rm && command == "" && !interactiveMode {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
 	}
+	if len(copyOuts) > 0 && command == "" && !interactiveMode {
+		return errx.With(ErrInvalidCopy, ": --copy-out requires a command")
+	}
 
 	sandboxOpts := &sandbox.Options{
 		RootfsPaths:   buildResult.LowerPaths,
@@ -396,12 +424,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	defer execRelay.Stop()
 
-	if !rm {
-		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
-		fmt.Fprintf(os.Stderr, "  Connect: matchlock exec %s -it bash\n", sb.ID())
-		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
-	}
-
 	cleanupSandbox := func(remove bool) error {
 		c, cancel := closeContext(gracefulShutdown)
 		defer cancel()
@@ -419,6 +441,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errors.Join(errs...)
 		}
 		return nil
+	}
+
+	if err := copyIntoSandbox(ctx, sb, copyIns); err != nil {
+		return errors.Join(err, cleanupSandbox(rm))
+	}
+
+	if !rm {
+		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Connect: matchlock exec %s -it bash\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
 	var pfManager *sandbox.PortForwardManager
@@ -441,11 +473,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	if interactiveMode {
 		exitCode := runInteractive(ctx, sb, command, workdir)
+		copyErr := copyOutOfSandbox(ctx, sb, copyOuts)
 		if rm {
 			if err := cleanupSandbox(true); err != nil {
-				return err
+				return errors.Join(copyErr, err)
 			}
-			return commandExit(exitCode)
+			return copyOutExit(copyErr, exitCode)
+		}
+		if copyErr != nil {
+			fmt.Fprintln(os.Stderr, copyErr)
 		}
 		// Keep sandbox alive for follow-up `matchlock exec` sessions.
 		<-ctx.Done()
@@ -488,11 +524,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errx.Wrap(ErrExecCommand, err)
 		}
 
+		copyErr := copyOutOfSandbox(ctx, sb, copyOuts)
 		if rm {
 			if err := cleanupSandbox(true); err != nil {
-				return err
+				return errors.Join(copyErr, err)
 			}
-			return commandExit(result.ExitCode)
+			return copyOutExit(copyErr, result.ExitCode)
+		}
+		if copyErr != nil {
+			fmt.Fprintln(os.Stderr, copyErr)
 		}
 	}
 
@@ -656,14 +696,23 @@ func waitDetachedVMID(pid int) (string, error) {
 	ticker := time.NewTicker(detachedVMPollInterval)
 	defer ticker.Stop()
 
+	var vmID string
+	var readyDeadline time.Time
 	for {
-		states, err := mgr.List()
-		if err == nil {
-			for _, vmState := range states {
-				if vmState.PID == pid && vmState.Status == "running" {
-					return vmState.ID, nil
+		if vmID == "" {
+			if states, err := mgr.List(); err == nil {
+				for _, vmState := range states {
+					if vmState.PID == pid && vmState.Status == "running" {
+						vmID = vmState.ID
+						readyDeadline = time.Now().Add(detachedReadyTimeout)
+					}
 				}
 			}
+		}
+		// Return once the exec relay accepts connections, so that exec and cp
+		// work immediately. If the relay never starts, still report the VM.
+		if vmID != "" && (execRelayReady(mgr.ExecSocketPath(vmID)) || time.Now().After(readyDeadline)) {
+			return vmID, nil
 		}
 		if !isProcessRunning(pid) {
 			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
@@ -671,6 +720,15 @@ func waitDetachedVMID(pid int) (string, error) {
 
 		<-ticker.C
 	}
+}
+
+func execRelayReady(socketPath string) bool {
+	conn, err := net.DialTimeout("unix", socketPath, detachedVMPollInterval)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func isProcessRunning(pid int) bool {

@@ -53,6 +53,9 @@ const (
 	MsgTypeReadFile    uint8 = 15
 	MsgTypeListFiles   uint8 = 16
 	MsgTypeFileResult  uint8 = 17
+	MsgTypeCopyIn      uint8 = 18
+	MsgTypeCopyOut     uint8 = 19
+	MsgTypeCopyInfo    uint8 = 20
 )
 
 type sockaddrVM struct {
@@ -260,6 +263,12 @@ func handleExec(fd int) {
 		syscall.Close(fd)
 	case MsgTypeListFiles:
 		handleListFile(fd, data)
+		syscall.Close(fd)
+	case MsgTypeCopyIn:
+		handleCopyIn(fd, data)
+		syscall.Close(fd)
+	case MsgTypeCopyOut:
+		handleCopyOut(fd, data)
 		syscall.Close(fd)
 	default:
 		syscall.Close(fd)

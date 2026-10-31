@@ -117,10 +117,16 @@ docker save myapp:latest | matchlock image import myapp:latest  # Import from ta
 
 ### Files and builds
 
-Matchlock does not support host-directory mounts or filesystem interception. Use
-the SDK file APIs to upload and retrieve files, or stream larger inputs and outputs
-through command stdin/stdout. Filesystem operations happen on native guest storage.
-Use `matchlock volume` with `run --disk @name:/guest/path` for persistent storage.
+Matchlock does not support host-directory mounts or filesystem interception. Copy files in and out explicitly with `matchlock cp`, `run --copy-in` / `--copy-out`, or the SDK copy and file APIs. Filesystem operations happen on native guest storage. Use `matchlock volume` with `run --disk @name:/guest/path` for persistent storage. See the [migration guide](docs/vfs-mounts-removal.md).
+
+```bash
+# Copy ./src in, run the build, and copy the results out
+matchlock run --image alpine:latest --copy-in ./src/.:/workspace --copy-out /workspace/dist:./dist -w /workspace -- make
+
+# Copy files to and from a running sandbox
+matchlock cp ./src/. vm-abc12345:/workspace
+matchlock cp vm-abc12345:/workspace/dist ./dist
+```
 
 `matchlock build` runs BuildKit inside a VM and imports the result into the local image store. The build context is copied into the VM, honouring `.dockerignore` and Dockerfile-specific ignore files, so `--build-disk` must be large enough to hold it. The build cache persists between builds, and no host directory is shared with the VM.
 

@@ -7,6 +7,7 @@ import base64
 import io
 import json
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1809,6 +1810,116 @@ class TestClientFileOps:
             t.join(timeout=2)
         finally:
             fake.close_stdout()
+
+
+class TestClientCopy:
+    def test_copy_sends_only_set_params(self):
+        client = Client()
+        # (method, args, kwargs, expected params)
+        cases = [
+            # Optional keys are omitted unless set.
+            (
+                "copy_in",
+                ("/host/src", "/workspace"),
+                {},
+                {"src": "/host/src", "dest": "/workspace"},
+            ),
+            (
+                "copy_out",
+                ("/workspace/dist", "/host/out"),
+                {},
+                {"src": "/workspace/dist", "dest": "/host/out"},
+            ),
+            # Explicit options are sent, including max_size=0 (unlimited).
+            (
+                "copy_in",
+                (Path("/host/src"), "/workspace/"),
+                {"owner": "1000:1000", "follow_link": True, "exclude": ["*.pyc"]},
+                {
+                    "src": "/host/src",
+                    "dest": "/workspace/",
+                    "owner": "1000:1000",
+                    "follow_link": True,
+                    "exclude": ["*.pyc"],
+                },
+            ),
+            (
+                "copy_in",
+                ("/host/src", "/workspace"),
+                {"archive": True, "timeout": 5},
+                {"src": "/host/src", "dest": "/workspace", "archive": True},
+            ),
+            (
+                "copy_out",
+                ("/workspace/dist/.", "/host/out/"),
+                {
+                    "follow_link": True,
+                    "exclude": ["*.log"],
+                    "max_size": 0,
+                    "max_files": 10,
+                    "timeout": 5,
+                },
+                {
+                    "src": "/workspace/dist/.",
+                    "dest": "/host/out/",
+                    "follow_link": True,
+                    "exclude": ["*.log"],
+                    "max_size": 0,
+                    "max_files": 10,
+                },
+            ),
+            # Relative host paths are joined to the cwd without normalising,
+            # keeping "/." and trailing "/"; guest paths are sent as given.
+            (
+                "copy_in",
+                ("./src/.", "/workspace"),
+                {},
+                {"src": "/home/me/./src/.", "dest": "/workspace"},
+            ),
+            (
+                "copy_in",
+                ("src/", "/workspace"),
+                {},
+                {"src": "/home/me/src/", "dest": "/workspace"},
+            ),
+            (
+                "copy_out",
+                ("dist/.", "out/"),
+                {},
+                {"src": "dist/.", "dest": "/home/me/out/"},
+            ),
+        ]
+        with (
+            patch("os.getcwd", return_value="/home/me"),
+            patch.object(client, "_send_request") as send,
+        ):
+            for method, args, kwargs, params in cases:
+                getattr(client, method)(*args, **kwargs)
+                send.assert_called_with(method, params, timeout=kwargs.get("timeout"))
+
+    def test_copy_rejects_invalid_requests(self):
+        client = Client()
+        sudo_client = Client(Config(use_sudo=True))
+        cases = [
+            (
+                lambda: client.copy_in(
+                    "/host/src", "/workspace", owner="1000", archive=True
+                ),
+                "owner cannot be combined with archive",
+            ),
+            (
+                lambda: sudo_client.copy_out("/workspace/dist", "/host/out"),
+                "not supported with use_sudo",
+            ),
+            (lambda: client.copy_in("", "/workspace"), "source path is required"),
+            (lambda: client.copy_out("/workspace", ""), "destination path is required"),
+        ]
+        with patch.object(Client, "_send_request") as send:
+            for copy, message in cases:
+                with pytest.raises(MatchlockError, match=message):
+                    copy()
+        send.assert_not_called()
+
 
 class TestClientProcessNotRunning:
     def test_send_request_raises_when_not_started(self):

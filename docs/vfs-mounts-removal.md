@@ -25,7 +25,7 @@ $ # JSON-RPC create with a "vfs" object
 {"jsonrpc":"2.0","error":{"code":-32602,"message":"invalid configuration: vfs is no longer supported; use guest file transfer or block disks instead"},"id":1}
 ```
 
-The following continue to work as before: `WriteFile` / `ReadFile` / `ListFiles`, all exec modes, `--disk` block devices, named volumes, and `matchlock build`. File operations such as `WriteFile` now act directly on the guest filesystem through the guest agent.
+The following continue to work as before: `WriteFile` / `ReadFile` / `ListFiles`, all exec modes, `--disk` block devices, named volumes, and `matchlock build`. File operations such as `WriteFile` now act directly on the guest filesystem through the guest agent. Matchlock 0.3.0 also adds `matchlock cp`, `run --copy-in` and `--copy-out`, and copy methods in the SDKs for copying files and directories in and out of a sandbox.
 
 ## Why it was removed
 
@@ -61,103 +61,61 @@ The replacements keep the interface between the host and the guest small and exp
 
 | Before (0.2.x) | After (0.3.0) |
 |---|---|
-| `-v ./src:code` (overlay snapshot) | Copy the files in when the sandbox starts: [Copy files in](#copy-files-in) |
+| `-v ./src:code` (overlay snapshot) | Copy the files in with `--copy-in` or `matchlock cp`: [Copy files in](#copy-files-in) |
 | `-v ./src:code:host_fs` (live read-write) | Copy files in, run the work, copy the results out, and review them before applying: [Copy results out](#copy-results-out) |
 | `-v ./data:data:ro` | Copy the files in, or attach a prebuilt ext4 image as a read-only disk: [Read-only inputs](#read-only-inputs) |
 | `MountMemory` / `mount_memory` / `mountMemory` | An ordinary guest directory: [Scratch space](#scratch-space) |
-| `host_fs,uid=…,gid=…` / `MountHostDirAs` / `owner_uid` | `chown` after extracting, or `--disk …:uid=…,gid=…`: [Ownership](#file-ownership) |
+| `host_fs,uid=…,gid=…` / `MountHostDirAs` / `owner_uid` | Copied files are owned by the sandbox user, or pass `--owner`: [File ownership](#file-ownership) |
 | Data persisted through a host mount | `matchlock volume` + `--disk @name:/path`: [Persistent data](#persistent-data) |
-| `--workspace` / `WithWorkspace` as the default workdir | Create the directory and pass `-w` / `WorkingDir`: [Working directory](#working-directory) |
+| `--workspace` / `WithWorkspace` as the default workdir | Pass `-w` / `WorkingDir`: [Working directory](#working-directory) |
 | VFS interception rules and hooks | Checks on the host when files are copied in or out: [Filesystem hooks](#filesystem-hooks) |
 
 ## Copy files in
 
-Copied files go into the guest's root filesystem, which is writable and is discarded with the sandbox. This matches how the default overlay mount behaved, where the guest worked on its own copy of the files. For directories, send a tar archive through stdin. For single files, use `WriteFile`.
+Copied files go into the guest's root filesystem, which is writable and is discarded with the sandbox. This matches how the default overlay mount behaved, where the guest worked on its own copy of the files.
+
+Paths follow the same rules as `docker cp`:
+
+- A source ending in `/.` copies the contents of the directory rather than the directory itself.
+- If the destination is an existing directory, the source is copied inside it. Otherwise the source is copied to the destination path, replacing an existing file.
+- A destination ending in `/` must be an existing directory.
 
 ### CLI
 
-For a one-shot run, pipe the archive into `run -i`:
+For a one-shot run, `--copy-in` copies files in before the command starts:
 
 ```bash
-tar -C ./src -cf - . |
-  matchlock run --image alpine:latest -i -- sh -c '
-    mkdir -p /workspace && tar -xf - -C /workspace && cd /workspace && ./test.sh'
+matchlock run --image alpine:latest --copy-in ./src/.:/workspace -w /workspace -- ./test.sh
 ```
 
-For a long-lived sandbox, pipe it into `exec -i`:
+For a long-lived sandbox, use `matchlock cp`:
 
 ```bash
 VM=$(matchlock run --image alpine:latest -d)
-
-tar -C ./src -cf - . |
-  matchlock exec -i "$VM" -- sh -c 'mkdir -p /workspace && tar -xf - -C /workspace'
-
-# Single file
-matchlock exec -i "$VM" -- sh -c 'cat > /workspace/config.json' < ./config.json
-
+matchlock cp ./src/. "$VM":/workspace
+matchlock cp ./config.json "$VM":/workspace/
 matchlock exec -w /workspace "$VM" -- make test
 ```
 
-If the source is a Git repository, you can use `git archive HEAD | matchlock …` instead of `tar`. This sends only tracked files, so untracked files such as `.env` and the `.git` directory stay on the host.
+`matchlock cp` accepts `--exclude` with `.dockerignore`-style patterns, for example `--exclude .env --exclude .git`. If the source is a Git repository, `git archive HEAD | matchlock cp - "$VM":/workspace` sends only tracked files. With `-` as the source, the destination directory must already exist.
 
-### Go
+### SDKs
+
+The Go, Python, and TypeScript SDKs follow the same rules. Relative host paths are resolved against the current directory.
 
 ```go
-func uploadDir(ctx context.Context, client *sdk.Client, hostDir, guestDir string) error {
-	pack := exec.CommandContext(ctx, "tar", "-C", hostDir, "-cf", "-", ".")
-	pack.Stderr = os.Stderr
-	tarball, err := pack.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := pack.Start(); err != nil {
-		return err
-	}
-	cmd := fmt.Sprintf("mkdir -p %[1]q && tar -xf - -C %[1]q", guestDir)
-	res, err := client.ExecPipe(ctx, cmd, tarball, io.Discard, os.Stderr)
-	if waitErr := pack.Wait(); err == nil {
-		err = waitErr
-	}
-	if err != nil {
-		return err
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("guest tar exited with %d", res.ExitCode)
-	}
-	return nil
-}
-
-// Individual files:
-err := client.WriteFile(ctx, "/workspace/config.json", data)
+err := client.CopyIn(ctx, "./src/.", "/workspace", nil)
 ```
-
-### Python
 
 ```python
-import subprocess
-import sys
-
-def upload_dir(client, host_dir: str, guest_dir: str) -> None:
-    pack = subprocess.Popen(["tar", "-C", host_dir, "-cf", "-", "."], stdout=subprocess.PIPE)
-    try:
-        result = client.exec_pipe(
-            f"mkdir -p '{guest_dir}' && tar -xf - -C '{guest_dir}'",
-            stdin=pack.stdout,
-            stderr=sys.stderr,
-        )
-    finally:
-        pack.stdout.close()
-        pack.wait()
-    if pack.returncode != 0 or result.exit_code != 0:
-        raise RuntimeError("upload failed")
-
-# Individual files:
-client.write_file("/workspace/config.json", data)
+client.copy_in("./src/.", "/workspace")
 ```
 
-### TypeScript
+```ts
+await client.copyIn("./src/.", "/workspace");
+```
 
-Pass a Node readable stream, such as the stdout of a spawned `tar` process, as `stdin` to `client.execPipe`. For single files, use `client.writeFile`. See [Stdin/Stdout File Transfers](../sdk/typescript/README.md#stdinstdout-file-transfers) for an example.
+For single small files, `WriteFile` / `write_file` / `writeFile` still works.
 
 ## Copy results out
 
@@ -165,84 +123,45 @@ Instead of a live read-write mount, run the work in the guest, copy the results 
 
 ### CLI
 
-```bash
-# One-shot: upload, work, and stream the result back as a tarball.
-# Stdout carries the archive, so send other output to stderr.
-mkdir -p ./out
-tar -C ./src -cf - . |
-  matchlock run --image alpine:latest -i -- sh -c '
-    mkdir -p /workspace && tar -xf - -C /workspace && cd /workspace &&
-    ./build.sh >&2 && tar -C /workspace/dist -cf - .' |
-  tar -xf - -C ./out
+`--copy-out` copies files out after the command exits. It also runs when the command fails, so logs and partial results are kept, and `run` still exits with the command's exit code.
 
-# Long-lived sandbox
-matchlock exec -i "$VM" -- tar -C /workspace -cf - . </dev/null | tar -xf - -C ./out
-matchlock exec -i "$VM" -- cat /workspace/report.json </dev/null > report.json
+```bash
+matchlock run --image alpine:latest --copy-in ./src/.:/workspace --copy-out /workspace/dist:./out -w /workspace -- ./build.sh
 ```
 
-The `-i` flag streams the output instead of collecting it in memory first, which works better for archives and other large outputs. When there is no input to send, redirect stdin from `/dev/null`.
+For a long-lived sandbox:
 
-### Go
+```bash
+matchlock cp "$VM":/workspace/dist ./out
+matchlock cp "$VM":/workspace/report.json ./report.json
+matchlock cp "$VM":/workspace - > workspace.tar
+```
+
+### SDKs
 
 ```go
-func downloadDir(ctx context.Context, client *sdk.Client, guestDir, hostDir string) error {
-	if err := os.MkdirAll(hostDir, 0o755); err != nil {
-		return err
-	}
-	unpack := exec.CommandContext(ctx, "tar", "-xf", "-", "-C", hostDir)
-	unpack.Stderr = os.Stderr
-	tarball, err := unpack.StdinPipe()
-	if err != nil {
-		return err
-	}
-	if err := unpack.Start(); err != nil {
-		return err
-	}
-	res, err := client.ExecStream(ctx, fmt.Sprintf("tar -C %q -cf - .", guestDir), tarball, os.Stderr)
-	tarball.Close()
-	if waitErr := unpack.Wait(); err == nil {
-		err = waitErr
-	}
-	if err != nil {
-		return err
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("guest tar exited with %d", res.ExitCode)
-	}
-	return nil
-}
-
-// Individual files (up to 16 MiB):
-data, err := client.ReadFile(ctx, "/workspace/report.json")
+err := client.CopyOut(ctx, "/workspace/dist", "./out", nil)
 ```
-
-### Python
 
 ```python
-import os
-import subprocess
-import sys
-
-def download_dir(client, guest_dir: str, host_dir: str) -> None:
-    os.makedirs(host_dir, exist_ok=True)
-    unpack = subprocess.Popen(["tar", "-xf", "-", "-C", host_dir], stdin=subprocess.PIPE)
-    try:
-        result = client.exec_stream(
-            f"tar -C '{guest_dir}' -cf - .",
-            stdout=unpack.stdin,  # binary writers receive exact bytes
-            stderr=sys.stderr,
-        )
-    finally:
-        unpack.stdin.close()
-        unpack.wait()
-    if unpack.returncode != 0 or result.exit_code != 0:
-        raise RuntimeError("download failed")
-
-# Individual files (up to 16 MiB):
-data = client.read_file("/workspace/report.json")
+client.copy_out("/workspace/dist", "./out")
 ```
 
-In TypeScript, use `client.execStream` with a writable stream, or `client.readFile`. End the stream and wait for it to finish before reading the output.
+```ts
+await client.copyOut("/workspace/dist", "./out");
+```
+
+The SDKs refuse to copy out when they run matchlock with sudo, because the copied files would be owned by root.
+
+### How copied-out files are handled
+
+Matchlock treats files coming out of the sandbox as untrusted:
+
+- setuid and setgid bits are removed, and your umask applies.
+- Device files, FIFOs, and symlinks that point outside the destination are skipped, with a warning.
+- Files are never written through an existing symlink or hard link at the destination.
+- By default, at most 10 GiB and 1,000,000 files are written. You can change this with `--max-size` and `--max-files`, or the matching SDK options, where 0 means no limit.
+- A new destination directory or file only appears once the copy has finished, so a failed or cancelled copy leaves nothing behind.
 
 We recommend copying results into a separate directory rather than straight into your working tree, and reviewing them first. You can diff them, or have the guest create a patch with `git diff --binary` and check it on the host with `git apply --check` before applying it. Take particular care with hooks, scripts, and build or CI configuration produced by an agent.
 
@@ -281,18 +200,13 @@ Because the guest can write to a volume, treat its contents as untrusted. Avoid 
 
 ## File ownership
 
-When root extracts an archive in the guest, the files keep the numeric UIDs/GIDs they had on the host, for example `1000` on Linux or `501` on macOS. If your commands run as a different user, change the ownership after extracting:
-
-```bash
-tar -C ./src -cf - . | matchlock exec -i "$VM" -- sh -c \
-  'mkdir -p /workspace && tar -xf - -C /workspace && chown -R 1000:1000 /workspace'
-```
+Files copied into the sandbox are owned by the sandbox's user, which is the image `USER` or the `--user` / `WithUser` setting, or root when neither is set. To choose a different owner, pass `--owner uid:gid` to `matchlock cp`, or `owner` in the SDKs. To keep the numeric owners from the host instead, pass `--archive`, or `archive` in the SDKs.
 
 For disks, `--disk @name:/path:uid=1000,gid=1000` changes the ownership of the top-level mount directory. This only works on writable disks.
 
 ## Working directory
 
-Previously, commands ran in the configured workspace by default. They now run in the image's `WORKDIR`, or in `/` if the image does not set one. `/workspace` is no longer created automatically. Create it yourself and select it with `-w /workspace` (CLI), `ExecWithDir` / `ExecPipeOptions.WorkingDir` (Go), `working_dir=` (Python), or `{ workingDir }` (TypeScript), or set `WORKDIR` in your image.
+Previously, commands ran in the configured workspace by default. They now run in the image's `WORKDIR`, or in `/` if the image does not set one. `/workspace` is no longer created automatically, but copying files to it creates it. Select it with `-w /workspace` (CLI), `ExecWithDir` / `ExecPipeOptions.WorkingDir` (Go), `working_dir=` (Python), or `{ workingDir }` (TypeScript), or set `WORKDIR` in your image.
 
 ## Filesystem hooks
 
@@ -300,8 +214,8 @@ There is no direct replacement for VFS interception. Since files now only move b
 
 | Before | After |
 |---|---|
-| `action=block` rules, or `action_hook` | Only copy in files the guest should see. Add your own checks around `WriteFile` / `ReadFile` / `ListFiles` calls; SDK action hooks only applied to those calls anyway. Inside the guest, use normal file permissions, such as running as a non-root `--user` and making files read-only and owned by root. |
-| `mutate_hook` | Change the content on the host before calling `WriteFile` or copying files in. |
+| `action=block` rules, or `action_hook` | Only copy in files the guest should see, for example with `--exclude`. Add your own checks around copy and `WriteFile` / `ReadFile` / `ListFiles` calls; SDK action hooks only applied to the file calls anyway. Inside the guest, use normal file permissions, such as running as a non-root `--user` and making files read-only and owned by root. |
+| `mutate_hook` | Change the content on the host before copying it in. |
 | `hook` / `dangerous_hook` after-events | After the command finishes, check the results with `ListFiles` or `find /workspace -newer <marker>`, or copy them out and diff them. |
 
 For network-level controls, [network interception](network-interception.md) is still available and unchanged.
@@ -312,7 +226,7 @@ For network-level controls, [network interception](network-interception.md) is s
 
 ## Tips
 
-- Copying files through stdin and stdout needs `tar` (or `cat`) in the image, which most images include. For minimal images without a shell, use `WriteFile` / `ReadFile`.
-- `ReadFile` is limited to 16 MiB, and `WriteFile` sends all of its content in a single RPC message. For large files, use the streaming exec modes instead.
-- On macOS, set `COPYFILE_DISABLE=1` when running `tar` so that AppleDouble `._*` files are not added to the archive.
+- `matchlock cp` and the SDK copy methods work with any image, including images without a shell or `tar`, because the guest agent does the copying.
+- `matchlock cp` needs a sandbox started with `--rm=false` or `-d`. For sandboxes created through an SDK, use the SDK copy methods.
+- `ReadFile` is limited to 16 MiB. Use the copy methods for larger files.
 - Upgrade the CLI and the SDKs at the same time. If an older SDK configures mounts or a workspace, a 0.3.0 `matchlock rpc` rejects it with the `vfs is no longer supported` error shown above.

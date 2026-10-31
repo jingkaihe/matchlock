@@ -12,6 +12,7 @@ var (
 	ErrRelayDecode     = errors.New("decode exec result")
 	ErrRelayListen     = errors.New("listen on relay socket")
 	ErrRelayProxy      = errors.New("relay port-forward proxy")
+	ErrRelayCopy       = errors.New("copy failed")
 
 	// Rootfs errors
 	ErrGuestAgent   = errors.New("guest-agent not found")
@@ -58,4 +59,5 @@ var (
 	ErrAllowListUnavailable   = errors.New("allow-list updates unavailable")
 	ErrAllowListHosts         = errors.New("invalid allow-list hosts")
 	ErrInteractiveUnsupported = errors.New("interactive exec unsupported")
+	ErrCopyConnect            = errors.New("connect to guest copy service")
 )

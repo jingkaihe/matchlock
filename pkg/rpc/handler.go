@@ -288,6 +288,10 @@ func (h *Handler) handleRequest(ctx context.Context, req *Request) *Response {
 		return h.handleReadFile(ctx, req)
 	case "list_files":
 		return h.handleListFiles(ctx, req)
+	case "copy_in":
+		return h.handleCopyIn(ctx, req)
+	case "copy_out":
+		return h.handleCopyOut(ctx, req)
 	case "log":
 		return h.handleLog(req)
 	case "log_stream":
