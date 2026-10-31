@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -34,8 +35,10 @@ type ExtractOptions struct {
 	// setgid, and sticky bits. Otherwise special bits are dropped and the
 	// process umask applies, as for an unprivileged tar.
 	ExactModes bool
-	// ConfineSymlinks skips symlinks that are absolute or point outside the
-	// destination.
+	// ConfineSymlinks treats the archive as untrusted: entries whose parent
+	// path goes through a symlink are refused, and once extraction is done,
+	// symlinks that resolve outside the destination are removed. A single
+	// symlink copied as a file always points outside it, so it is skipped.
 	ConfineSymlinks bool
 	// MaxBytes limits the total size of regular files; zero means no limit.
 	MaxBytes int64
@@ -125,6 +128,12 @@ type dirTime struct {
 	modTime time.Time
 }
 
+// createdLink is a symlink created from the archive entry name.
+type createdLink struct {
+	target string
+	name   string
+}
+
 type extractor struct {
 	plan   Plan
 	opts   ExtractOptions
@@ -136,6 +145,7 @@ type extractor struct {
 	entries  int64
 	bytes    int64
 	files    map[string]bool
+	links    []createdLink
 	dirTimes []dirTime
 	// seen and wrote track non-directory entries that were read and created.
 	seen  bool
@@ -276,7 +286,7 @@ func (x *extractor) file(target string, header *tar.Header, r io.Reader) error {
 }
 
 func (x *extractor) symlink(target, name string, header *tar.Header) error {
-	if x.opts.ConfineSymlinks && !linkConfined(target, header.Linkname) {
+	if x.opts.ConfineSymlinks && x.plan.Kind == PlanFile {
 		skip(x.opts.OnSkip, name, fmt.Sprintf("symlink to %q points outside the destination", header.Linkname))
 		return nil
 	}
@@ -286,6 +296,7 @@ func (x *extractor) symlink(target, name string, header *tar.Header) error {
 	if err := x.root.Symlink(header.Linkname, target); err != nil {
 		return errx.Wrap(ErrDestination, err)
 	}
+	x.links = append(x.links, createdLink{target: target, name: name})
 	x.wrote = true
 	return x.chown(target, header)
 }
@@ -363,7 +374,13 @@ func (x *extractor) mkdirParents(target string) error {
 	current := ""
 	for _, part := range strings.Split(dir, "/") {
 		current = path.Join(current, part)
-		info, err := x.root.Stat(current)
+		info, err := x.root.Lstat(current)
+		if err == nil && info.Mode()&fs.ModeSymlink != 0 {
+			if x.opts.ConfineSymlinks {
+				return errx.With(ErrArchive, ": entry %q goes through symlink %q", target, current)
+			}
+			info, err = x.root.Stat(current)
+		}
 		if err == nil {
 			if !info.IsDir() {
 				return errx.With(ErrDestination, ": %s: not a directory", current)
@@ -432,6 +449,13 @@ func (x *extractor) finish() error {
 			return errx.With(ErrArchive, ": archive has no file")
 		}
 	}
+	if x.opts.ConfineSymlinks {
+		// Check links only now: a later entry can replace a directory with a
+		// symlink, so a link that was safe when created may no longer be.
+		if err := x.removeEscapingLinks(); err != nil {
+			return err
+		}
+	}
 	for i := len(x.dirTimes) - 1; i >= 0; i-- {
 		dt := x.dirTimes[i]
 		if err := x.root.Chtimes(dt.name, dt.modTime, dt.modTime); err != nil {
@@ -453,6 +477,101 @@ func (x *extractor) finish() error {
 	x.closeRoot()
 	x.root = nil
 	return errx.Wrap(ErrDestination, x.parent.Rename(x.temp, x.plan.Name))
+}
+
+// removeEscapingLinks removes symlinks created by the archive that resolve
+// outside the destination.
+func (x *extractor) removeEscapingLinks() error {
+	for _, l := range x.links {
+		info, err := x.root.Lstat(l.target)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return errx.Wrap(ErrDestination, err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			continue
+		}
+		link, err := x.root.Readlink(l.target)
+		if err != nil {
+			return errx.Wrap(ErrDestination, err)
+		}
+		outside, err := resolvesOutside(x.root, path.Dir(l.target), link)
+		if err != nil {
+			return errx.Wrap(ErrDestination, err)
+		}
+		if !outside {
+			continue
+		}
+		if err := x.root.Remove(l.target); err != nil {
+			return errx.Wrap(ErrDestination, err)
+		}
+		skip(x.opts.OnSkip, l.name, fmt.Sprintf("symlink to %q points outside the destination", link))
+	}
+	return nil
+}
+
+// maxLinkHops bounds symlink resolution so that link loops end.
+const maxLinkHops = 40
+
+// resolvesOutside reports whether link, the target of a symlink in directory
+// dir of root, resolves outside root. Symlinks met along the way are followed
+// as the kernel would follow them. Components that do not exist are resolved
+// lexically, and absolute targets are always outside.
+func resolvesOutside(root *os.Root, dir, link string) (bool, error) {
+	hops := 0
+	var resolve func(base []string, target string) ([]string, bool, error)
+	resolve = func(base []string, target string) ([]string, bool, error) {
+		if path.IsAbs(target) {
+			return nil, true, nil
+		}
+		cur := base
+		for _, part := range strings.Split(target, "/") {
+			switch part {
+			case "", ".":
+				continue
+			case "..":
+				if len(cur) == 0 {
+					return nil, true, nil
+				}
+				cur = cur[:len(cur)-1]
+				continue
+			}
+			next := append(cur[:len(cur):len(cur)], part)
+			name := path.Join(next...)
+			info, err := root.Lstat(name)
+			switch {
+			case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+				cur = next
+				continue
+			case err != nil:
+				return nil, false, err
+			case info.Mode()&fs.ModeSymlink == 0:
+				cur = next
+				continue
+			}
+			if hops++; hops > maxLinkHops {
+				return nil, true, nil
+			}
+			target, err := root.Readlink(name)
+			if err != nil {
+				return nil, false, err
+			}
+			resolved, outside, err := resolve(cur, target)
+			if outside || err != nil {
+				return nil, outside, err
+			}
+			cur = resolved
+		}
+		return cur, false, nil
+	}
+	var base []string
+	if dir != "." {
+		base = strings.Split(dir, "/")
+	}
+	_, outside, err := resolve(base, link)
+	return outside, err
 }
 
 func (x *extractor) dirPerm(header *tar.Header) fs.FileMode {
@@ -495,16 +614,6 @@ func stripRoot(name, rootName string) (string, bool) {
 		return rest, true
 	}
 	return "", false
-}
-
-// linkConfined reports whether a symlink at target with the given link text
-// resolves, lexically, inside the destination root.
-func linkConfined(target, link string) bool {
-	if link == "" || path.IsAbs(link) || strings.Contains(link, "\\") {
-		return false
-	}
-	resolved := path.Join(path.Dir(target), link)
-	return resolved != ".." && !strings.HasPrefix(resolved, "../")
 }
 
 func validName(name string) bool {

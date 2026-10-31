@@ -120,7 +120,9 @@ func TestCopyPathRules(t *testing.T) {
 		{name: "file to new name", src: "file.txt", dest: "new.txt", want: map[string]string{"new.txt": "f"}},
 		{name: "file replaces file", src: "file.txt", dest: "old.txt", setup: map[string]string{"old.txt": "old"},
 			want: map[string]string{"old.txt": "f"}},
-		{name: "symlink copied as link", src: "link", dest: "copy", want: map[string]string{"copy": "-> file.txt"}},
+		{name: "symlink copied as link", src: "link", dest: "out/", setup: map[string]string{"out/": ""},
+			want: map[string]string{"out/": "", "out/link": "-> file.txt"}},
+		{name: "symlink as a single file is skipped", src: "link", dest: "copy", want: map[string]string{}},
 		{name: "trailing slash on file source", src: "file.txt/", dest: "out", wantErr: ErrSource},
 		{name: "file into missing dir", src: "file.txt", dest: "missing/", wantErr: ErrDestination},
 		{name: "dir onto file", src: "src", dest: "old.txt", setup: map[string]string{"old.txt": "old"}, wantErr: ErrDestination},
@@ -273,6 +275,25 @@ func TestExtractUntrustedArchive(t *testing.T) {
 			headers:     []tar.Header{file("f", "x"), symlink("in", "f"), symlink("up", "../outside.txt"), symlink("abs", "/etc/passwd")},
 			wantSkipped: []string{"up", "abs"},
 			want:        map[string]string{"f": "x", "in": "-> f"},
+		},
+		{
+			name:        "link targets are resolved through other links",
+			headers:     []tar.Header{symlink("a", "."), symlink("escape", "a/../outside.txt")},
+			wantSkipped: []string{"escape"},
+			want:        map[string]string{"a": "-> ."},
+		},
+		{
+			name: "a later entry cannot turn a safe link into an escaping one",
+			// x is safe until p/q becomes a link to p, after which
+			// p/q/../.. is the parent of the destination.
+			headers:     []tar.Header{dir("p/q/"), symlink("x", "p/q/../../outside.txt"), symlink("p/q", ".")},
+			wantSkipped: []string{"x"},
+			want:        map[string]string{"p/": "", "p/q": "-> ."},
+		},
+		{
+			name:    "parent path through a symlink",
+			headers: []tar.Header{symlink("a", "."), symlink("a/a/b", "../../outside.txt")},
+			wantErr: ErrArchive,
 		},
 		{
 			name: "existing links are replaced, not written through",
