@@ -280,30 +280,7 @@ description = "Clean kernel cache"
 run = "rm -rf $OUTPUT_DIR/kernels"
 
 # =============================================================================
-# Rootfs tasks
-# =============================================================================
-
-[tasks."rootfs:docker"]
-description = "Build rootfs using Docker (no sudo required)"
-depends = ["build"]
-run = """
-#!/usr/bin/env bash
-set -e
-IMAGE=${IMAGE:-standard}
-mkdir -p $OUTPUT_DIR
-cp bin/guest-init /tmp/guest-init
-docker run --rm --privileged \
-    -v /tmp:/tmp \
-    -v $PWD/scripts:/scripts:ro \
-    -v $OUTPUT_DIR:$OUTPUT_DIR \
-    -e IMAGE=$IMAGE \
-    -e OUTPUT_DIR=$OUTPUT_DIR \
-    alpine:3.19 \
-    sh -c "apk add --no-cache bash e2fsprogs util-linux && /scripts/build-rootfs.sh"
-"""
-
-# =============================================================================
-# Installation & setup tasks
+# Installation tasks
 # =============================================================================
 
 [tasks.install]
@@ -314,44 +291,6 @@ run = """
 set -e
 sudo cp bin/matchlock /usr/local/bin/matchlock
 echo "Installed matchlock to /usr/local/bin"
-"""
-
-[tasks."install:firecracker"]
-description = "Install Firecracker binary"
-run = "./scripts/install-firecracker.sh"
-
-[tasks.images]
-description = "Build kernel + rootfs"
-depends = ["kernel:build", "rootfs:docker"]
-
-[tasks.setup]
-description = "Full Linux setup (firecracker + images + install)"
-depends = ["install:firecracker", "images", "install"]
-run = """
-#!/usr/bin/env bash
-echo ""
-echo "============================================"
-echo "Matchlock setup complete!"
-echo "============================================"
-echo ""
-echo "Test with:"
-echo "  sudo matchlock run --image alpine:latest echo 'Hello from matchlock'"
-"""
-
-[tasks."setup:darwin"]
-description = "Full macOS setup (build + guest binaries)"
-depends = ["build"]
-run = """
-#!/usr/bin/env bash
-echo ""
-echo "============================================"
-echo "Matchlock macOS setup complete!"
-echo "============================================"
-echo ""
-echo "Guest binaries installed to $OUTPUT_DIR"
-echo ""
-echo "Test with:"
-echo "  ./bin/matchlock run --image alpine:latest echo 'Hello from macOS VM!'"
 """
 
 # =============================================================================
@@ -408,36 +347,6 @@ echo "Built guest runtime binaries for amd64 and arm64"
 # =============================================================================
 # Release tasks
 # =============================================================================
-
-[tasks."release"]
-description = "Create GitHub release with binaries (run on macOS for darwin builds)"
-depends = ["cross-build:linux", "cross-build:darwin", "cross-build:guest"]
-run = """
-#!/usr/bin/env bash
-set -e
-
-echo "Creating GitHub release v$VERSION..."
-
-# Collect all release artifacts
-ARTIFACTS=()
-for f in bin/matchlock-linux-amd64 bin/matchlock-linux-arm64 bin/matchlock-darwin-* bin/guest-init-linux-*; do
-  [ -f "$f" ] && ARTIFACTS+=("$f")
-done
-set -- "${ARTIFACTS[@]}"
-
-if [ "$#" -eq 0 ]; then
-  echo "Error: no release artifacts found in bin/"
-  exit 1
-fi
-
-NOTES_FILE="$(mktemp)"
-trap 'rm -f "$NOTES_FILE"' EXIT
-bash ./scripts/extract-release-notes.sh > "$NOTES_FILE"
-
-echo "Uploading $# artifacts..."
-gh release create "v$VERSION" --title "v$VERSION" --notes-file "$NOTES_FILE" "$@"
-echo "GitHub release v$VERSION created successfully!"
-"""
 
 [tasks."push-tag"]
 description = "Push version tag to trigger automated GitHub Actions release"
