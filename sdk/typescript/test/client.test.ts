@@ -933,9 +933,9 @@ describe("Client", () => {
         params: { src: `${cwd}/./src/.`, dest: "/workspace/" },
       },
       {
-        call: () => client.copyOut("dist/", "out/"),
+        call: () => client.copyOut("/workspace/dist/", "out/"),
         method: "copy_out",
-        params: { src: "dist/", dest: `${cwd}/out/` },
+        params: { src: "/workspace/dist/", dest: `${cwd}/out/` },
       },
     ];
 
@@ -976,6 +976,8 @@ describe("Client", () => {
         () => sudoClient.copyOut("/workspace/dist", "/host/out"),
         "copyOut is not supported with useSudo",
       ],
+      [() => client.copyIn("/host/src", "w"), "copy sandbox path must be absolute"],
+      [() => client.copyOut("w", "/host/out"), "copy sandbox path must be absolute"],
     ];
 
     for (const [call, message] of cases) {

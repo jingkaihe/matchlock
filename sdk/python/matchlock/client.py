@@ -1437,6 +1437,8 @@ class Client:
             raise MatchlockError("copy_in destination path is required")
         if owner and archive:
             raise MatchlockError("copy_in owner cannot be combined with archive")
+        if not dest.startswith("/"):
+            raise MatchlockError("copy_in destination must be an absolute sandbox path")
 
         params: dict[str, Any] = {
             "src": _absolute_host_path(src_path),
@@ -1498,6 +1500,8 @@ class Client:
                 "copy_out is not supported with use_sudo: files would be "
                 "written by a root matchlock process and owned by root"
             )
+        if not src.startswith("/"):
+            raise MatchlockError("copy_out source must be an absolute sandbox path")
 
         params: dict[str, Any] = {
             "src": src,

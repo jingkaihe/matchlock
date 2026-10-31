@@ -1884,9 +1884,9 @@ class TestClientCopy:
             ),
             (
                 "copy_out",
-                ("dist/.", "out/"),
+                ("/workspace/dist/.", "out/"),
                 {},
-                {"src": "dist/.", "dest": "/home/me/out/"},
+                {"src": "/workspace/dist/.", "dest": "/home/me/out/"},
             ),
         ]
         with (
@@ -1913,6 +1913,8 @@ class TestClientCopy:
             ),
             (lambda: client.copy_in("", "/workspace"), "source path is required"),
             (lambda: client.copy_out("/workspace", ""), "destination path is required"),
+            (lambda: client.copy_in("/host/src", "w"), "absolute sandbox path"),
+            (lambda: client.copy_out("w", "/host/out"), "absolute sandbox path"),
         ]
         with patch.object(Client, "_send_request") as send:
             for copy, message in cases:

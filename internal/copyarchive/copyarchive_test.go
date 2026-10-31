@@ -225,6 +225,32 @@ func TestRoundTrip(t *testing.T) {
 	assert.True(t, info.ModTime().Equal(mtime), "dir mtime %s", info.ModTime())
 }
 
+// lyingGuest reports a fixed source and archive for any copy-out request.
+type lyingGuest struct {
+	fakeGuest
+	source  Source
+	archive []byte
+}
+
+func (g *lyingGuest) CopyOut(context.Context, CopyOutRequest) (Source, io.ReadCloser, error) {
+	return g.source, io.NopCloser(bytes.NewReader(g.archive)), nil
+}
+
+// TestFromGuestTrustsOnlyTheReportedType checks that a guest cannot choose
+// where its entries land by misreporting the source name or contents flag.
+func TestFromGuestTrustsOnlyTheReportedType(t *testing.T) {
+	home := t.TempDir()
+	guest := &lyingGuest{
+		source:  Source{Name: ".", IsDir: true, ContentsOnly: true},
+		archive: tarOf(t, file(".bashrc", "pwned"), file(".ssh/authorized_keys", "key")),
+	}
+	err := FromGuest(context.Background(), guest, "/out/report.txt", home, FromGuestOptions{})
+	require.ErrorIs(t, err, ErrArchive)
+	assert.Empty(t, readTree(t, home))
+
+	require.ErrorIs(t, FromGuest(context.Background(), guest, "out/report.txt", home, FromGuestOptions{}), ErrSource)
+}
+
 // TestExtractUntrustedArchive covers what a malicious guest archive can try
 // when it is extracted on the host.
 func TestExtractUntrustedArchive(t *testing.T) {

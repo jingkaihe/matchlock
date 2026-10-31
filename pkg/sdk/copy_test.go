@@ -36,6 +36,8 @@ func TestCopyParams(t *testing.T) {
 	}, got)
 
 	assert.ErrorIs(t, client.CopyIn(ctx, "src", "/w", &CopyInOptions{Owner: "app", Archive: true}), ErrInvalidCopy)
+	assert.ErrorIs(t, client.CopyIn(ctx, "src", "w", nil), ErrInvalidCopy)
+	assert.ErrorIs(t, client.CopyOut(ctx, "w", "out", nil), ErrInvalidCopy)
 	client.useSudo = true
 	assert.ErrorIs(t, client.CopyOut(ctx, "/w", "out", nil), ErrCopyOutWithSudo)
 	assert.Len(t, got, 4, "rejected copies must not reach the server")

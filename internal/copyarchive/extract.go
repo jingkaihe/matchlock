@@ -201,14 +201,11 @@ func (x *extractor) target(name string) (string, bool, error) {
 		return name, name == ".", nil
 	}
 	rel, ok := stripRoot(name, src.Name)
-	if !ok {
+	if !ok || (!src.IsDir && rel != ".") {
 		return "", false, errx.With(ErrArchive, ": entry %q is outside archive root %q", name, src.Name)
 	}
 	switch x.plan.Kind {
 	case PlanFile:
-		if rel != "." {
-			return "", false, errx.With(ErrArchive, ": entry %q is outside file source %q", name, src.Name)
-		}
 		return x.temp, false, nil
 	case PlanNewDir:
 		return rel, rel == ".", nil

@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
@@ -47,6 +48,9 @@ func (c *Client) CopyIn(ctx context.Context, src, dest string, opts *CopyInOptio
 	if opts.Owner != "" && opts.Archive {
 		return errx.With(ErrInvalidCopy, ": Owner cannot be combined with Archive")
 	}
+	if err := requireSandboxPath(dest); err != nil {
+		return err
+	}
 	hostPath, err := absHostPath(src)
 	if err != nil {
 		return err
@@ -74,6 +78,9 @@ func (c *Client) CopyOut(ctx context.Context, src, dest string, opts *CopyOutOpt
 	if c.useSudo {
 		return ErrCopyOutWithSudo
 	}
+	if err := requireSandboxPath(src); err != nil {
+		return err
+	}
 	hostPath, err := absHostPath(dest)
 	if err != nil {
 		return err
@@ -99,6 +106,13 @@ func addCopyParams(params map[string]interface{}, followLink bool, exclude []str
 	if len(exclude) > 0 {
 		params["exclude"] = exclude
 	}
+}
+
+func requireSandboxPath(p string) error {
+	if !path.IsAbs(p) {
+		return errx.With(ErrInvalidCopy, ": sandbox path %q must be absolute", p)
+	}
+	return nil
 }
 
 // absHostPath makes p absolute for the matchlock rpc process without cleaning

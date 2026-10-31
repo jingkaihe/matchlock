@@ -21,6 +21,7 @@ export function buildCopyInParams(
   options: CopyInOptions,
 ): JSONObject {
   validateCopyPaths(src, dest);
+  validateSandboxPath(dest);
   if (options.owner && options.archive) {
     throw new MatchlockError("copy owner cannot be combined with archive");
   }
@@ -42,6 +43,7 @@ export function buildCopyOutParams(
   options: CopyOutOptions,
 ): JSONObject {
   validateCopyPaths(src, dest);
+  validateSandboxPath(src);
   validateCopyLimit("maxSize", options.maxSize);
   validateCopyLimit("maxFiles", options.maxFiles);
 
@@ -62,6 +64,12 @@ function validateCopyPaths(src: string, dest: string): void {
   }
   if (!dest) {
     throw new MatchlockError("copy destination path is required");
+  }
+}
+
+function validateSandboxPath(path: string): void {
+  if (!path.startsWith("/")) {
+    throw new MatchlockError("copy sandbox path must be absolute");
   }
 }
 

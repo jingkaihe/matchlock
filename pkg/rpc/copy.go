@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"path"
 	"path/filepath"
 
 	"github.com/jingkaihe/matchlock/internal/copyarchive"
@@ -65,7 +66,7 @@ func (h *Handler) handleCopyOut(ctx context.Context, req *Request) *Response {
 }
 
 // copyRequest decodes copy params and checks that hostField names an absolute
-// host path.
+// host path and the other field an absolute sandbox path.
 func (h *Handler) copyRequest(req *Request, hostField string) (copyarchive.Guest, copyParams, *Response) {
 	var params copyParams
 	vm := h.getVM()
@@ -79,15 +80,17 @@ func (h *Handler) copyRequest(req *Request, hostField string) (copyarchive.Guest
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return nil, params, invalidParams(req, err.Error())
 	}
-	hostPath := params.Src
+	hostPath, guestPath, guestField := params.Src, params.Dest, "dest"
 	if hostField == "dest" {
-		hostPath = params.Dest
+		hostPath, guestPath, guestField = params.Dest, params.Src, "src"
 	}
 	switch {
 	case params.Src == "" || params.Dest == "":
 		return nil, params, invalidParams(req, "src and dest are required")
 	case !filepath.IsAbs(hostPath):
 		return nil, params, invalidParams(req, hostField+" must be an absolute host path")
+	case !path.IsAbs(guestPath):
+		return nil, params, invalidParams(req, guestField+" must be an absolute sandbox path")
 	}
 	return guest, params, nil
 }

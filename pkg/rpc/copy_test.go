@@ -59,6 +59,8 @@ func TestHandleCopy(t *testing.T) {
 		{name: "relative host src", method: "copy_in", params: copyParams{Src: "src", Dest: "/w"}, wantCode: ErrCodeInvalidParams},
 		{name: "owner with archive", method: "copy_in", params: copyParams{Src: host, Dest: "/w", Owner: "1", Archive: true}, wantCode: ErrCodeInvalidParams},
 		{name: "relative host dest", method: "copy_out", params: copyParams{Src: "/w", Dest: "out"}, wantCode: ErrCodeInvalidParams},
+		{name: "relative sandbox dest", method: "copy_in", params: copyParams{Src: host, Dest: "w"}, wantCode: ErrCodeInvalidParams},
+		{name: "relative sandbox src", method: "copy_out", params: copyParams{Src: "w", Dest: host + "/x"}, wantCode: ErrCodeInvalidParams},
 		{name: "guest failure", method: "copy_in", params: copyParams{Src: host + "/src", Dest: "/fail"}, wantCode: ErrCodeFileFailed},
 		{
 			name: "copy in", method: "copy_in",
