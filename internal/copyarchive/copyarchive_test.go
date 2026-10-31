@@ -193,7 +193,7 @@ func TestRoundTrip(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(host) })
 	writeTree(t, host, map[string]string{
 		"src/bin/run.sh": "#!/bin/sh", "src/.env": "secret", "src/node_modules/x.js": "x",
-		"src/logs/a.log": "a", "src/logs/keep.log": "k",
+		"src/logs/a.log": "a", "src/logs/keep.log": "k", "src/back\\slash": "b",
 	})
 	require.NoError(t, os.Chmod(filepath.Join(host, "src/bin/run.sh"), 0o755))
 	require.NoError(t, os.Symlink("bin/run.sh", filepath.Join(host, "src/run")))
@@ -217,7 +217,7 @@ func TestRoundTrip(t *testing.T) {
 	out := filepath.Join(host, "out")
 	require.NoError(t, FromGuest(context.Background(), guest, "/workspace", out, FromGuestOptions{}))
 	assert.Equal(t, map[string]string{
-		"bin/": "", "bin/run.sh": "#!/bin/sh", "logs/": "", "logs/keep.log": "k", "run": "-> bin/run.sh",
+		"back\\slash": "b", "bin/": "", "bin/run.sh": "#!/bin/sh", "logs/": "", "logs/keep.log": "k", "run": "-> bin/run.sh",
 	}, readTree(t, out))
 	info, err := os.Stat(filepath.Join(out, "bin/run.sh"))
 	require.NoError(t, err)

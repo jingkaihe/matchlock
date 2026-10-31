@@ -592,7 +592,7 @@ func entryName(name string) (string, error) {
 	if name == "" {
 		return "", errx.With(ErrArchive, ": empty entry name")
 	}
-	if strings.Contains(name, "\\") || path.IsAbs(name) {
+	if path.IsAbs(name) {
 		return "", errx.With(ErrArchive, ": unsafe entry name %q", name)
 	}
 	cleaned := path.Clean(name)
@@ -617,7 +617,7 @@ func stripRoot(name, rootName string) (string, bool) {
 }
 
 func validName(name string) bool {
-	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\")
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/")
 }
 
 func tempName(name string) (string, error) {

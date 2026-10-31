@@ -234,7 +234,7 @@ func ValidateSource(src Source) error {
 		if !src.IsDir || !src.ContentsOnly {
 			return errx.With(ErrArchive, ": root source must copy directory contents")
 		}
-	case src.Name == "", src.Name == "..", strings.ContainsAny(src.Name, "/\\"):
+	case src.Name == "", src.Name == "..", strings.Contains(src.Name, "/"):
 		return errx.With(ErrArchive, ": invalid source name %q", src.Name)
 	}
 	if src.ContentsOnly && !src.IsDir {
