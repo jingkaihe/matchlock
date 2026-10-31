@@ -62,18 +62,6 @@ func (b *SandboxBuilder) WithTimeout(seconds int) *SandboxBuilder {
 	return b
 }
 
-// WithWorkspace sets the VFS mount point in the guest.
-func (b *SandboxBuilder) WithWorkspace(path string) *SandboxBuilder {
-	b.opts.Workspace = path
-	return b
-}
-
-// WithVFSInterception sets host-side VFS interception rules.
-func (b *SandboxBuilder) WithVFSInterception(cfg *VFSInterceptionConfig) *SandboxBuilder {
-	b.opts.VFSInterception = cfg
-	return b
-}
-
 // WithEnv sets a non-secret environment variable available to commands.
 func (b *SandboxBuilder) WithEnv(name, value string) *SandboxBuilder {
 	if b.opts.Env == nil {
@@ -202,47 +190,6 @@ func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuil
 func (b *SandboxBuilder) WithPortForwardAddresses(addresses ...string) *SandboxBuilder {
 	b.opts.PortForwardAddresses = append(b.opts.PortForwardAddresses, addresses...)
 	return b
-}
-
-// Mount adds a VFS mount at the given guest path.
-func (b *SandboxBuilder) Mount(guestPath string, cfg MountConfig) *SandboxBuilder {
-	if b.opts.Mounts == nil {
-		b.opts.Mounts = make(map[string]MountConfig)
-	}
-	b.opts.Mounts[guestPath] = cfg
-	return b
-}
-
-// MountHostDir is a convenience for mounting a host directory into the guest.
-func (b *SandboxBuilder) MountHostDir(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath})
-}
-
-// MountHostDirReadonly mounts a host directory into the guest as read-only.
-func (b *SandboxBuilder) MountHostDirReadonly(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath, Readonly: true})
-}
-
-// MountHostDirAs is a convenience for mounting a host directory into the guest
-// with a fixed UID/GID reported for all files in the mount.
-func (b *SandboxBuilder) MountHostDirAs(guestPath, hostPath string, uid, gid uint32) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath, OwnerUID: &uid, OwnerGID: &gid})
-}
-
-// MountHostDirReadonlyAs mounts a host directory into the guest as read-only
-// with a fixed UID/GID reported for all files in the mount.
-func (b *SandboxBuilder) MountHostDirReadonlyAs(guestPath, hostPath string, uid, gid uint32) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeHostFS, HostPath: hostPath, Readonly: true, OwnerUID: &uid, OwnerGID: &gid})
-}
-
-// MountMemory creates an in-memory filesystem at the given guest path.
-func (b *SandboxBuilder) MountMemory(guestPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeMemory})
-}
-
-// MountOverlay creates an isolated snapshot mount at the given guest path.
-func (b *SandboxBuilder) MountOverlay(guestPath, hostPath string) *SandboxBuilder {
-	return b.Mount(guestPath, MountConfig{Type: api.MountTypeOverlay, HostPath: hostPath})
 }
 
 // WithUser sets the user to run commands as (uid, uid:gid, or username).

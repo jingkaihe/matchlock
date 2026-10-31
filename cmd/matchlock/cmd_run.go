@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 
 const (
 	detachedVMPollInterval = 100 * time.Millisecond
+	detachedReadyTimeout   = 30 * time.Second
 )
 
 var runCmd = &cobra.Command{
@@ -59,16 +61,6 @@ Secrets (--secret):
 
 	Note: When using sudo, env vars are not preserved. Use 'sudo -E' or pass inline.
 
-Volume Mounts (-v):
-  Requires --workspace. Guest paths are relative to workspace (or use full workspace paths):
-  ./mycode:code                    Isolated snapshot mount to <workspace>/code (default)
-  ./mycode:code:overlay            Same as above (explicit)
-  ./data:/workspace/data           Same as above (explicit guest path)
-  /host/path:subdir:host_fs        Read-write host mount to <workspace>/subdir
-  /host/path:subdir:ro             Read-only host mount to <workspace>/subdir
-  /host/path:subdir:host_fs,uid=1000,gid=1000
-                                    Host mount whose files appear owned by 1000:1000
-
 Raw Disk Mounts (--disk):
   Attach an ext4 disk image directly as a block device.
   Use @<name> to mount a named volume:
@@ -77,6 +69,12 @@ Raw Disk Mounts (--disk):
   /host/data.ext4:/mnt/data:ro
   @pgdata:/var/lib/postgresql:uid=999,gid=999
   Ownership options chown the mount root only and require a writable disk.
+
+Copying Files (--copy-in, --copy-out):
+  Copy files in before the command runs and out after it exits, using the same
+  rules as matchlock cp. Sandbox paths must be absolute.
+  --copy-in ./src/.:/workspace        Copy the contents of ./src into /workspace
+  --copy-out /workspace/dist:./out    Copy /workspace/dist to ./out
 
 Wildcard Patterns for --allow-host:
   *                      Allow all hosts
@@ -107,12 +105,12 @@ Custom hosts with --add-host:
 
 func init() {
 	runCmd.Flags().String("image", "", "Container image (required)")
-	runCmd.Flags().String("workspace", "", "Guest mount point for VFS (required with --volume)")
 	runCmd.Flags().String("kernel", "", "Guest kernel ref: file:///absolute/path or OCI image reference")
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSlice("add-host", nil, "Add a custom host-to-IP mapping (host:ip, can be repeated)")
-	runCmd.Flags().StringArrayP("volume", "v", nil, fmt.Sprintf("Volume mount, repeatable (host:guest = overlay snapshot by default; use :%s for direct rw host mount, :%s for read-only host mount; host_fs supports uid/gid owner options)", api.MountTypeHostFS, api.MountOptionReadonlyShort))
 	runCmd.Flags().StringArray("disk", nil, "Attach raw ext4 disk image (host_path:guest_mount[:option[,option...]] or @volume_name:guest_mount[:option[,option...]])")
+	runCmd.Flags().StringArray("copy-in", nil, "Copy a host path into the sandbox before the command runs (HOST_PATH:SANDBOX_PATH, can be repeated)")
+	runCmd.Flags().StringArray("copy-out", nil, "Copy a sandbox path to the host after the command exits (SANDBOX_PATH:HOST_PATH, can be repeated)")
 	runCmd.Flags().StringArrayP("env", "e", nil, "Environment variable (KEY=VALUE or KEY; can be repeated)")
 	runCmd.Flags().StringArray("env-file", nil, "Environment file (KEY=VALUE or KEY per line; can be repeated)")
 	runCmd.Flags().StringArray("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
@@ -135,19 +133,19 @@ func init() {
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
-	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then configured workspace path)")
+	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, otherwise /)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
 	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
 	runCmd.Flags().Duration("graceful-shutdown", api.DefaultGracefulShutdownPeriod, "Graceful shutdown timeout before force-stopping the VM ")
 	runCmd.MarkFlagRequired("image")
 
 	viper.BindPFlag("run.image", runCmd.Flags().Lookup("image"))
-	viper.BindPFlag("run.workspace", runCmd.Flags().Lookup("workspace"))
 	viper.BindPFlag("run.kernel", runCmd.Flags().Lookup("kernel"))
 	viper.BindPFlag("run.allow-host", runCmd.Flags().Lookup("allow-host"))
 	viper.BindPFlag("run.add-host", runCmd.Flags().Lookup("add-host"))
-	viper.BindPFlag("run.volume", runCmd.Flags().Lookup("volume"))
 	viper.BindPFlag("run.disk", runCmd.Flags().Lookup("disk"))
+	viper.BindPFlag("run.copy-in", runCmd.Flags().Lookup("copy-in"))
+	viper.BindPFlag("run.copy-out", runCmd.Flags().Lookup("copy-out"))
 	viper.BindPFlag("run.env", runCmd.Flags().Lookup("env"))
 	viper.BindPFlag("run.env-file", runCmd.Flags().Lookup("env-file"))
 	viper.BindPFlag("run.secret", runCmd.Flags().Lookup("secret"))
@@ -193,21 +191,31 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if err := validateDetachFlags(detach, tty, interactive); err != nil {
 		return err
 	}
+	copyInValues, _ := cmd.Flags().GetStringArray("copy-in")
+	copyOutValues, _ := cmd.Flags().GetStringArray("copy-out")
+	copyIns, err := parseCopySpecs("copy-in", copyInValues, false)
+	if err != nil {
+		return err
+	}
+	copyOuts, err := parseCopySpecs("copy-out", copyOutValues, true)
+	if err != nil {
+		return err
+	}
+	if detach && len(copyIns)+len(copyOuts) > 0 {
+		return errx.With(ErrInvalidCopy, ": --copy-in and --copy-out cannot be combined with --detach; use matchlock cp")
+	}
 	if detach {
 		rm = false
 	}
 	if detach {
 		return startDetachedRun()
 	}
-	workspace, _ := cmd.Flags().GetString("workspace")
-	workspaceSet := cmd.Flags().Changed("workspace")
 	kernelRef, _ := cmd.Flags().GetString("kernel")
 	workdir, _ := cmd.Flags().GetString("workdir")
 
 	// Network & security
 	allowHosts, _ := cmd.Flags().GetStringSlice("allow-host")
 	addHostSpecs, _ := cmd.Flags().GetStringSlice("add-host")
-	volumes, _ := cmd.Flags().GetStringArray("volume")
 	diskMountSpecs, _ := cmd.Flags().GetStringArray("disk")
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	envFiles, _ := cmd.Flags().GetStringArray("env-file")
@@ -322,48 +330,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if rm && command == "" && !interactiveMode {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
 	}
+	if len(copyOuts) > 0 && command == "" && !interactiveMode {
+		return errx.With(ErrInvalidCopy, ": --copy-out requires a command")
+	}
 
 	sandboxOpts := &sandbox.Options{
 		RootfsPaths:   buildResult.LowerPaths,
 		RootfsFSTypes: buildResult.LowerFSTypes,
 	}
 
-	var vfsConfig *api.VFSConfig
-	if workspaceSet || len(volumes) > 0 {
-		vfsConfig = &api.VFSConfig{Workspace: workspace}
-	}
-	if len(volumes) > 0 {
-		if workspace == "" {
-			return fmt.Errorf("--workspace is required when using --volume")
-		}
-		mounts := make(map[string]api.MountConfig)
-		for _, vol := range volumes {
-			spec, err := api.ParseVolumeMountSpec(vol, workspace)
-			if err != nil {
-				return errx.With(ErrInvalidVolume, " %q: %w", vol, err)
-			}
-
-			mount := api.MountConfig{
-				Type:     spec.Type,
-				HostPath: spec.HostPath,
-				Readonly: spec.Readonly,
-				OwnerUID: spec.OwnerUID,
-				OwnerGID: spec.OwnerGID,
-			}
-			mounts[spec.GuestPath] = mount
-		}
-		vfsConfig.Mounts = mounts
-	}
-
-	hasVFSMounts := vfsConfig != nil && len(vfsConfig.Mounts) > 0
 	extraDisks := make([]api.DiskMount, 0, len(diskMountSpecs))
 	for _, spec := range diskMountSpecs {
 		diskMount, err := parseDiskMountSpec(spec)
 		if err != nil {
 			return errx.With(ErrInvalidDiskMount, " %q: %w", spec, err)
-		}
-		if hasVFSMounts && diskMountShadowedByWorkspace(diskMount.GuestMount, vfsConfig.Workspace) {
-			return errx.With(ErrInvalidDiskMount, " %q: guest mount %q is inside workspace %q and will be shadowed by the VFS mount", spec, diskMount.GuestMount, vfsConfig.Workspace)
 		}
 		extraDisks = append(extraDisks, diskMount)
 	}
@@ -415,7 +395,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 			Hostname:        hostname,
 			MTU:             networkMTU,
 		},
-		VFS:        vfsConfig,
 		Env:        parsedEnv,
 		ExtraDisks: extraDisks,
 		ImageCfg:   imageCfg,
@@ -423,10 +402,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if err := config.Network.Validate(); err != nil {
 		return err
 	}
-	if err := config.ValidateVFS(); err != nil {
-		return err
-	}
-
 	sb, err := sandbox.New(ctx, config, sandboxOpts)
 	if err != nil {
 		return errx.Wrap(ErrCreateSandbox, err)
@@ -449,12 +424,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 	defer execRelay.Stop()
 
-	if !rm {
-		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
-		fmt.Fprintf(os.Stderr, "  Connect: matchlock exec %s -it bash\n", sb.ID())
-		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
-	}
-
 	cleanupSandbox := func(remove bool) error {
 		c, cancel := closeContext(gracefulShutdown)
 		defer cancel()
@@ -472,6 +441,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errors.Join(errs...)
 		}
 		return nil
+	}
+
+	if err := copyIntoSandbox(ctx, sb, copyIns); err != nil {
+		return errors.Join(err, cleanupSandbox(rm))
+	}
+
+	if !rm {
+		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Connect: matchlock exec %s -it bash\n", sb.ID())
+		fmt.Fprintf(os.Stderr, "  Stop:    matchlock kill %s\n", sb.ID())
 	}
 
 	var pfManager *sandbox.PortForwardManager
@@ -494,11 +473,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	if interactiveMode {
 		exitCode := runInteractive(ctx, sb, command, workdir)
+		copyErr := copyOutOfSandbox(ctx, sb, copyOuts)
 		if rm {
 			if err := cleanupSandbox(true); err != nil {
-				return err
+				return errors.Join(copyErr, err)
 			}
-			return commandExit(exitCode)
+			return copyOutExit(copyErr, exitCode)
+		}
+		if copyErr != nil {
+			fmt.Fprintln(os.Stderr, copyErr)
 		}
 		// Keep sandbox alive for follow-up `matchlock exec` sessions.
 		<-ctx.Done()
@@ -541,11 +524,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 			return errx.Wrap(ErrExecCommand, err)
 		}
 
+		copyErr := copyOutOfSandbox(ctx, sb, copyOuts)
 		if rm {
 			if err := cleanupSandbox(true); err != nil {
-				return err
+				return errors.Join(copyErr, err)
 			}
-			return commandExit(result.ExitCode)
+			return copyOutExit(copyErr, result.ExitCode)
+		}
+		if copyErr != nil {
+			fmt.Fprintln(os.Stderr, copyErr)
 		}
 	}
 
@@ -709,14 +696,23 @@ func waitDetachedVMID(pid int) (string, error) {
 	ticker := time.NewTicker(detachedVMPollInterval)
 	defer ticker.Stop()
 
+	var vmID string
+	var readyDeadline time.Time
 	for {
-		states, err := mgr.List()
-		if err == nil {
-			for _, vmState := range states {
-				if vmState.PID == pid && vmState.Status == "running" {
-					return vmState.ID, nil
+		if vmID == "" {
+			if states, err := mgr.List(); err == nil {
+				for _, vmState := range states {
+					if vmState.PID == pid && vmState.Status == "running" {
+						vmID = vmState.ID
+						readyDeadline = time.Now().Add(detachedReadyTimeout)
+					}
 				}
 			}
+		}
+		// Return once the exec relay accepts connections, so that exec and cp
+		// work immediately. If the relay never starts, still report the VM.
+		if vmID != "" && (execRelayReady(mgr.ExecSocketPath(vmID)) || time.Now().After(readyDeadline)) {
+			return vmID, nil
 		}
 		if !isProcessRunning(pid) {
 			return "", errx.With(ErrFindDetachedVM, " for detached process pid=%d", pid)
@@ -724,6 +720,15 @@ func waitDetachedVMID(pid int) (string, error) {
 
 		<-ticker.C
 	}
+}
+
+func execRelayReady(socketPath string) bool {
+	conn, err := net.DialTimeout("unix", socketPath, detachedVMPollInterval)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 func isProcessRunning(pid int) bool {
@@ -832,7 +837,7 @@ func parseDiskMountSpec(spec string) (api.DiskMount, error) {
 			switch key {
 			case "":
 				continue
-			case api.MountOptionReadonlyShort, api.MountOptionReadonly:
+			case "ro", "readonly":
 				if hasValue {
 					return api.DiskMount{}, unknownDiskMountOption(option)
 				}
@@ -891,11 +896,4 @@ func parseDiskOwnerID(name string, value string) (uint32, error) {
 		return 0, fmt.Errorf("invalid disk owner: %s %q must be an unsigned 32-bit integer: %w", name, value, err)
 	}
 	return uint32(parsed), nil
-}
-
-func diskMountShadowedByWorkspace(guestMount, workspace string) bool {
-	if strings.TrimSpace(workspace) == "" {
-		return false
-	}
-	return api.ValidateGuestPathWithinWorkspace(guestMount, workspace) == nil
 }

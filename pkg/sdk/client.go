@@ -40,6 +40,7 @@ import (
 type Client struct {
 	cmd        *exec.Cmd
 	binaryPath string
+	useSudo    bool
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
 	stderr     io.ReadCloser
@@ -53,12 +54,6 @@ type Client struct {
 	pendingMu  sync.Mutex                 // protects pending map
 	pending    map[uint64]*pendingRequest // in-flight requests by ID
 	readerOnce sync.Once                  // ensures reader goroutine starts once
-
-	vfsHookMu      sync.RWMutex
-	vfsHooks       []compiledVFSHook
-	vfsMutateHooks []compiledVFSMutateHook
-	vfsActionHooks []compiledVFSActionHook
-	vfsHookActive  atomic.Bool
 
 	networkHookMu       sync.RWMutex
 	networkHooks        map[string]compiledNetworkHook
@@ -120,6 +115,7 @@ func NewClient(cfg Config) (*Client, error) {
 	return &Client{
 		cmd:        cmd,
 		binaryPath: cfg.BinaryPath,
+		useSudo:    cfg.UseSudo,
 		stdin:      stdin,
 		stdout:     bufio.NewReader(stdout),
 		stderr:     stderr,
@@ -148,7 +144,6 @@ func (c *Client) Close(timeout time.Duration) error {
 	c.closed = true
 	c.mu.Unlock()
 
-	c.setVFSHooks(nil, nil, nil)
 	c.stopNetworkHookServer()
 
 	effectiveTimeout := timeout

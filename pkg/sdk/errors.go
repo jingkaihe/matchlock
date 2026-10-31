@@ -27,10 +27,14 @@ var (
 	ErrInvalidAddHost     = errors.New("invalid add-host mapping")
 	ErrInvalidNetworkHook = errors.New("invalid network hook")
 	ErrParseCreateResult  = errors.New("parse create result")
-	ErrInvalidVFSHook     = errors.New("invalid vfs hook")
-	ErrVFSHookBlocked     = errors.New("vfs hook blocked operation")
 	ErrParsePortForwards  = errors.New("parse port-forward spec")
 	ErrParsePortBindings  = errors.New("parse port-forward result")
+)
+
+// Copy errors
+var (
+	ErrInvalidCopy     = errors.New("invalid copy")
+	ErrCopyOutWithSudo = errors.New("copy out is not supported when matchlock runs with sudo, because copied files would be owned by root")
 )
 
 // Exec errors

@@ -13,7 +13,6 @@ Current behavior:
 - Image build/pull path flattens the OCI filesystem into one `*.ext4` artifact.
 - Linux sandbox creation attempts reflink clone for per-VM rootfs copy, with full copy fallback.
 - macOS sandbox creation performs a full copy for per-VM rootfs.
-- `overlay` in VFS mounts is a host-path snapshot copy model, not kernel overlayfs root assembly.
 
 This design is simple but has structural storage inefficiency:
 

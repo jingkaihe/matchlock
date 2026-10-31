@@ -6,10 +6,10 @@ before:
   hooks:
     - go mod download
     - rm -rf .goreleaser-firecracker && mkdir -p .goreleaser-firecracker/linux-amd64 .goreleaser-firecracker/linux-arm64
-    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 amd64 .goreleaser-firecracker/linux-amd64 firecracker
-    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 amd64 .goreleaser-firecracker/linux-amd64 jailer
-    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 arm64 .goreleaser-firecracker/linux-arm64 firecracker
-    - bash packaging/linux/scripts/fetch-firecracker.sh v1.10.1 arm64 .goreleaser-firecracker/linux-arm64 jailer
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.17.0 amd64 .goreleaser-firecracker/linux-amd64 firecracker
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.17.0 amd64 .goreleaser-firecracker/linux-amd64 jailer
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.17.0 arm64 .goreleaser-firecracker/linux-arm64 firecracker
+    - bash packaging/linux/scripts/fetch-firecracker.sh v1.17.0 arm64 .goreleaser-firecracker/linux-arm64 jailer
 
 builds:
   - id: matchlock

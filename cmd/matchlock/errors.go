@@ -14,8 +14,8 @@ var (
 	ErrResolveContextDir   = errors.New("resolve context dir")
 	ErrResolveDockerfile   = errors.New("resolve Dockerfile")
 	ErrBuildBuildKitRootfs = errors.New("building BuildKit rootfs")
-	ErrCreateWorkspaceDir  = errors.New("create workspace temp dir")
-	ErrCreateOutputDir     = errors.New("create output temp dir")
+	ErrBuildContext        = errors.New("archive build context")
+	ErrUploadBuildContext  = errors.New("upload build context")
 	ErrResolveCachePath    = errors.New("resolve build cache path")
 	ErrLockBuildCache      = errors.New("lock build cache")
 	ErrPrepareBuildCache   = errors.New("prepare build cache")
@@ -23,7 +23,6 @@ var (
 	ErrStartBuildSandbox   = errors.New("starting BuildKit sandbox")
 	ErrWriteBuildScript    = errors.New("write build script")
 	ErrBuildKitBuild       = errors.New("BuildKit build")
-	ErrOpenImageTarball    = errors.New("open built image tarball")
 	ErrImportImage         = errors.New("import built image")
 )
 
@@ -35,6 +34,13 @@ var (
 	ErrSetRawMode      = errors.New("setting raw mode")
 	ErrInteractiveExec = errors.New("interactive exec failed")
 	ErrReadVMLog       = errors.New("read VM log")
+)
+
+// Copy errors
+var (
+	ErrInvalidCopy = errors.New("invalid copy")
+	ErrCopyIn      = errors.New("copy into sandbox")
+	ErrCopyOut     = errors.New("copy out of sandbox")
 )
 
 // Pull errors
@@ -50,7 +56,6 @@ var (
 // Run errors
 var (
 	ErrBuildingRootfs         = errors.New("building rootfs")
-	ErrInvalidVolume          = errors.New("invalid volume mount")
 	ErrInvalidDiskMount       = errors.New("invalid disk mount")
 	ErrInvalidVolumeName      = errors.New("invalid volume name")
 	ErrResolveVolumeDir       = errors.New("resolve volume directory")

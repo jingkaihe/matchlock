@@ -11,14 +11,6 @@ var (
 	ErrTimeout        = errors.New("operation timed out")
 	ErrInvalidConfig  = errors.New("invalid configuration")
 
-	ErrInvalidVolumeFormat = errors.New("expected format host:guest or host:guest:option[,option...]")
-	ErrResolvePath         = errors.New("failed to resolve path")
-	ErrHostPathNotExist    = errors.New("host path does not exist")
-	ErrUnknownMountOption  = errors.New("unknown option")
-	ErrInvalidMountOwner   = errors.New("invalid mount owner")
-	ErrGuestPathNotAbs     = errors.New("guest path must be absolute")
-	ErrGuestPathOutside    = errors.New("guest path must be within workspace")
-
 	ErrEnvNameEmpty   = errors.New("environment variable name cannot be empty")
 	ErrEnvNameInvalid = errors.New("environment variable name is invalid")
 	ErrEnvVarNotSet   = errors.New("environment variable is not set")

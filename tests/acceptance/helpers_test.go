@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -33,7 +34,11 @@ func launchAlpine(t *testing.T) *sdk.Client {
 
 func launchAlpineWithWorkspace(t *testing.T) *sdk.Client {
 	t.Helper()
-	return launchWithBuilder(t, sdk.New("alpine:latest").WithWorkspace("/workspace").MountMemory("/workspace"))
+	client := launchAlpine(t)
+	result, err := client.Exec(context.Background(), "mkdir -p /workspace")
+	require.NoError(t, err, "create guest workspace")
+	require.Equal(t, 0, result.ExitCode, "stderr: %s", result.Stderr)
+	return client
 }
 
 func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {

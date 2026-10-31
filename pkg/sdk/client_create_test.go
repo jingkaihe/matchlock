@@ -287,64 +287,6 @@ func TestCreateSendsKernelRef(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"ref": "file:///tmp/vmlinux"}, capturedKernel)
 }
 
-func TestCreateSendsMountOwner(t *testing.T) {
-	var capturedMount map[string]interface{}
-
-	client, cleanup := newScriptedClient(t, func(req request) response {
-		switch req.Method {
-		case "create":
-			if req.Params != nil {
-				if params, ok := req.Params.(map[string]interface{}); ok {
-					if vfs, ok := params["vfs"].(map[string]interface{}); ok {
-						if mounts, ok := vfs["mounts"].(map[string]interface{}); ok {
-							if mount, ok := mounts["/workspace/data"].(map[string]interface{}); ok {
-								capturedMount = mount
-							}
-						}
-					}
-				}
-			}
-			return response{
-				JSONRPC: "2.0",
-				Result:  json.RawMessage(`{"id":"vm-mount-owner"}`),
-				ID:      &req.ID,
-			}
-		default:
-			return response{
-				JSONRPC: "2.0",
-				Error: &rpcError{
-					Code:    ErrCodeMethodNotFound,
-					Message: "Method not found",
-				},
-				ID: &req.ID,
-			}
-		}
-	})
-	defer cleanup()
-
-	uid := uint32(1000)
-	gid := uint32(2000)
-	vmID, err := client.Create(CreateOptions{
-		Image:     "alpine:latest",
-		Workspace: "/workspace",
-		Mounts: map[string]MountConfig{
-			"/workspace/data": {
-				Type:     api.MountTypeHostFS,
-				HostPath: "/host/data",
-				OwnerUID: &uid,
-				OwnerGID: &gid,
-			},
-		},
-	})
-
-	require.NoError(t, err)
-	assert.Equal(t, "vm-mount-owner", vmID)
-	assert.Equal(t, "host_fs", capturedMount["type"])
-	assert.Equal(t, "/host/data", capturedMount["host_path"])
-	assert.Equal(t, float64(1000), capturedMount["owner_uid"])
-	assert.Equal(t, float64(2000), capturedMount["owner_gid"])
-}
-
 func TestCreateSendsAddHosts(t *testing.T) {
 	var capturedAddHosts []map[string]interface{}
 

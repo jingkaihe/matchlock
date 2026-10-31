@@ -5,7 +5,6 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,9 +16,18 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/firecracker"
+)
+
+const (
+	// firecrackerVersion is installed by setup and must match .goreleaser.yaml.
+	firecrackerVersion = "v1.17.0"
+	// minFirecrackerVersion fixes vsock data corruption with guest kernels
+	// 6.17 and newer (firecracker-microvm/firecracker#5485).
+	minFirecrackerVersion = "v1.14.0"
 )
 
 var setupCmd = &cobra.Command{
@@ -190,19 +198,22 @@ func installFirecracker(installDir string) error {
 		arch = "aarch64"
 	}
 
+	installedPath := firecracker.ResolveFirecrackerPath()
 	installedVersion := getFirecrackerVersion()
-	if installedVersion != "" {
+	switch {
+	case installedVersion == "":
+	case firecrackerVersionSupported(installedVersion):
 		fmt.Printf("✓ Firecracker %s already available\n", installedVersion)
 		return nil
+	case filepath.Dir(installedPath) == firecracker.PackagedDir:
+		// Never replace binaries owned by the matchlock package.
+		fmt.Printf("⚠ Firecracker %s at %s is older than %s; upgrade the matchlock package\n", installedVersion, installedPath, minFirecrackerVersion)
+		return nil
+	default:
+		fmt.Printf("Firecracker %s at %s is older than %s; upgrading\n", installedVersion, installedPath, minFirecrackerVersion)
 	}
 
-	version, err := getLatestFirecrackerVersion()
-	if err != nil {
-		version = "v1.10.1"
-		fmt.Printf("Could not fetch latest version, using %s\n", version)
-	} else {
-		fmt.Printf("Latest version: %s\n", version)
-	}
+	version := firecrackerVersion
 
 	url := fmt.Sprintf("https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-%s.tgz",
 		version, version, arch)
@@ -276,7 +287,11 @@ func installFirecracker(installDir string) error {
 	}
 
 	if newVersion := getFirecrackerVersion(); newVersion != "" {
-		fmt.Printf("✓ Firecracker %s installed successfully\n", newVersion)
+		if firecrackerVersionSupported(newVersion) {
+			fmt.Printf("✓ Firecracker %s installed successfully\n", newVersion)
+		} else {
+			fmt.Printf("⚠ Firecracker %s at %s is still used and is older than %s\n", newVersion, firecracker.ResolveFirecrackerPath(), minFirecrackerVersion)
+		}
 	}
 
 	checkKVM()
@@ -295,31 +310,10 @@ func getFirecrackerVersion() string {
 	return strings.TrimSpace(string(out))
 }
 
-func getLatestFirecrackerVersion() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("unexpected status: HTTP %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var payload struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", err
-	}
-	if payload.TagName == "" {
-		return "", fmt.Errorf("could not parse version")
-	}
-	return payload.TagName, nil
+// firecrackerVersionSupported reports whether v includes the vsock fix for
+// guest kernels 6.17 and newer; older releases can corrupt exec streams.
+func firecrackerVersionSupported(v string) bool {
+	return semver.IsValid(v) && semver.Compare(v, minFirecrackerVersion) >= 0
 }
 
 func checkKVM() {

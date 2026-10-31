@@ -22,9 +22,6 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "dependencies": {
-    "minimatch": "^10.0.3"
-  },
   "devDependencies": {
     "@types/node": "^22.13.4",
     "typescript": "^5.8.2",

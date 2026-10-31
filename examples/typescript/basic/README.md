@@ -11,4 +11,4 @@ npm run start
 
 The script launches a `node:22-alpine` sandbox, installs `@anthropic-ai/sdk`, and streams output from the Anthropic Node SDK in real time via `execStream`.
 
-Note: the example installs with `npm --no-bin-links` because `/workspace` currently does not support npm symlink creation for `.bin` entries.
+The example creates `/workspace` on the guest's native filesystem and uploads its script through the SDK; it does not mount a host directory.

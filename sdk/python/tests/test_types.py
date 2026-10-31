@@ -9,7 +9,6 @@ from matchlock.types import (
     ExecStreamResult,
     FileInfo,
     MatchlockError,
-    MountConfig,
     NetworkBodyTransform,
     NetworkHookRequest,
     NetworkHookRequestMutation,
@@ -26,16 +25,6 @@ from matchlock.types import (
     PortForwardBinding,
     RPCError,
     Secret,
-    VFSActionRequest,
-    VFS_HOOK_ACTION_ALLOW,
-    VFS_HOOK_ACTION_BLOCK,
-    VFS_HOOK_OP_CREATE,
-    VFS_HOOK_OP_WRITE,
-    VFS_HOOK_PHASE_AFTER,
-    VFS_HOOK_PHASE_BEFORE,
-    VFSHookRule,
-    VFSInterceptionConfig,
-    VFSMutateRequest,
 )
 
 
@@ -49,32 +38,6 @@ class TestConfig:
         c = Config(binary_path="/usr/local/bin/matchlock", use_sudo=True)
         assert c.binary_path == "/usr/local/bin/matchlock"
         assert c.use_sudo is True
-
-
-class TestMountConfig:
-    def test_defaults(self):
-        m = MountConfig()
-        assert m.type == "memory"
-        assert m.host_path == ""
-        assert m.readonly is False
-
-    def test_to_dict_minimal(self):
-        m = MountConfig()
-        assert m.to_dict() == {"type": "memory"}
-
-    def test_to_dict_with_host_path(self):
-        m = MountConfig(type="host_fs", host_path="/tmp/data")
-        assert m.to_dict() == {"type": "host_fs", "host_path": "/tmp/data"}
-
-    def test_to_dict_readonly(self):
-        m = MountConfig(type="host_fs", host_path="/src", readonly=True)
-        d = m.to_dict()
-        assert d == {"type": "host_fs", "host_path": "/src", "readonly": True}
-
-    def test_to_dict_readonly_false_omitted(self):
-        m = MountConfig(type="overlay", host_path="/data", readonly=False)
-        d = m.to_dict()
-        assert "readonly" not in d
 
 
 class TestSecret:
@@ -113,13 +76,10 @@ class TestCreateOptions:
         assert opts.block_private_ips_set is False
         assert opts.no_network is False
         assert opts.force_interception is False
-        assert opts.mounts == {}
         assert opts.env == {}
         assert opts.network_interception is None
-        assert opts.vfs_interception is None
         assert opts.launch_entrypoint is False
         assert opts.secrets == []
-        assert opts.workspace == ""
         assert opts.dns_servers == []
         assert opts.network_mtu == 0
         assert opts.port_forwards == []
@@ -196,112 +156,6 @@ class TestExecInteractiveResult:
         r = ExecInteractiveResult(exit_code=0, duration_ms=33)
         assert r.exit_code == 0
         assert r.duration_ms == 33
-
-
-class TestVFSHookRule:
-    def test_to_dict_minimal(self):
-        r = VFSHookRule(action="allow")
-        assert r.to_dict() == {"action": "allow"}
-
-    def test_to_dict_full(self):
-        r = VFSHookRule(
-            name="rule1",
-            phase=VFS_HOOK_PHASE_BEFORE,
-            ops=[VFS_HOOK_OP_CREATE],
-            path="/workspace/blocked.txt",
-            action="block",
-            timeout_ms=250,
-        )
-        assert r.to_dict() == {
-            "name": "rule1",
-            "phase": "before",
-            "ops": ["create"],
-            "path": "/workspace/blocked.txt",
-            "action": "block",
-            "timeout_ms": 250,
-        }
-
-    def test_to_dict_ignores_hook(self):
-        called = []
-        r = VFSHookRule(
-            phase=VFS_HOOK_PHASE_AFTER,
-            ops=[VFS_HOOK_OP_WRITE],
-            path="/workspace/*",
-            hook=lambda event: called.append(event),
-        )
-        assert r.to_dict() == {
-            "phase": "after",
-            "ops": ["write"],
-            "path": "/workspace/*",
-            "action": "allow",
-        }
-
-    def test_to_dict_ignores_dangerous_hook(self):
-        called = []
-        r = VFSHookRule(
-            phase=VFS_HOOK_PHASE_AFTER,
-            ops=[VFS_HOOK_OP_WRITE],
-            path="/workspace/*",
-            dangerous_hook=lambda client, event: called.append((client, event)),
-        )
-        assert r.to_dict() == {
-            "phase": "after",
-            "ops": ["write"],
-            "path": "/workspace/*",
-            "action": "allow",
-        }
-
-    def test_to_dict_ignores_mutate_hook(self):
-        r = VFSHookRule(
-            phase=VFS_HOOK_PHASE_BEFORE,
-            ops=[VFS_HOOK_OP_WRITE],
-            path="/workspace/*",
-            mutate_hook=lambda req: b"x",
-        )
-        assert r.to_dict() == {
-            "phase": "before",
-            "ops": ["write"],
-            "path": "/workspace/*",
-            "action": "allow",
-        }
-
-    def test_to_dict_ignores_action_hook(self):
-        r = VFSHookRule(
-            phase=VFS_HOOK_PHASE_BEFORE,
-            ops=[VFS_HOOK_OP_WRITE],
-            path="/workspace/*",
-            action_hook=lambda req: VFS_HOOK_ACTION_ALLOW,
-        )
-        assert r.to_dict() == {
-            "phase": "before",
-            "ops": ["write"],
-            "path": "/workspace/*",
-            "action": "allow",
-        }
-
-
-class TestVFSInterceptionConfig:
-    def test_to_dict_empty(self):
-        c = VFSInterceptionConfig()
-        assert c.to_dict() == {}
-
-    def test_to_dict_with_values(self):
-        c = VFSInterceptionConfig(
-            rules=[
-                VFSHookRule(
-                    action="block",
-                    phase=VFS_HOOK_PHASE_BEFORE,
-                    ops=[VFS_HOOK_OP_WRITE],
-                )
-            ],
-        )
-        assert c.to_dict() == {
-            "rules": [{"phase": "before", "ops": ["write"], "action": "block"}],
-        }
-
-    def test_to_dict_with_emit_events(self):
-        c = VFSInterceptionConfig(emit_events=True)
-        assert c.to_dict() == {"emit_events": True}
 
 
 class TestNetworkBodyTransform:
@@ -439,20 +293,6 @@ class TestNetworkHookCallbackTypes:
         assert result.response.set_body == b"payload"
 
 
-class TestVFSHookConstants:
-    def test_phase_constants(self):
-        assert VFS_HOOK_PHASE_BEFORE == "before"
-        assert VFS_HOOK_PHASE_AFTER == "after"
-
-    def test_op_constants(self):
-        assert VFS_HOOK_OP_CREATE == "create"
-        assert VFS_HOOK_OP_WRITE == "write"
-
-    def test_action_constants(self):
-        assert VFS_HOOK_ACTION_ALLOW == "allow"
-        assert VFS_HOOK_ACTION_BLOCK == "block"
-
-
 class TestNetworkHookConstants:
     def test_phase_constants(self):
         assert NETWORK_HOOK_PHASE_BEFORE == "before"
@@ -462,36 +302,6 @@ class TestNetworkHookConstants:
         assert NETWORK_HOOK_ACTION_ALLOW == "allow"
         assert NETWORK_HOOK_ACTION_BLOCK == "block"
         assert NETWORK_HOOK_ACTION_MUTATE == "mutate"
-
-
-class TestVFSMutateRequest:
-    def test_fields(self):
-        req = VFSMutateRequest(
-            path="/workspace/a.txt", size=123, mode=0o640, uid=1000, gid=1000
-        )
-        assert req.path == "/workspace/a.txt"
-        assert req.size == 123
-        assert req.mode == 0o640
-        assert req.uid == 1000
-        assert req.gid == 1000
-
-
-class TestVFSActionRequest:
-    def test_fields(self):
-        req = VFSActionRequest(
-            op="write",
-            path="/workspace/a.txt",
-            size=10,
-            mode=0o640,
-            uid=1000,
-            gid=1001,
-        )
-        assert req.op == "write"
-        assert req.path == "/workspace/a.txt"
-        assert req.size == 10
-        assert req.mode == 0o640
-        assert req.uid == 1000
-        assert req.gid == 1001
 
 
 class TestFileInfo:

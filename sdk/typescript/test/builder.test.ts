@@ -3,9 +3,6 @@ import {
   NETWORK_HOOK_ACTION_MUTATE,
   NETWORK_HOOK_PHASE_AFTER,
   Sandbox,
-  VFS_HOOK_ACTION_BLOCK,
-  VFS_HOOK_OP_CREATE,
-  VFS_HOOK_PHASE_BEFORE,
 } from "../src";
 
 describe("Sandbox builder", () => {
@@ -110,101 +107,22 @@ describe("Sandbox builder", () => {
     });
   });
 
-  it("builds mount and env config", () => {
+  it("builds env config", () => {
     const opts = new Sandbox("img")
       .withEnv("FOO", "bar")
       .withEnvMap({ BAZ: "qux" })
-      .mountHostDir("/data", "/host/data")
-      .mountHostDirReadonly("/config", "/host/config")
-      .mountMemory("/tmp")
-      .mountOverlay("/workspace", "/host/workspace")
       .options();
 
     expect(opts.env).toEqual({ FOO: "bar", BAZ: "qux" });
-    expect(opts.mounts).toEqual({
-      "/data": { type: "host_fs", hostPath: "/host/data" },
-      "/config": { type: "host_fs", hostPath: "/host/config", readonly: true },
-      "/tmp": { type: "memory" },
-      "/workspace": { type: "overlay", hostPath: "/host/workspace" },
-    });
   });
 
-  it("sets ownerUID and ownerGID on mountHostDir", () => {
+  it("builds image config", () => {
     const opts = new Sandbox("img")
-      .mountHostDir("/data", "/host/data", { ownerUID: 1000, ownerGID: 2000 })
-      .options();
-
-    expect(opts.mounts!["/data"]).toMatchObject({
-      type: "host_fs",
-      hostPath: "/host/data",
-      ownerUID: 1000,
-      ownerGID: 2000,
-    });
-  });
-
-  it("sets ownerUID and ownerGID on mountHostDirReadonly", () => {
-    const opts = new Sandbox("img")
-      .mountHostDirReadonly("/config", "/host/config", { ownerUID: 1000, ownerGID: 2000 })
-      .options();
-
-    expect(opts.mounts!["/config"]).toMatchObject({
-      type: "host_fs",
-      hostPath: "/host/config",
-      readonly: true,
-      ownerUID: 1000,
-      ownerGID: 2000,
-    });
-  });
-
-  it("omits ownerUID and ownerGID when not provided", () => {
-    const opts = new Sandbox("img")
-      .mountHostDir("/data", "/host/data")
-      .options();
-
-    const mount = opts.mounts!["/data"];
-    expect(mount.ownerUID).toBeUndefined();
-    expect(mount.ownerGID).toBeUndefined();
-  });
-
-  it("sets only ownerUID on mountHostDir", () => {
-    const opts = new Sandbox("img")
-      .mountHostDir("/data", "/host/data", { ownerUID: 500 })
-      .options();
-
-    expect(opts.mounts!["/data"]).toMatchObject({ ownerUID: 500 });
-    expect(opts.mounts!["/data"].ownerGID).toBeUndefined();
-  });
-
-  it("throws on negative ownerUID", () => {
-    expect(() =>
-      new Sandbox("img").mountHostDir("/data", "/host/data", { ownerUID: -1 }),
-    ).toThrow(RangeError);
-  });
-
-  it("throws on out-of-range ownerGID", () => {
-    expect(() =>
-      new Sandbox("img").mountHostDir("/data", "/host/data", { ownerGID: 4294967296 }),
-    ).toThrow(RangeError);
-  });
-
-  it("builds vfs interception and image config", () => {
-    const opts = new Sandbox("img")
-      .withVFSInterception({
-        rules: [
-          {
-            phase: VFS_HOOK_PHASE_BEFORE,
-            ops: [VFS_HOOK_OP_CREATE],
-            path: "/workspace/blocked.txt",
-            action: VFS_HOOK_ACTION_BLOCK,
-          },
-        ],
-      })
       .withUser("nobody")
       .withEntrypoint("python", "main.py")
       .withImageConfig({ workingDir: "/workspace" })
       .options();
 
-    expect(opts.vfsInterception?.rules?.[0].action).toBe("block");
     expect(opts.imageConfig).toEqual({
       user: "nobody",
       entrypoint: ["python", "main.py"],

@@ -48,7 +48,6 @@ type Event struct {
 	Type      string        `json:"type"`
 	Timestamp int64         `json:"timestamp"`
 	Network   *NetworkEvent `json:"network,omitempty"`
-	File      *FileEvent    `json:"file,omitempty"`
 	Exec      *ExecEvent    `json:"exec,omitempty"`
 }
 
@@ -62,15 +61,6 @@ type NetworkEvent struct {
 	DurationMS    int64  `json:"duration_ms"`
 	Blocked       bool   `json:"blocked"`
 	BlockReason   string `json:"block_reason,omitempty"`
-}
-
-type FileEvent struct {
-	Op   string `json:"op"`
-	Path string `json:"path"`
-	Size int64  `json:"size"`
-	Mode uint32 `json:"mode,omitempty"`
-	UID  int    `json:"uid,omitempty"`
-	GID  int    `json:"gid,omitempty"`
 }
 
 type ExecEvent struct {

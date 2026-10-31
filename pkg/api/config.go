@@ -4,16 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
-
-// DefaultWorkspace is the conventional mount point for the VFS in the guest.
-// VFS is now opt-in and this path is used only when explicitly configured.
-const DefaultWorkspace = "/workspace"
 
 const (
 	DefaultCPUs                   = 1
@@ -42,10 +37,26 @@ type Config struct {
 	LaunchEntrypoint bool              `json:"launch_entrypoint,omitempty"`
 	Resources        *Resources        `json:"resources,omitempty"`
 	Network          *NetworkConfig    `json:"network,omitempty"`
-	VFS              *VFSConfig        `json:"vfs,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
 	ExtraDisks       []DiskMount       `json:"extra_disks,omitempty"`
 	ImageCfg         *ImageConfig      `json:"image_config,omitempty"`
+}
+
+// UnmarshalJSON rejects removed host-filesystem configuration rather than
+// silently ignoring requested mounts or filesystem interception rules.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type config Config
+	decoded := struct {
+		*config
+		LegacyVFS json.RawMessage `json:"vfs"`
+	}{config: (*config)(c)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.LegacyVFS) > 0 && string(decoded.LegacyVFS) != "null" {
+		return errx.With(ErrInvalidConfig, ": vfs is no longer supported; use guest file transfer or block disks instead")
+	}
+	return nil
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.
@@ -146,47 +157,6 @@ type Secret struct {
 	Hosts       []string `json:"hosts"`
 }
 
-type VFSConfig struct {
-	Workspace    string                 `json:"workspace,omitempty"`
-	DirectMounts map[string]DirectMount `json:"direct_mounts,omitempty"`
-	Mounts       map[string]MountConfig `json:"mounts,omitempty"`
-	Interception *VFSInterceptionConfig `json:"interception,omitempty"`
-}
-
-// GetWorkspace returns the configured workspace path, or empty when unset.
-func (v *VFSConfig) GetWorkspace() string {
-	if v != nil && v.Workspace != "" {
-		return v.Workspace
-	}
-	return ""
-}
-
-type DirectMount struct {
-	HostPath string `json:"host_path"`
-	Readonly bool   `json:"readonly,omitempty"`
-}
-
-// OwnerUID / OwnerGID overrides the UID / GID reported for all files in this mount (from inside the VM)
-// Only effective for host_fs mounts; setting it on memory or overlay mounts is an error.
-type MountConfig struct {
-	Type     string       `json:"type"`
-	HostPath string       `json:"host_path,omitempty"`
-	Readonly bool         `json:"readonly,omitempty"`
-	Upper    *MountConfig `json:"upper,omitempty"`
-	Lower    *MountConfig `json:"lower,omitempty"`
-	OwnerUID *uint32      `json:"owner_uid,omitempty"`
-	OwnerGID *uint32      `json:"owner_gid,omitempty"`
-}
-
-const (
-	MountTypeMemory  = "memory"
-	MountTypeHostFS  = "host_fs"
-	MountTypeOverlay = "overlay"
-
-	MountOptionReadonlyShort = "ro"
-	MountOptionReadonly      = "readonly"
-)
-
 // GetID returns the VM ID from config. Creates a new random ID if not set.
 func (c *Config) GetID() string {
 	if c.ID == "" {
@@ -201,62 +171,6 @@ func (c *Config) GetHostname() string {
 		return c.Network.Hostname
 	}
 	return c.GetID()
-}
-
-// GetWorkspace returns the workspace path from config, or empty when unset.
-func (c *Config) GetWorkspace() string {
-	if c.VFS != nil {
-		return c.VFS.GetWorkspace()
-	}
-	return ""
-}
-
-// HasVFSMounts reports whether VFS is enabled with at least one mount.
-func (c *Config) HasVFSMounts() bool {
-	return c != nil && c.VFS != nil && len(c.VFS.Mounts) > 0
-}
-
-// ValidateVFS checks VFS config invariants.
-//
-// Rules:
-// - vfs.workspace requires at least one vfs.mounts entry
-// - vfs.mounts requires a non-empty vfs.workspace
-// - vfs.interception requires at least one vfs.mounts entry
-// - vfs.workspace must be a safe absolute guest path
-// - every vfs.mounts key must be under vfs.workspace
-func (c *Config) ValidateVFS() error {
-	if c == nil || c.VFS == nil {
-		return nil
-	}
-
-	workspace := c.VFS.Workspace
-	hasWorkspace := strings.TrimSpace(workspace) != ""
-	hasMounts := len(c.VFS.Mounts) > 0
-	hasInterception := c.VFS.Interception != nil
-
-	if hasWorkspace && !hasMounts {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace requires at least one vfs.mounts entry")
-	}
-	if hasMounts && !hasWorkspace {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace is required when vfs.mounts is set")
-	}
-	if hasInterception && !hasMounts {
-		return errx.With(ErrInvalidConfig, ": vfs.interception requires at least one vfs.mounts entry")
-	}
-	if !hasMounts {
-		return nil
-	}
-
-	if err := ValidateGuestMount(workspace); err != nil {
-		return errx.With(ErrInvalidConfig, ": vfs.workspace: %v", err)
-	}
-	if err := ValidateVFSMountsWithinWorkspace(c.VFS.Mounts, workspace); err != nil {
-		return errx.With(ErrInvalidConfig, ": %v", err)
-	}
-	if err := ValidateVFSMountOwnership(c.VFS.Mounts); err != nil {
-		return errx.With(ErrInvalidConfig, ": %v", err)
-	}
-	return nil
 }
 
 func DefaultConfig() *Config {
@@ -302,9 +216,6 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.Network != nil {
 		result.Network = other.Network
-	}
-	if other.VFS != nil {
-		result.VFS = other.VFS
 	}
 	if other.Privileged {
 		result.Privileged = true

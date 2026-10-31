@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
-	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
 // JSON-RPC request/response types
@@ -266,14 +265,5 @@ func (c *Client) handleNotification(notif notification) {
 		if ok && pending.onNotification != nil {
 			pending.onNotification(notif.Method, notif.Params)
 		}
-	case "event":
-		var event api.Event
-		if err := json.Unmarshal(notif.Params, &event); err != nil {
-			return
-		}
-		if event.File == nil {
-			return
-		}
-		c.handleVFSFileEvent(event.File.Op, event.File.Path, event.File.Size, event.File.Mode, event.File.UID, event.File.GID)
 	}
 }

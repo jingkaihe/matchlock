@@ -16,14 +16,13 @@ import (
 func TestParseBootConfig(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
-	content := "console=hvc0 matchlock.workspace=/workspace/project matchlock.dns=1.1.1.1,8.8.8.8 matchlock.mtu=1200 matchlock.cpus=0.5 matchlock.disk.vdb=/var/lib/buildkit matchlock.add_host.0=api.internal,10.0.0.10"
+	content := "console=hvc0 matchlock.dns=1.1.1.1,8.8.8.8 matchlock.mtu=1200 matchlock.cpus=0.5 matchlock.disk.vdb=/var/lib/buildkit matchlock.add_host.0=api.internal,10.0.0.10"
 	require.NoError(t, os.WriteFile(cmdline, []byte(content), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
-	assert.Equal(t, "/workspace/project", cfg.Workspace)
 	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, cfg.DNSServers)
 	assert.Equal(t, 1200, cfg.MTU)
 	assert.Equal(t, 0.5, cfg.CPUs)
@@ -34,14 +33,13 @@ func TestParseBootConfig(t *testing.T) {
 	assert.Equal(t, hostIPMapping{Host: "api.internal", IP: "10.0.0.10"}, cfg.AddHosts[0])
 }
 
-func TestParseBootConfigDefaultsWithoutWorkspace(t *testing.T) {
+func TestParseBootConfigDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
 	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.dns=9.9.9.9"), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
 	require.NoError(t, err)
-	assert.Empty(t, cfg.Workspace)
 	assert.Equal(t, []string{"9.9.9.9"}, cfg.DNSServers)
 	assert.Equal(t, defaultNetworkMTU, cfg.MTU)
 	assert.Equal(t, 1.0, cfg.CPUs)
@@ -50,7 +48,7 @@ func TestParseBootConfigDefaultsWithoutWorkspace(t *testing.T) {
 func TestParseBootConfigRequiresDNS(t *testing.T) {
 	dir := t.TempDir()
 	cmdline := filepath.Join(dir, "cmdline")
-	require.NoError(t, os.WriteFile(cmdline, []byte("matchlock.workspace=/workspace"), 0644))
+	require.NoError(t, os.WriteFile(cmdline, []byte("console=hvc0"), 0644))
 
 	cfg, err := parseBootConfig(cmdline)
 	require.Error(t, err)

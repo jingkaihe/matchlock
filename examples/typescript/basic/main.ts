@@ -51,8 +51,7 @@ async function main(): Promise<void> {
     console.log(`launched ${vmId}`);
 
     const install = await client.exec(
-      "npm init -y >/dev/null 2>&1 && npm install --quiet --no-bin-links @anthropic-ai/sdk",
-      { workingDir: "/workspace" },
+      "mkdir -p /workspace && cd /workspace && npm init -y >/dev/null 2>&1 && npm install --quiet @anthropic-ai/sdk",
     );
     ensureSuccess("install @anthropic-ai/sdk", install);
 

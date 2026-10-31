@@ -42,11 +42,6 @@ func DefaultGuestAgentPath() string {
 	return findGuestBinary("guest-agent", "MATCHLOCK_GUEST_AGENT")
 }
 
-// DefaultGuestFusedPath returns the default path to guest-fused binary.
-func DefaultGuestFusedPath() string {
-	return findGuestBinary("guest-fused", "MATCHLOCK_GUEST_FUSED")
-}
-
 // DefaultGuestInitPath returns the default path to guest-init binary.
 func DefaultGuestInitPath() string {
 	return findGuestBinary("guest-init", "MATCHLOCK_GUEST_INIT")

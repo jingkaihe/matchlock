@@ -16,7 +16,7 @@ Usage with builder API:
 
 import base64
 import copy
-import fnmatch
+import io
 import json
 import os
 import shutil
@@ -24,7 +24,7 @@ import socket
 import subprocess
 import tempfile
 import threading
-from typing import IO, Any, Callable, Iterable
+from typing import IO, Any, Callable, Iterable, cast
 
 from .builder import Sandbox
 from .types import (
@@ -45,15 +45,31 @@ from .types import (
     PortForward,
     PortForwardBinding,
     RPCError,
-    VFSActionRequest,
-    VFSHookEvent,
-    VFS_HOOK_ACTION_ALLOW,
-    VFS_HOOK_ACTION_BLOCK,
-    VFSInterceptionConfig,
-    VFS_HOOK_PHASE_AFTER,
-    VFS_HOOK_PHASE_BEFORE,
-    VFSMutateRequest,
 )
+
+
+def _is_binary_writer(writer: object) -> bool:
+    """Return whether an output writer expects ``bytes`` rather than ``str``."""
+    if isinstance(writer, io.TextIOBase):
+        return False
+    if isinstance(writer, (io.RawIOBase, io.BufferedIOBase)):
+        return True
+    mode = getattr(writer, "mode", None)
+    return isinstance(mode, str) and "b" in mode
+
+
+def _absolute_host_path(path: str) -> str:
+    """Make a host path absolute without normalising it.
+
+    Unlike :func:`os.path.abspath`, this keeps a trailing ``/`` or ``/.``,
+    which change the meaning of a copy source or destination.
+    """
+    if os.path.isabs(path):
+        return path
+    cwd = os.getcwd()
+    if cwd.endswith(os.sep):
+        return cwd + path
+    return cwd + os.sep + path
 
 
 class _PendingRequest:
@@ -67,58 +83,6 @@ class _PendingRequest:
         self.result: Any = None
         self.error: Exception | None = None
         self.on_notification = on_notification
-
-
-class _LocalVFSHook:
-    __slots__ = ("name", "ops", "path", "timeout_ms", "dangerous", "hook")
-
-    def __init__(
-        self,
-        name: str,
-        ops: set[str],
-        path: str,
-        timeout_ms: int,
-        dangerous: bool,
-        hook: Callable[..., Any],
-    ) -> None:
-        self.name = name
-        self.ops = ops
-        self.path = path
-        self.timeout_ms = timeout_ms
-        self.dangerous = dangerous
-        self.hook = hook
-
-
-class _LocalVFSMutateHook:
-    __slots__ = ("name", "ops", "path", "hook")
-
-    def __init__(
-        self,
-        name: str,
-        ops: set[str],
-        path: str,
-        hook: Callable[[VFSMutateRequest], bytes | str | None],
-    ) -> None:
-        self.name = name
-        self.ops = ops
-        self.path = path
-        self.hook = hook
-
-
-class _LocalVFSActionHook:
-    __slots__ = ("name", "ops", "path", "hook")
-
-    def __init__(
-        self,
-        name: str,
-        ops: set[str],
-        path: str,
-        hook: Callable[[VFSActionRequest], str],
-    ) -> None:
-        self.name = name
-        self.ops = ops
-        self.path = path
-        self.hook = hook
 
 
 class _LocalNetworkHook:
@@ -161,12 +125,6 @@ class Client:
         self._reader_thread: threading.Thread | None = None
         self._closed = False
         self._last_vm_id: str | None = None
-
-        self._vfs_hooks: list[_LocalVFSHook] = []
-        self._vfs_mutate_hooks: list[_LocalVFSMutateHook] = []
-        self._vfs_action_hooks: list[_LocalVFSActionHook] = []
-        self._vfs_hook_active = False
-        self._vfs_hook_lock = threading.Lock()
 
         self._network_hook_lock = threading.Lock()
         self._network_hooks: dict[str, _LocalNetworkHook] = {}
@@ -217,7 +175,6 @@ class Client:
             return
         self._closed = True
         self._last_vm_id = self._vm_id
-        self._set_local_vfs_hooks([], [], [])
         self._stop_network_hook_server()
 
         if self._process is None or self._process.poll() is not None:
@@ -399,11 +356,6 @@ class Client:
 
     def _handle_notification(self, msg: dict[str, Any]) -> None:
         method = msg.get("method", "")
-        if method == "event":
-            params = msg.get("params", {})
-            self._handle_event_notification(params)
-            return
-
         if method not in (
             "exec_stream.stdout",
             "exec_stream.stderr",
@@ -426,306 +378,6 @@ class Client:
 
         if pending is not None and pending.on_notification is not None:
             pending.on_notification(method, params)
-
-    def _handle_event_notification(self, params: dict[str, Any]) -> None:
-        file_event = params.get("file")
-        if not isinstance(file_event, dict):
-            return
-        op = str(file_event.get("op", "")).lower()
-        path = str(file_event.get("path", ""))
-        size = int(file_event.get("size") or 0)
-        mode = int(file_event.get("mode") or 0)
-        uid = int(file_event.get("uid") or 0)
-        gid = int(file_event.get("gid") or 0)
-        if not op:
-            return
-        self._handle_vfs_file_event(op, path, size, mode, uid, gid)
-
-    def _handle_vfs_file_event(
-        self, op: str, path: str, size: int, mode: int, uid: int, gid: int
-    ) -> None:
-        with self._vfs_hook_lock:
-            hooks = list(self._vfs_hooks)
-            active = self._vfs_hook_active
-        if not hooks:
-            return
-
-        event = VFSHookEvent(op=op, path=path, size=size, mode=mode, uid=uid, gid=gid)
-
-        safe_hooks: list[_LocalVFSHook] = []
-        for hook in hooks:
-            if hook.ops and op not in hook.ops:
-                continue
-            if hook.path and not fnmatch.fnmatch(path, hook.path):
-                continue
-            if hook.dangerous:
-                t = threading.Thread(
-                    target=self._run_single_vfs_hook, args=(hook, event), daemon=True
-                )
-                t.start()
-                continue
-            safe_hooks.append(hook)
-
-        if not safe_hooks:
-            return
-        if active:
-            return
-
-        t = threading.Thread(
-            target=self._run_vfs_safe_hooks_for_event,
-            args=(safe_hooks, event),
-            daemon=True,
-        )
-        t.start()
-
-    def _run_vfs_safe_hooks_for_event(
-        self, hooks: list[_LocalVFSHook], event: VFSHookEvent
-    ) -> None:
-        with self._vfs_hook_lock:
-            if self._vfs_hook_active:
-                return
-            self._vfs_hook_active = True
-
-        try:
-            for hook in hooks:
-                self._run_single_vfs_hook(hook, event)
-        finally:
-            with self._vfs_hook_lock:
-                self._vfs_hook_active = False
-
-    def _run_single_vfs_hook(self, hook: _LocalVFSHook, event: VFSHookEvent) -> None:
-        try:
-            if hook.dangerous:
-                hook.hook(self, event)
-            else:
-                hook.hook(event)
-        except Exception:
-            pass
-
-    def _apply_local_write_mutations(
-        self, path: str, content: bytes, mode: int
-    ) -> bytes:
-        with self._vfs_hook_lock:
-            hooks = list(self._vfs_mutate_hooks)
-
-        if not hooks:
-            return content
-
-        uid_fn = getattr(os, "geteuid", None)
-        gid_fn = getattr(os, "getegid", None)
-        uid = int(uid_fn()) if callable(uid_fn) else 0
-        gid = int(gid_fn()) if callable(gid_fn) else 0
-
-        current = content
-        for hook in hooks:
-            if hook.ops and "write" not in hook.ops:
-                continue
-            if hook.path and not fnmatch.fnmatch(path, hook.path):
-                continue
-
-            request = VFSMutateRequest(
-                path=path, size=len(current), mode=mode, uid=uid, gid=gid
-            )
-            mutated = hook.hook(request)
-            if mutated is None:
-                continue
-            if isinstance(mutated, str):
-                current = mutated.encode("utf-8")
-                continue
-            if not isinstance(mutated, bytes):
-                raise MatchlockError(
-                    f"invalid mutate_hook return type for {hook.name!r}: expected bytes|str|None"
-                )
-            current = mutated
-
-        return current
-
-    def _apply_local_action_hooks(
-        self, op: str, path: str, size: int, mode: int
-    ) -> None:
-        with self._vfs_hook_lock:
-            hooks = list(self._vfs_action_hooks)
-
-        if not hooks:
-            return
-
-        uid_fn = getattr(os, "geteuid", None)
-        gid_fn = getattr(os, "getegid", None)
-        uid = int(uid_fn()) if callable(uid_fn) else 0
-        gid = int(gid_fn()) if callable(gid_fn) else 0
-
-        req = VFSActionRequest(op=op, path=path, size=size, mode=mode, uid=uid, gid=gid)
-        for hook in hooks:
-            if hook.ops and op not in hook.ops:
-                continue
-            if hook.path and not fnmatch.fnmatch(path, hook.path):
-                continue
-
-            decision = str(hook.hook(req)).strip().lower()
-            if decision in ("", VFS_HOOK_ACTION_ALLOW):
-                continue
-            if decision == VFS_HOOK_ACTION_BLOCK:
-                raise MatchlockError(
-                    f"vfs action hook blocked operation: op={op} path={path} hook={hook.name!r}"
-                )
-            raise MatchlockError(
-                f"invalid action_hook return value for {hook.name!r}: expected "
-                f"{VFS_HOOK_ACTION_ALLOW!r}|{VFS_HOOK_ACTION_BLOCK!r}, got {decision!r}"
-            )
-
-    def _set_local_vfs_hooks(
-        self,
-        hooks: list[_LocalVFSHook],
-        mutate_hooks: list[_LocalVFSMutateHook],
-        action_hooks: list[_LocalVFSActionHook],
-    ) -> None:
-        with self._vfs_hook_lock:
-            self._vfs_hooks = hooks
-            self._vfs_mutate_hooks = mutate_hooks
-            self._vfs_action_hooks = action_hooks
-            self._vfs_hook_active = False
-
-    def _compile_vfs_hooks(
-        self, cfg: VFSInterceptionConfig | None
-    ) -> tuple[
-        VFSInterceptionConfig | None,
-        list[_LocalVFSHook],
-        list[_LocalVFSMutateHook],
-        list[_LocalVFSActionHook],
-    ]:
-        if cfg is None:
-            return None, [], [], []
-
-        wire = VFSInterceptionConfig(
-            emit_events=cfg.emit_events,
-            rules=[],
-        )
-        local: list[_LocalVFSHook] = []
-        local_mutate: list[_LocalVFSMutateHook] = []
-        local_action: list[_LocalVFSActionHook] = []
-
-        for rule in cfg.rules:
-            callbacks = [
-                rule.hook,
-                rule.dangerous_hook,
-                rule.mutate_hook,
-                rule.action_hook,
-            ]
-            callback_count = sum(1 for cb in callbacks if cb is not None)
-            if callback_count > 1:
-                raise MatchlockError(
-                    f"invalid vfs hook {rule.name!r}: cannot set more than one callback hook"
-                )
-
-            if (
-                rule.hook is None
-                and rule.dangerous_hook is None
-                and rule.mutate_hook is None
-                and rule.action_hook is None
-            ):
-                action = (rule.action or "").strip().lower()
-                if action == "mutate_write":
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: mutate_write requires mutate_hook callback"
-                    )
-                wire.rules.append(rule)
-                continue
-
-            if rule.hook is not None:
-                action = (rule.action or "").strip().lower()
-                if action not in ("", VFS_HOOK_ACTION_ALLOW):
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: callback hooks cannot set action={rule.action!r}"
-                    )
-                if rule.phase.lower() != VFS_HOOK_PHASE_AFTER:
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: callback hooks must use phase=after"
-                    )
-
-                ops = {op.lower() for op in rule.ops if op}
-                local.append(
-                    _LocalVFSHook(
-                        name=rule.name,
-                        ops=ops,
-                        path=rule.path,
-                        timeout_ms=rule.timeout_ms,
-                        dangerous=False,
-                        hook=rule.hook,
-                    )
-                )
-                continue
-
-            if rule.dangerous_hook is not None:
-                action = (rule.action or "").strip().lower()
-                if action not in ("", VFS_HOOK_ACTION_ALLOW):
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: dangerous_hook cannot set action={rule.action!r}"
-                    )
-                if rule.phase.lower() != VFS_HOOK_PHASE_AFTER:
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: dangerous_hook must use phase=after"
-                    )
-
-                ops = {op.lower() for op in rule.ops if op}
-                local.append(
-                    _LocalVFSHook(
-                        name=rule.name,
-                        ops=ops,
-                        path=rule.path,
-                        timeout_ms=rule.timeout_ms,
-                        dangerous=True,
-                        hook=rule.dangerous_hook,
-                    )
-                )
-                continue
-
-            if rule.action_hook is not None:
-                action = (rule.action or "").strip().lower()
-                if action not in ("", VFS_HOOK_ACTION_ALLOW):
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: action_hook cannot set action={rule.action!r}"
-                    )
-                if rule.phase and rule.phase.lower() != VFS_HOOK_PHASE_BEFORE:
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: action_hook must use phase=before"
-                    )
-                ops = {op.lower() for op in rule.ops if op}
-                local_action.append(
-                    _LocalVFSActionHook(
-                        name=rule.name,
-                        ops=ops,
-                        path=rule.path,
-                        hook=rule.action_hook,
-                    )
-                )
-                continue
-
-            action = (rule.action or "").strip().lower()
-            if action not in ("", VFS_HOOK_ACTION_ALLOW):
-                raise MatchlockError(
-                    f"invalid vfs hook {rule.name!r}: mutate_hook cannot set action={rule.action!r}"
-                )
-            if rule.phase and rule.phase.lower() != VFS_HOOK_PHASE_BEFORE:
-                raise MatchlockError(
-                    f"invalid vfs hook {rule.name!r}: mutate_hook must use phase=before"
-                )
-            assert rule.mutate_hook is not None
-            ops = {op.lower() for op in rule.ops if op}
-            local_mutate.append(
-                _LocalVFSMutateHook(
-                    name=rule.name,
-                    ops=ops,
-                    path=rule.path,
-                    hook=rule.mutate_hook,
-                )
-            )
-
-        if local:
-            wire.emit_events = True
-        wire_out: VFSInterceptionConfig | None = wire
-        if not wire.rules and not wire.emit_events:
-            wire_out = None
-        return wire_out, local, local_mutate, local_action
 
     def _compile_network_hooks(
         self, cfg: NetworkInterceptionConfig | None
@@ -1093,12 +745,6 @@ class Client:
                 "forced interception, or network interception rules"
             )
 
-        (
-            wire_vfs,
-            local_hooks,
-            local_mutate_hooks,
-            local_action_hooks,
-        ) = self._compile_vfs_hooks(opts.vfs_interception)
         wire_network, local_network_hooks = self._compile_network_hooks(
             opts.network_interception
         )
@@ -1110,7 +756,6 @@ class Client:
                 wire_network = {}
             wire_network["callback_socket"] = callback_socket
             started_network_hook_server = True
-        self._set_local_vfs_hooks([], [], [])
 
         params: dict[str, Any] = {"image": opts.image}
 
@@ -1136,16 +781,6 @@ class Client:
         if network is not None:
             params["network"] = network
 
-        if opts.mounts or opts.workspace or wire_vfs is not None:
-            vfs: dict[str, Any] = {}
-            if opts.mounts:
-                vfs["mounts"] = {k: v.to_dict() for k, v in opts.mounts.items()}
-            if opts.workspace:
-                vfs["workspace"] = opts.workspace
-            if wire_vfs is not None:
-                vfs["interception"] = wire_vfs.to_dict()
-            params["vfs"] = vfs
-
         if opts.env:
             params["env"] = opts.env
 
@@ -1165,7 +800,6 @@ class Client:
                 self._stop_network_hook_server()
             raise MatchlockError("invalid create response: missing id")
         self._vm_id = result["id"]
-        self._set_local_vfs_hooks(local_hooks, local_mutate_hooks, local_action_hooks)
         if opts.port_forwards:
             self._port_forward_mappings(opts.port_forward_addresses, opts.port_forwards)
         return self._vm_id
@@ -1398,8 +1032,8 @@ class Client:
     def exec_stream(
         self,
         command: str,
-        stdout: IO[str] | None = None,
-        stderr: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
+        stderr: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         timeout: float | None = None,
     ) -> ExecStreamResult:
@@ -1408,6 +1042,8 @@ class Client:
         Args:
             command: The command to execute.
             stdout: File-like object to write stdout to (e.g., sys.stdout).
+                Binary writers (e.g., ``open(path, "wb")``) receive raw bytes;
+                text writers receive UTF-8 decoded text.
             stderr: File-like object to write stderr to (e.g., sys.stderr).
             working_dir: Optional working directory.
             timeout: Optional timeout in seconds. If the command doesn't
@@ -1422,17 +1058,11 @@ class Client:
             params["working_dir"] = working_dir
 
         def on_notification(method: str, notif_params: dict[str, Any]) -> None:
-            data_b64 = notif_params.get("data", "")
-            try:
-                decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
-            except Exception:
-                return
-            if method == "exec_stream.stdout" and stdout is not None:
-                stdout.write(decoded)
-                stdout.flush()
-            elif method == "exec_stream.stderr" and stderr is not None:
-                stderr.write(decoded)
-                stderr.flush()
+            data_b64 = str(notif_params.get("data", ""))
+            if method == "exec_stream.stdout":
+                self._write_output_chunk(stdout, data_b64)
+            elif method == "exec_stream.stderr":
+                self._write_output_chunk(stderr, data_b64)
 
         result = self._send_request(
             "exec_stream", params, on_notification=on_notification, timeout=timeout
@@ -1458,7 +1088,7 @@ class Client:
         def on_notification(method: str, notif_params: dict[str, Any]) -> None:
             if method != "log_stream.data":
                 return
-            self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+            self._write_output_chunk(stdout, str(notif_params.get("data", "")))
 
         self._send_request(
             "log_stream", on_notification=on_notification, timeout=timeout
@@ -1472,14 +1102,19 @@ class Client:
                 return True
         return False
 
-    def _write_decoded_chunk(self, writer: IO[str] | None, data_b64: str) -> None:
+    def _write_output_chunk(
+        self, writer: IO[str] | IO[bytes] | None, data_b64: str
+    ) -> None:
         if writer is None:
             return
         try:
-            decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
+            data = base64.b64decode(data_b64)
         except Exception:
             return
-        writer.write(decoded)
+        if _is_binary_writer(writer):
+            cast(IO[bytes], writer).write(data)
+        else:
+            cast(IO[str], writer).write(data.decode("utf-8", errors="replace"))
         flush = getattr(writer, "flush", None)
         if callable(flush):
             flush()
@@ -1536,8 +1171,8 @@ class Client:
         self,
         command: str,
         stdin: IO[str] | IO[bytes] | None = None,
-        stdout: IO[str] | None = None,
-        stderr: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
+        stderr: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         timeout: float | None = None,
         user: str = "",
@@ -1547,7 +1182,8 @@ class Client:
         Args:
             command: The command to execute.
             stdin: Optional input stream to forward to the process.
-            stdout: Optional writer for streaming stdout chunks.
+            stdout: Optional writer for streaming stdout chunks. Binary
+                writers receive raw bytes; text writers receive UTF-8 text.
             stderr: Optional writer for streaming stderr chunks.
             working_dir: Optional working directory.
             timeout: Optional timeout in seconds.
@@ -1583,10 +1219,10 @@ class Client:
                 ready_event.set()
                 return
             if method == "exec_pipe.stdout":
-                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+                self._write_output_chunk(stdout, str(notif_params.get("data", "")))
                 return
             if method == "exec_pipe.stderr":
-                self._write_decoded_chunk(stderr, str(notif_params.get("data", "")))
+                self._write_output_chunk(stderr, str(notif_params.get("data", "")))
 
         try:
             result = self._send_request(
@@ -1606,7 +1242,7 @@ class Client:
         self,
         command: str,
         stdin: IO[str] | IO[bytes] | None = None,
-        stdout: IO[str] | None = None,
+        stdout: IO[str] | IO[bytes] | None = None,
         working_dir: str = "",
         rows: int = 24,
         cols: int = 80,
@@ -1687,7 +1323,7 @@ class Client:
                 ready_event.set()
                 return
             if method == "exec_tty.stdout":
-                self._write_decoded_chunk(stdout, str(notif_params.get("data", "")))
+                self._write_output_chunk(stdout, str(notif_params.get("data", "")))
 
         try:
             result = self._send_request(
@@ -1722,8 +1358,6 @@ class Client:
         """
         if isinstance(content, str):
             content = content.encode("utf-8")
-        self._apply_local_action_hooks("write", path, len(content), mode)
-        content = self._apply_local_write_mutations(path, content, mode)
 
         params: dict[str, Any] = {
             "path": path,
@@ -1739,7 +1373,6 @@ class Client:
             path: Guest path to read.
             timeout: Optional timeout in seconds.
         """
-        self._apply_local_action_hooks("read", path, 0, 0)
         result = self._send_request("read_file", {"path": path}, timeout=timeout)
         return base64.b64decode(result["content"])
 
@@ -1750,7 +1383,6 @@ class Client:
             path: Guest directory path.
             timeout: Optional timeout in seconds.
         """
-        self._apply_local_action_hooks("readdir", path, 0, 0)
         result = self._send_request("list_files", {"path": path}, timeout=timeout)
         return [
             FileInfo(
@@ -1761,3 +1393,126 @@ class Client:
             )
             for f in result.get("files", [])
         ]
+
+    def copy_in(
+        self,
+        src: str | os.PathLike[str],
+        dest: str,
+        *,
+        owner: str = "",
+        archive: bool = False,
+        follow_link: bool = False,
+        exclude: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Copy a host file or directory into the sandbox.
+
+        A ``src`` ending in ``/.`` copies
+        the directory's contents rather than the directory itself, a ``src``
+        ending in ``/`` must be a directory, and a ``dest`` ending in ``/`` must
+        be an existing guest directory. A relative ``src`` is joined to the
+        current working directory without normalising it, so these suffixes
+        are kept. ``pathlib.Path`` removes them; pass a ``str`` to use them.
+
+        Args:
+            src: Host path to copy from.
+            dest: Guest path to copy to.
+            owner: Optional owner of the copied files in the guest (uid,
+                uid:gid, user, or user:group). Defaults to the sandbox's
+                configured user, falling back to root.
+            archive: Preserve the source's numeric uid/gid instead. Cannot be
+                combined with ``owner``.
+            follow_link: If ``src`` is a symlink, copy its target instead of
+                the link.
+            exclude: Optional ``.dockerignore``-style patterns, relative to
+                the source directory, for paths to skip.
+            timeout: Optional timeout in seconds. If the copy doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort it and :class:`TimeoutError` is raised.
+        """
+        src_path = os.fspath(src)
+        if not src_path:
+            raise MatchlockError("copy_in source path is required")
+        if not dest:
+            raise MatchlockError("copy_in destination path is required")
+        if owner and archive:
+            raise MatchlockError("copy_in owner cannot be combined with archive")
+        if not dest.startswith("/"):
+            raise MatchlockError("copy_in destination must be an absolute sandbox path")
+
+        params: dict[str, Any] = {
+            "src": _absolute_host_path(src_path),
+            "dest": dest,
+        }
+        if owner:
+            params["owner"] = owner
+        if archive:
+            params["archive"] = True
+        if follow_link:
+            params["follow_link"] = True
+        if exclude:
+            params["exclude"] = list(exclude)
+        self._send_request("copy_in", params, timeout=timeout)
+
+    def copy_out(
+        self,
+        src: str,
+        dest: str | os.PathLike[str],
+        *,
+        follow_link: bool = False,
+        exclude: list[str] | None = None,
+        max_size: int | None = None,
+        max_files: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        """Copy a file or directory from the sandbox to the host.
+
+        Paths follow the same rules as :meth:`copy_in`. A
+        relative ``dest`` is joined to the current working directory without
+        normalising it, so a trailing ``/`` is kept.
+
+        Not available when the client runs matchlock with ``use_sudo``, because
+        the files would be written by a root process and owned by root.
+
+        Args:
+            src: Guest path to copy from.
+            dest: Host path to copy to.
+            follow_link: If ``src`` is a symlink, copy its target instead of
+                the link.
+            exclude: Optional ``.dockerignore``-style patterns, relative to
+                the source directory, for paths to skip.
+            max_size: Optional maximum total bytes of file content written to
+                the host. ``None`` uses the server default (10 GiB); ``0``
+                means unlimited.
+            max_files: Optional maximum number of archive entries. ``None``
+                uses the server default (1,000,000); ``0`` means unlimited.
+            timeout: Optional timeout in seconds. If the copy doesn't
+                complete within the timeout, a ``cancel`` RPC is sent to
+                abort it and :class:`TimeoutError` is raised.
+        """
+        dest_path = os.fspath(dest)
+        if not src:
+            raise MatchlockError("copy_out source path is required")
+        if not dest_path:
+            raise MatchlockError("copy_out destination path is required")
+        if self._config.use_sudo:
+            raise MatchlockError(
+                "copy_out is not supported with use_sudo: files would be "
+                "written by a root matchlock process and owned by root"
+            )
+        if not src.startswith("/"):
+            raise MatchlockError("copy_out source must be an absolute sandbox path")
+
+        params: dict[str, Any] = {
+            "src": src,
+            "dest": _absolute_host_path(dest_path),
+        }
+        if follow_link:
+            params["follow_link"] = True
+        if exclude:
+            params["exclude"] = list(exclude)
+        if max_size is not None:
+            params["max_size"] = max_size
+        if max_files is not None:
+            params["max_files"] = max_files
+        self._send_request("copy_out", params, timeout=timeout)

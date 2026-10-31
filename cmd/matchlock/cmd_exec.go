@@ -11,7 +11,6 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
-	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
 var execCmd = &cobra.Command{
@@ -29,7 +28,7 @@ The sandbox must have been started with --rm=false to remain running.`,
 func init() {
 	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
-	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then configured workspace path)")
+	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, otherwise /)")
 	execCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username)")
 
 	rootCmd.AddCommand(execCmd)
@@ -49,18 +48,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("command required (or use -it for interactive mode)")
 	}
 
-	mgr := state.NewManager()
-	vmState, err := mgr.Get(vmID)
+	execSocketPath, err := execSocketPath(vmID)
 	if err != nil {
-		return errx.With(ErrVMNotFound, " %s: %w", vmID, err)
-	}
-	if vmState.Status != "running" {
-		return fmt.Errorf("VM %s is not running (status: %s)", vmID, vmState.Status)
-	}
-
-	execSocketPath := mgr.ExecSocketPath(vmID)
-	if _, err := os.Stat(execSocketPath); err != nil {
-		return fmt.Errorf("exec socket not found for %s (was it started with --rm=false?)", vmID)
+		return err
 	}
 
 	command := api.ShellQuoteArgs(cmdArgs)

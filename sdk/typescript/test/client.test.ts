@@ -13,13 +13,7 @@ vi.mock("node:child_process", async () => {
 });
 
 import { execFile, spawn } from "node:child_process";
-import {
-  Client,
-  MatchlockError,
-  RPCError,
-  Sandbox,
-  VFS_HOOK_ACTION_BLOCK,
-} from "../src";
+import { Client, MatchlockError, RPCError, Sandbox } from "../src";
 import { FakeProcess } from "./helpers";
 
 const mockedSpawn = vi.mocked(spawn);
@@ -792,25 +786,12 @@ describe("Client", () => {
     await client.close();
   });
 
-  it("applies mutate hooks for write_file", async () => {
+  it("writes the original file content", async () => {
     const fake = installFakeProcess();
     const client = new Client();
 
     const createPromise = client.create({
       image: "alpine:latest",
-      vfsInterception: {
-        rules: [
-          {
-            phase: "before",
-            ops: ["write"],
-            path: "/workspace/*",
-            mutateHook: (request) =>
-              Buffer.from(
-                `size=${request.size};mode=${request.mode.toString(8)}`,
-              ),
-          },
-        ],
-      },
     });
 
     const createReq = await fake.waitForRequest("create");
@@ -831,46 +812,10 @@ describe("Client", () => {
       "base64",
     ).toString("utf8");
 
-    expect(content).toBe("size=4;mode=644");
+    expect(content).toBe("abcd");
 
     fake.pushResponse({ jsonrpc: "2.0", id: writeReq.id, result: {} });
     await writePromise;
-
-    fake.close();
-    await client.close();
-  });
-
-  it("blocks write_file when action hook returns block", async () => {
-    const fake = installFakeProcess();
-    const client = new Client();
-
-    const createPromise = client.create({
-      image: "alpine:latest",
-      vfsInterception: {
-        rules: [
-          {
-            phase: "before",
-            ops: ["write"],
-            path: "/workspace/*",
-            actionHook: () => VFS_HOOK_ACTION_BLOCK,
-          },
-        ],
-      },
-    });
-
-    const createReq = await fake.waitForRequest("create");
-    fake.pushResponse({
-      jsonrpc: "2.0",
-      id: createReq.id,
-      result: { id: "vm-action" },
-    });
-    await createPromise;
-
-    const requestCount = fake.requests.length;
-    await expect(
-      client.writeFile("/workspace/test.txt", Buffer.from("blocked")),
-    ).rejects.toThrow("blocked operation");
-    expect(fake.requests.length).toBe(requestCount);
 
     fake.close();
     await client.close();
@@ -909,6 +854,138 @@ describe("Client", () => {
 
     fake.close();
     await client.close();
+  });
+
+  it("sends copy params with only the options that are set", async () => {
+    const fake = installFakeProcess();
+    fake.on("request", (request: { id: number }) => {
+      fake.pushResponse({ jsonrpc: "2.0", id: request.id, result: {} });
+    });
+    const client = new Client();
+    const cwd = process.cwd();
+
+    const cases: {
+      call: () => Promise<void>;
+      method: string;
+      params: Record<string, unknown>;
+    }[] = [
+      // Unset, false, and empty options are omitted; request options are not params.
+      {
+        call: () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "",
+            archive: false,
+            followLink: false,
+            exclude: [],
+            timeoutMs: 5000,
+          }),
+        method: "copy_in",
+        params: { src: "/host/src", dest: "/workspace" },
+      },
+      {
+        call: () => client.copyOut("/workspace/dist", "/host/out"),
+        method: "copy_out",
+        params: { src: "/workspace/dist", dest: "/host/out" },
+      },
+      {
+        call: () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "1000:1000",
+            followLink: true,
+            exclude: ["*.log"],
+          }),
+        method: "copy_in",
+        params: {
+          src: "/host/src",
+          dest: "/workspace",
+          owner: "1000:1000",
+          follow_link: true,
+          exclude: ["*.log"],
+        },
+      },
+      {
+        call: () => client.copyIn("/host/src", "/workspace", { archive: true }),
+        method: "copy_in",
+        params: { src: "/host/src", dest: "/workspace", archive: true },
+      },
+      {
+        call: () =>
+          client.copyOut("/workspace/dist", "/host/out", {
+            followLink: true,
+            exclude: ["*.tmp"],
+            maxSize: 0,
+            maxFiles: 0,
+          }),
+        method: "copy_out",
+        params: {
+          src: "/workspace/dist",
+          dest: "/host/out",
+          follow_link: true,
+          exclude: ["*.tmp"],
+          max_size: 0,
+          max_files: 0,
+        },
+      },
+      // Relative host paths are joined to cwd verbatim; guest paths are sent as given.
+      {
+        call: () => client.copyIn("./src/.", "/workspace/"),
+        method: "copy_in",
+        params: { src: `${cwd}/./src/.`, dest: "/workspace/" },
+      },
+      {
+        call: () => client.copyOut("/workspace/dist/", "out/"),
+        method: "copy_out",
+        params: { src: "/workspace/dist/", dest: `${cwd}/out/` },
+      },
+    ];
+
+    for (const { call } of cases) {
+      await withTimeout(call());
+    }
+    expect(fake.requests.map((r) => [r.method, r.params])).toEqual(
+      cases.map(({ method, params }) => [method, params]),
+    );
+
+    fake.close();
+    await client.close();
+  });
+
+  it("rejects invalid copy calls before starting rpc", async () => {
+    const client = new Client();
+    const sudoClient = new Client({ useSudo: true });
+
+    const cases: [() => Promise<void>, string][] = [
+      [() => client.copyIn("", "/workspace"), "copy source path is required"],
+      [
+        () => client.copyOut("/workspace/dist", ""),
+        "copy destination path is required",
+      ],
+      [
+        () =>
+          client.copyIn("/host/src", "/workspace", {
+            owner: "1000",
+            archive: true,
+          }),
+        "copy owner cannot be combined with archive",
+      ],
+      [
+        () => client.copyOut("/workspace/dist", "/host/out", { maxSize: -1 }),
+        "copy maxSize must be a non-negative integer",
+      ],
+      [
+        () => sudoClient.copyOut("/workspace/dist", "/host/out"),
+        "copyOut is not supported with useSudo",
+      ],
+      [() => client.copyIn("/host/src", "w"), "copy sandbox path must be absolute"],
+      [() => client.copyOut("w", "/host/out"), "copy sandbox path must be absolute"],
+    ];
+
+    for (const [call, message] of cases) {
+      const error = await call().catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(MatchlockError);
+      expect((error as Error).message).toContain(message);
+    }
+    expect(mockedSpawn).not.toHaveBeenCalled();
   });
 
   it("sends cancel rpc when aborted", async () => {
@@ -959,59 +1036,6 @@ describe("Client", () => {
       { address: "127.0.0.1", localPort: 8080, remotePort: 8080 },
       { address: "127.0.0.1", localPort: 18081, remotePort: 81 },
     ]);
-
-    fake.close();
-    await client.close();
-  });
-
-  it("routes event notifications to local after hooks", async () => {
-    const fake = installFakeProcess();
-    const client = new Client();
-
-    let seen = "";
-    const createPromise = client.create({
-      image: "alpine:latest",
-      vfsInterception: {
-        rules: [
-          {
-            phase: "after",
-            ops: ["write"],
-            path: "/workspace/*",
-            hook: (event) => {
-              seen = `${event.op}:${event.path}`;
-            },
-          },
-        ],
-      },
-    });
-
-    const createReq = await fake.waitForRequest("create");
-    expect(
-      (createReq.params?.vfs as Record<string, unknown>).interception,
-    ).toEqual({
-      emit_events: true,
-    });
-
-    fake.pushResponse({
-      jsonrpc: "2.0",
-      id: createReq.id,
-      result: { id: "vm-hook" },
-    });
-    await createPromise;
-
-    fake.pushNotification("event", {
-      file: {
-        op: "write",
-        path: "/workspace/file.txt",
-        size: 1,
-        mode: 0o644,
-        uid: 1000,
-        gid: 1000,
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(seen).toBe("write:/workspace/file.txt");
 
     fake.close();
     await client.close();

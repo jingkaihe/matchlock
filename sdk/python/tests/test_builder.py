@@ -1,17 +1,12 @@
 """Tests for matchlock.builder (Sandbox)."""
 
-import pytest
-
 from matchlock.builder import Sandbox
 from matchlock.types import (
     CreateOptions,
     ImageConfig,
-    MountConfig,
     NetworkBodyTransform,
     NetworkHookRule,
     NetworkInterceptionConfig,
-    VFSHookRule,
-    VFSInterceptionConfig,
 )
 
 
@@ -55,10 +50,6 @@ class TestSandboxResources:
         opts = Sandbox("img").with_timeout(600).options()
         assert opts.timeout_seconds == 600
 
-    def test_with_workspace(self):
-        opts = Sandbox("img").with_workspace("/code").options()
-        assert opts.workspace == "/code"
-
 
 class TestSandboxChaining:
     def test_fluent_chaining(self):
@@ -68,7 +59,6 @@ class TestSandboxChaining:
             .with_memory(512)
             .with_disk_size(4096)
             .with_timeout(300)
-            .with_workspace("/home")
             .options()
         )
         assert opts.image == "python:3.12"
@@ -76,7 +66,6 @@ class TestSandboxChaining:
         assert opts.memory_mb == 512
         assert opts.disk_size_mb == 4096
         assert opts.timeout_seconds == 300
-        assert opts.workspace == "/home"
 
     def test_all_methods_return_sandbox(self):
         s = Sandbox("img")
@@ -86,8 +75,6 @@ class TestSandboxChaining:
         assert isinstance(s.with_memory(1), Sandbox)
         assert isinstance(s.with_disk_size(1), Sandbox)
         assert isinstance(s.with_timeout(1), Sandbox)
-        assert isinstance(s.with_workspace("/x"), Sandbox)
-        assert isinstance(s.with_vfs_interception(VFSInterceptionConfig()), Sandbox)
         assert isinstance(s.with_network_interception(NetworkInterceptionConfig()), Sandbox)
         assert isinstance(s.with_env("K", "V"), Sandbox)
         assert isinstance(s.with_env_map({"K": "V"}), Sandbox)
@@ -103,11 +90,6 @@ class TestSandboxChaining:
         assert isinstance(s.with_no_network(), Sandbox)
         assert isinstance(s.with_port_forward(18080, 8080), Sandbox)
         assert isinstance(s.with_port_forward_addresses("127.0.0.1"), Sandbox)
-        assert isinstance(s.mount("/p", MountConfig()), Sandbox)
-        assert isinstance(s.mount_host_dir("/g", "/h"), Sandbox)
-        assert isinstance(s.mount_host_dir_readonly("/g", "/h"), Sandbox)
-        assert isinstance(s.mount_memory("/m"), Sandbox)
-        assert isinstance(s.mount_overlay("/o", "/h"), Sandbox)
 
 
 class TestSandboxNetwork:
@@ -277,120 +259,6 @@ class TestSandboxSecrets:
         assert len(opts.secrets) == 2
         assert opts.secrets[0].name == "A"
         assert opts.secrets[1].name == "B"
-
-
-class TestSandboxMounts:
-    def test_mount_host_dir(self):
-        opts = Sandbox("img").mount_host_dir("/guest", "/host").options()
-        m = opts.mounts["/guest"]
-        assert m.type == "host_fs"
-        assert m.host_path == "/host"
-        assert m.readonly is False
-
-    def test_mount_host_dir_readonly(self):
-        opts = Sandbox("img").mount_host_dir_readonly("/guest", "/host").options()
-        m = opts.mounts["/guest"]
-        assert m.type == "host_fs"
-        assert m.host_path == "/host"
-        assert m.readonly is True
-
-    def test_mount_memory(self):
-        opts = Sandbox("img").mount_memory("/tmp").options()
-        m = opts.mounts["/tmp"]
-        assert m.type == "memory"
-
-    def test_mount_overlay(self):
-        opts = Sandbox("img").mount_overlay("/data", "/host/data").options()
-        m = opts.mounts["/data"]
-        assert m.type == "overlay"
-        assert m.host_path == "/host/data"
-
-    def test_mount_custom(self):
-        cfg = MountConfig(type="host_fs", host_path="/custom", readonly=True)
-        opts = Sandbox("img").mount("/workspace/custom", cfg).options()
-        m = opts.mounts["/workspace/custom"]
-        assert m.type == "host_fs"
-        assert m.readonly is True
-
-    def test_mount_host_dir_with_owner(self):
-        opts = Sandbox("img").mount_host_dir("/data", "/host/data", owner_uid=1000, owner_gid=2000).options()
-        m = opts.mounts["/data"]
-        assert m.type == "host_fs"
-        assert m.host_path == "/host/data"
-        assert m.owner_uid == 1000
-        assert m.owner_gid == 2000
-
-    def test_mount_host_dir_readonly_with_owner(self):
-        opts = Sandbox("img").mount_host_dir_readonly("/cfg", "/host/cfg", owner_uid=500, owner_gid=500).options()
-        m = opts.mounts["/cfg"]
-        assert m.readonly is True
-        assert m.owner_uid == 500
-        assert m.owner_gid == 500
-
-    def test_mount_host_dir_owner_defaults_to_none(self):
-        opts = Sandbox("img").mount_host_dir("/data", "/host/data").options()
-        m = opts.mounts["/data"]
-        assert m.owner_uid is None
-        assert m.owner_gid is None
-
-    def test_mount_config_to_dict_includes_owner(self):
-        cfg = MountConfig(type="host_fs", host_path="/data", owner_uid=1000, owner_gid=2000)
-        d = cfg.to_dict()
-        assert d["owner_uid"] == 1000
-        assert d["owner_gid"] == 2000
-
-    def test_mount_config_to_dict_omits_none_owner(self):
-        cfg = MountConfig(type="host_fs", host_path="/data")
-        d = cfg.to_dict()
-        assert "owner_uid" not in d
-        assert "owner_gid" not in d
-
-    def test_mount_config_rejects_negative_owner_uid(self):
-        with pytest.raises(ValueError, match="owner_uid"):
-            MountConfig(type="host_fs", host_path="/data", owner_uid=-1)
-
-    def test_mount_config_rejects_overflow_owner_uid(self):
-        with pytest.raises(ValueError, match="owner_uid"):
-            MountConfig(type="host_fs", host_path="/data", owner_uid=2**32)
-
-    def test_mount_config_rejects_negative_owner_gid(self):
-        with pytest.raises(ValueError, match="owner_gid"):
-            MountConfig(type="host_fs", host_path="/data", owner_gid=-1)
-
-    def test_mount_config_rejects_overflow_owner_gid(self):
-        with pytest.raises(ValueError, match="owner_gid"):
-            MountConfig(type="host_fs", host_path="/data", owner_gid=4294967296)
-
-    def test_multiple_mounts(self):
-        opts = (
-            Sandbox("img")
-            .mount_host_dir("/a", "/ha")
-            .mount_memory("/b")
-            .mount_overlay("/c", "/hc")
-            .options()
-        )
-        assert len(opts.mounts) == 3
-        assert "/a" in opts.mounts
-        assert "/b" in opts.mounts
-        assert "/c" in opts.mounts
-
-
-class TestSandboxVFSInterception:
-    def test_with_vfs_interception(self):
-        cfg = VFSInterceptionConfig(
-            rules=[
-                VFSHookRule(
-                    phase="before",
-                    ops=["create"],
-                    path="/workspace/blocked.txt",
-                    action="block",
-                )
-            ],
-        )
-        opts = Sandbox("img").with_vfs_interception(cfg).options()
-        assert opts.vfs_interception is not None
-        assert len(opts.vfs_interception.rules) == 1
-        assert opts.vfs_interception.rules[0].action == "block"
 
 
 class TestSandboxImageConfig:
