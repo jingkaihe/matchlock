@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.3.1
+
+* Updated Go dependencies to resolve security advisories: `go-containerregistry` `v0.22.1` brings patched `docker/cli` and `klauspost/compress` and drops the unmaintained `docker/distribution`, and `golang.org/x/net` is now `v0.62.0`.
+* Updated the TypeScript SDK's test tooling to Vitest `4.1.12`, and the TypeScript examples to `matchlock-sdk` `^0.3.0` and `tsx` `4.23.15`, resolving npm security advisories. The published SDK has no runtime dependencies and is unaffected.
+
 ## 0.3.0
 
 * **Breaking change:** Removed VFS mounts and filesystem hooks, including `--workspace`, `--volume`/`-v`, and related SDK APIs. Use explicit file transfers or `--disk` block volumes instead; see the [migration guide](docs/vfs-mounts-removal.md).
