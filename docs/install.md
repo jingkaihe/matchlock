@@ -34,8 +34,10 @@ The script detects the current OS and architecture:
 
 On Linux, the script currently supports:
 
-- Debian / Ubuntu (`dpkg`)
-- Fedora / RHEL / CentOS Stream (`dnf`)
+- Debian / Ubuntu and derivatives (`.deb` via `dpkg` and `apt-get`)
+- Fedora / RHEL / CentOS Stream and derivatives (`.rpm` via `dnf` or `yum`)
+
+The package format is chosen from `ID` and `ID_LIKE` in `/etc/os-release`, so having `dpkg` installed on Fedora does not switch it to the `.deb` flow. If the distribution is not recognized, the script falls back to whichever package tools are available.
 
 After installation, verify the host with:
 
