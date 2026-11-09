@@ -34,8 +34,8 @@ The script detects the current OS and architecture:
 
 On Linux, the script currently supports:
 
-- Debian / Ubuntu (`dpkg`)
-- Fedora / RHEL / CentOS Stream (`dnf`)
+- Debian / Ubuntu and derivatives (`.deb` via `dpkg` and `apt-get`)
+- Fedora / RHEL / CentOS Stream and derivatives (`.rpm` via `dnf` or `yum`)
 
 After installation, verify the host with:
 

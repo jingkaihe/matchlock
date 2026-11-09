@@ -242,29 +242,82 @@ install_linux_rpm() {
   rm -f "$tmp"
 }
 
-install_linux() {
-  local arch
-  arch="$(detect_arch)"
-  echo "Detected Linux (${arch})."
+# Prints ID followed by ID_LIKE from os-release, e.g. "rocky rhel centos fedora".
+os_release_ids() {
+  local file
+  for file in /etc/os-release /usr/lib/os-release; do
+    if [ -r "$file" ]; then
+      (
+        # shellcheck disable=SC1090
+        . "$file"
+        printf '%s %s\n' "${ID:-}" "${ID_LIKE:-}"
+      )
+      return 0
+    fi
+  done
+  return 1
+}
 
-  if command -v dpkg >/dev/null 2>&1; then
-    echo "Using Debian/Ubuntu package flow."
-    install_linux_deb "$arch"
-    return
+# Prints "deb" or "rpm". The distro's os-release takes precedence over probing
+# for package tools, since e.g. Fedora can have dpkg installed alongside rpm.
+linux_package_flow() {
+  local ids=""
+  local id
+
+  ids="$(os_release_ids 2>/dev/null)" || ids=""
+  # os-release IDs only contain [a-z0-9._-], so word splitting is safe here.
+  for id in $ids; do
+    case "$id" in
+      debian|ubuntu)
+        echo "deb"
+        return 0
+        ;;
+      fedora|rhel|centos)
+        echo "rpm"
+        return 0
+        ;;
+    esac
+  done
+
+  if command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    echo "deb"
+    return 0
   fi
 
   if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
-    echo "Using RPM package flow."
-    install_linux_rpm "$arch"
-    return
+    echo "rpm"
+    return 0
   fi
+
+  return 1
+}
+
+install_linux() {
+  local arch
+  local flow=""
+  arch="$(detect_arch)"
+  echo "Detected Linux (${arch})."
+
+  flow="$(linux_package_flow)" || true
+  case "$flow" in
+    deb)
+      echo "Using Debian/Ubuntu package flow."
+      install_linux_deb "$arch"
+      return
+      ;;
+    rpm)
+      echo "Using RPM package flow."
+      install_linux_rpm "$arch"
+      return
+      ;;
+  esac
 
   if command -v rpm >/dev/null 2>&1; then
     echo "Error: unsupported RPM environment; install dnf or yum to resolve package dependencies" >&2
     exit 1
   fi
 
-  echo "Error: unsupported Linux packaging environment; expected dpkg, dnf, or yum" >&2
+  echo "Error: unsupported Linux packaging environment; expected dpkg with apt-get, dnf, or yum" >&2
   exit 1
 }
 
